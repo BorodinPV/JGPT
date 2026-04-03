@@ -1,0 +1,1 @@
+ -Wl,-rpath,/usr/lib/x86_64-linux-gnu -lcublas -lcudart -lcuda "/usr/lib/jvm/default-java/lib/libjawt.so" "/usr/lib/jvm/default-java/lib/server/libjvm.so" -lcudadevrt -lcudart_static -lrt -lpthread -ldl 

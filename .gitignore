@@ -1,0 +1,10 @@
+/target/
+/checkpoints/
+/build/
+/src/build/
+/src/main/cpp/build/
+*.log
+hs_err_pid*.log
+*.qdstrm
+*.qdrep
+*.nsys-rep

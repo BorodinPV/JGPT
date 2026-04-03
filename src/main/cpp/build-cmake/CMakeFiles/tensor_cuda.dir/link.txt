@@ -1,0 +1,1 @@
+/usr/lib/nvidia-cuda-toolkit/bin/g++ -fPIC -Wl,--dependency-file=CMakeFiles/tensor_cuda.dir/link.d -shared -Wl,-soname,libtensor_cuda.so -o "/home/pavel/Рабочий стол/tensor/build/libtensor_cuda.so" @CMakeFiles/tensor_cuda.dir/objects1.rsp @CMakeFiles/tensor_cuda.dir/linkLibs.rsp -L"/usr/lib/x86_64-linux-gnu/stubs" -L"/usr/lib/x86_64-linux-gnu"

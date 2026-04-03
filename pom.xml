@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>ru.reweu</groupId>
+    <artifactId>jgpt</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+    <name>JGPT</name>
+    <description>JGPT: Java GPU-first library for tensor ops and LLM training</description>
+
+    <!-- ================= ПРОПЕРТИ ================= -->
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Сборка: JDK 25 (JAVA_HOME). -->
+        <maven.compiler.release>25</maven.compiler.release>
+
+        <!-- Версии зависимостей -->
+        <junit.version>5.11.4</junit.version>
+        <!-- Совпадает с junit-jupiter (JUnit BOM 5.11.x → Platform 1.11.x). -->
+        <junit.platform.version>1.11.4</junit.platform.version>
+        <!-- Доп. флаги JVM для тестов (профили gc-zgc / gc-parallel-tune). -->
+        <jvm.gc.extra></jvm.gc.extra>
+        <!-- Пример: -Djvm.check.jni=-Xcheck:jni (JNI; см. scripts/profile-matmul-refactor.sh). -->
+        <jvm.check.jni></jvm.check.jni>
+        <!-- exec:java (см. exec-maven-plugin): переопределение через -Dexec.mainClass=... -->
+        <exec.mainClass>com.veles.llm.jgpt.app.MultiBookTrain</exec.mainClass>
+    </properties>
+
+    <!-- ================= ЗАВИСИМОСТИ ================= -->
+    <dependencies>
+        <!-- JUnit 5 для тестов -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <version>${junit.platform.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>2.0.9</version>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>1.5.14</version>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
+
+    <!-- ================= СБОРКА ================= -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>25</release>
+                    <compilerArgs>
+                        <arg>--add-modules=jdk.incubator.vector</arg>
+                        <arg>--enable-preview</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+                <configuration>
+                    <argLine>${jvm.gc.extra} ${jvm.check.jni} --add-modules=jdk.incubator.vector --enable-preview --sun-misc-unsafe-memory-access=allow -Djgpt.allow.no.gpu=true</argLine>
+                    <!-- Новый JVM на каждый тест-класс: один CUDA-stream + JNI static — иначе классы «трогают» GPU
+                         после многопоточного matmul / графов и ломают последующие VRAM-тесты. -->
+                    <reuseForks>false</reuseForks>
+                </configuration>
+            </plugin>
+
+            <!-- exec:java — тот же JVM, что и Maven; флаги Vector API — в .mvn/jvm.config -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.2.0</version>
+                <configuration>
+                    <mainClass>${exec.mainClass}</mainClass>
+                    <classpathScope>runtime</classpathScope>
+                    <includeProjectDependencies>true</includeProjectDependencies>
+                </configuration>
+            </plugin>
+
+            <!-- Jar plugin: создаём JAR с манифестом -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <!-- ================= ПРОФИЛИ ================= -->
+    <profiles>
+        <!-- Профиль для отладки: меньше памяти, больше логов -->
+        <profile>
+            <id>debug</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-compiler-plugin</artifactId>
+                        <configuration>
+                            <compilerArgs combine.children="append">
+                                <arg>-g:source,lines,vars</arg>
+                            </compilerArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Профиль для больших моделей: больше памяти -->
+        <profile>
+            <id>large-model</id>
+            <!-- Для exec:java память задаётся JVM Maven: MAVEN_OPTS="-Xms16g -Xmx16g" mvn ... -->
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <configuration>
+                            <mainClass>${exec.mainClass}</mainClass>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Меньше пауз GC при профилировании sem_wait / safepoint: ZGC (JDK 21+). -->
+        <profile>
+            <id>gc-zgc</id>
+            <properties>
+                <jvm.gc.extra>-XX:+UseZGC</jvm.gc.extra>
+            </properties>
+        </profile>
+
+        <!-- Альтернатива: больше потоков параллельной сборки мусора (подберите под число ядер). -->
+        <profile>
+            <id>gc-parallel-tune</id>
+            <properties>
+                <jvm.gc.extra>-XX:+UseParallelGC -XX:ParallelGCThreads=8</jvm.gc.extra>
+            </properties>
+        </profile>
+    </profiles>
+</project>

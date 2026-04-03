@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "java",
+      "name": "TrainingLoopTest",
+      "request": "launch",
+      "mainClass": "com.veles.llm.jgpt.training.TrainingLoopTest",
+      "projectName": "JGPT",
+      "vmArgs": "--add-modules=jdk.incubator.vector --enable-preview"
+    },
+    {
+      "type": "java",
+      "name": "TrainLLM",
+      "request": "launch",
+      "mainClass": "com.veles.llm.jgpt.app.TrainLLM",
+      "projectName": "JGPT",
+      "vmArgs": "--add-modules=jdk.incubator.vector --enable-preview"
+    }
+  ]
+}

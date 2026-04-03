@@ -1,0 +1,3 @@
+/home/pavel/Рабочий стол/tensor/src/main/cpp/build-cmake/CMakeFiles/tensor_cuda.dir
+/home/pavel/Рабочий стол/tensor/src/main/cpp/build-cmake/CMakeFiles/edit_cache.dir
+/home/pavel/Рабочий стол/tensor/src/main/cpp/build-cmake/CMakeFiles/rebuild_cache.dir

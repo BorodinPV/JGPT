@@ -178,6 +178,36 @@ public final class LLMConfig {
                 "JGPT_DEVICE_DECODER_BWD", "jgpt.deviceDecoderBackward");
     }
 
+    /** Train-only loss mode: env {@code JGPT_TRAIN_LOSS_MODE} / prop {@code jgpt.trainLossMode}. */
+    public static TrainLossMode trainLossModeFromEnvOrProp() {
+        return readTrainLossMode(
+                firstNonBlank(System.getenv("JGPT_TRAIN_LOSS_MODE"), System.getProperty("jgpt.trainLossMode")));
+    }
+
+    /** Env {@code JGPT_SAMPLED_CE_CANDIDATES} / prop {@code jgpt.sampledCe.candidates}. */
+    public static int sampledCeCandidatesFromEnv() {
+        return Math.max(2, readPositiveEnvOrPropInt("JGPT_SAMPLED_CE_CANDIDATES", "jgpt.sampledCe.candidates", 128));
+    }
+
+    /** Env {@code JGPT_SAMPLED_CE_NEGATIVE_MODE} / prop {@code jgpt.sampledCe.negativeMode}. */
+    public static SampledNegativeMode sampledCeNegativeModeFromEnvOrProp() {
+        String raw =
+                firstNonBlank(
+                        System.getenv("JGPT_SAMPLED_CE_NEGATIVE_MODE"),
+                        System.getProperty("jgpt.sampledCe.negativeMode"));
+        if (raw == null) {
+            return SampledNegativeMode.BATCH_SHARED_UNIFORM;
+        }
+        String normalized = raw.trim().replace('-', '_').toUpperCase();
+        if ("BATCH_SHARED_UNIFORM".equals(normalized)) {
+            return SampledNegativeMode.BATCH_SHARED_UNIFORM;
+        }
+        throw new IllegalArgumentException(
+                "Unsupported sampled CE negative mode: "
+                        + raw
+                        + " (expected batch_shared_uniform)");
+    }
+
     /**
      * Пресет end-to-end GPU: env {@code JGPT_GPU_E2E_TRAIN=1} / prop {@code jgpt.gpu.e2eTrain}. Включает
      * {@link TrainingConfig#useGpuResident}, {@link TrainingConfig#fullGpuTrainStep}, device logits и device
@@ -289,6 +319,53 @@ public final class LLMConfig {
         }
     }
 
+    private static int readPositiveEnvOrPropInt(String envKey, String propKey, int defaultValue) {
+        String env = System.getenv(envKey);
+        if (env != null && !env.isBlank()) {
+            try {
+                int parsed = Integer.parseInt(env.trim());
+                return parsed > 0 ? parsed : defaultValue;
+            } catch (NumberFormatException ignored) {
+                return defaultValue;
+            }
+        }
+        String prop = System.getProperty(propKey);
+        if (prop != null && !prop.isBlank()) {
+            try {
+                int parsed = Integer.parseInt(prop.trim());
+                return parsed > 0 ? parsed : defaultValue;
+            } catch (NumberFormatException ignored) {
+                return defaultValue;
+            }
+        }
+        return defaultValue;
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        if (first != null && !first.isBlank()) {
+            return first;
+        }
+        if (second != null && !second.isBlank()) {
+            return second;
+        }
+        return null;
+    }
+
+    private static TrainLossMode readTrainLossMode(String raw) {
+        if (raw == null) {
+            return TrainLossMode.FULL;
+        }
+        String normalized = raw.trim().replace('-', '_').toUpperCase();
+        if ("FULL".equals(normalized)) {
+            return TrainLossMode.FULL;
+        }
+        if ("SAMPLED".equals(normalized)) {
+            return TrainLossMode.SAMPLED;
+        }
+        throw new IllegalArgumentException(
+                "Unsupported train loss mode: " + raw + " (expected full or sampled)");
+    }
+
     /**
      * {@link TrainingConfig} для {@link LLMTrainer} с разумными значениями по умолчанию.
      */
@@ -346,7 +423,10 @@ public final class LLMConfig {
                     true,
                     true,
                     true,
-                    false);
+                    false,
+                    trainLossModeFromEnvOrProp(),
+                    sampledCeCandidatesFromEnv(),
+                    sampledCeNegativeModeFromEnvOrProp());
         }
         boolean useGpu = effectiveGpuResidentTraining();
         boolean fullStep = effectiveFullGpuTrainStepFromEnv();
@@ -392,7 +472,10 @@ public final class LLMConfig {
                 fullStep,
                 deviceLogits,
                 deviceDec,
-                false);
+                false,
+                trainLossModeFromEnvOrProp(),
+                sampledCeCandidatesFromEnv(),
+                sampledCeNegativeModeFromEnvOrProp());
     }
 
     /** Должно совпадать с {@link GPTModel#countParameters()} для тех же гиперпараметров. */

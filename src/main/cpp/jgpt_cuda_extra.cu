@@ -4636,6 +4636,222 @@ JNIEXPORT jfloat JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftma
     return v > 0 ? lossSum / (float) v : 0.f;
 }
 
+__global__ void gather_logits_by_ids_kernel(
+    const float* logits, const int* candidateIds, float* candidateLogits, int rows, int vocab, int candidates) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = rows * candidates;
+    if (idx >= total) {
+        return;
+    }
+    int row = idx / candidates;
+    int cid = candidateIds[idx];
+    if (cid < 0 || cid >= vocab) {
+        candidateLogits[idx] = -INFINITY;
+        return;
+    }
+    candidateLogits[idx] = logits[row * vocab + cid];
+}
+
+__global__ void sampled_ce_first_slot_kernel(
+    const float* candidateLogits,
+    const int* candidateIds,
+    float* candidateGrad,
+    float* lossSum,
+    unsigned int* validCount,
+    int rows,
+    int candidates,
+    float gradScale) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= rows) {
+        return;
+    }
+    int base = row * candidates;
+    if (candidateIds[base] < 0) {
+        for (int j = 0; j < candidates; j++) {
+            candidateGrad[base + j] = 0.f;
+        }
+        return;
+    }
+
+    float maxLogit = candidateLogits[base];
+    for (int j = 1; j < candidates; j++) {
+        float v = candidateLogits[base + j];
+        if (v > maxLogit) {
+            maxLogit = v;
+        }
+    }
+
+    float sumExp = 0.f;
+    for (int j = 0; j < candidates; j++) {
+        sumExp += expf(candidateLogits[base + j] - maxLogit);
+    }
+    if (!(sumExp > 0.f) || !isfinite(sumExp)) {
+        for (int j = 0; j < candidates; j++) {
+            candidateGrad[base + j] = NAN;
+        }
+        atomicAdd(lossSum, NAN);
+        atomicAdd(validCount, 1u);
+        return;
+    }
+
+    float invSum = 1.f / sumExp;
+    float targetProb = 0.f;
+    for (int j = 0; j < candidates; j++) {
+        float p = expf(candidateLogits[base + j] - maxLogit) * invSum;
+        candidateGrad[base + j] = ((j == 0) ? (p - 1.f) : p) * gradScale;
+        if (j == 0) {
+            targetProb = p;
+        }
+    }
+    atomicAdd(lossSum, -logf(targetProb));
+    atomicAdd(validCount, 1u);
+}
+
+__global__ void sampled_lm_head_dhidden_kernel(
+    const int* candidateIds,
+    const float* candidateGrad,
+    const float* lmHeadWeights,
+    float* dHidden,
+    int rows,
+    int dModel,
+    int vocab,
+    int candidates) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = rows * dModel;
+    if (idx >= total) {
+        return;
+    }
+    int row = idx / dModel;
+    int d = idx % dModel;
+    int base = row * candidates;
+    int wBase = d * vocab;
+    float acc = 0.f;
+    for (int j = 0; j < candidates; j++) {
+        int cid = candidateIds[base + j];
+        if (cid < 0 || cid >= vocab) {
+            continue;
+        }
+        acc += candidateGrad[base + j] * lmHeadWeights[wBase + cid];
+    }
+    dHidden[idx] = acc;
+}
+
+__global__ void sampled_lm_head_dw_kernel(
+    const int* candidateIds,
+    const float* candidateGrad,
+    const float* normedHidden,
+    float* dLmHead,
+    int rows,
+    int dModel,
+    int vocab,
+    int candidates) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = rows * candidates;
+    if (idx >= total) {
+        return;
+    }
+    int row = idx / candidates;
+    int cid = candidateIds[idx];
+    if (cid < 0 || cid >= vocab) {
+        return;
+    }
+    float grad = candidateGrad[idx];
+    if (grad == 0.f) {
+        return;
+    }
+    const float* hiddenRow = normedHidden + row * dModel;
+    for (int d = 0; d < dModel; d++) {
+        atomicAdd(&dLmHead[d * vocab + cid], hiddenRow[d] * grad);
+    }
+}
+
+JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_gatherLogitsByIdsGPUDevice(
+    JNIEnv* env, jclass clazz, jlong dLogits, jlong dCandidateIds, jlong dCandidateLogits,
+    jint rows, jint vocab, jint candidates) {
+    (void) env;
+    (void) clazz;
+    if (rows <= 0 || vocab <= 0 || candidates <= 0) {
+        return;
+    }
+    float* logits = reinterpret_cast<float*>(static_cast<uintptr_t>(dLogits));
+    int* candidateIds = reinterpret_cast<int*>(static_cast<uintptr_t>(dCandidateIds));
+    float* candidateLogits = reinterpret_cast<float*>(static_cast<uintptr_t>(dCandidateLogits));
+    if (logits == nullptr || candidateIds == nullptr || candidateLogits == nullptr) {
+        return;
+    }
+    int total = rows * candidates;
+    int threads = jgpt_cuda_get_optimal_block_size();
+    int blocks = (total + threads - 1) / threads;
+    gather_logits_by_ids_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
+            logits, candidateIds, candidateLogits, rows, vocab, candidates);
+}
+
+JNIEXPORT jfloat JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sampledCrossEntropyGradLossGPUDeviceFirstSlot(
+    JNIEnv* env, jclass clazz, jlong dCandidateLogits, jlong dCandidateIds, jlong dCandidateGrad,
+    jint rows, jint candidates, jfloat gradScale) {
+    (void) env;
+    (void) clazz;
+    if (rows <= 0 || candidates <= 0) {
+        return 0.f;
+    }
+    float* candidateLogits = reinterpret_cast<float*>(static_cast<uintptr_t>(dCandidateLogits));
+    int* candidateIds = reinterpret_cast<int*>(static_cast<uintptr_t>(dCandidateIds));
+    float* candidateGrad = reinterpret_cast<float*>(static_cast<uintptr_t>(dCandidateGrad));
+    if (candidateLogits == nullptr || candidateIds == nullptr || candidateGrad == nullptr) {
+        return 0.f;
+    }
+    if (tl_ce_d_loss_sum == nullptr) {
+        CUDA_CHECK_RV(cudaMalloc(reinterpret_cast<void**>(&tl_ce_d_loss_sum), sizeof(float)), 0.f);
+    }
+    if (tl_ce_d_valid == nullptr) {
+        CUDA_CHECK_RV(cudaMalloc(reinterpret_cast<void**>(&tl_ce_d_valid), sizeof(unsigned int)), 0.f);
+    }
+    CUDA_CHECK_RV(cudaMemsetAsync(tl_ce_d_loss_sum, 0, sizeof(float), kTensorCudaStream), 0.f);
+    CUDA_CHECK_RV(cudaMemsetAsync(tl_ce_d_valid, 0, sizeof(unsigned int), kTensorCudaStream), 0.f);
+    int threads = 256;
+    int blocks = (rows + threads - 1) / threads;
+    sampled_ce_first_slot_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
+            candidateLogits, candidateIds, candidateGrad, tl_ce_d_loss_sum, tl_ce_d_valid, rows, candidates, gradScale);
+    CUDA_KERNEL_CHECK_RV(0.f);
+
+    float h_loss_sum = 0.f;
+    unsigned int h_valid = 0;
+    CUDA_CHECK_RV(cudaMemcpyAsync(&h_loss_sum, tl_ce_d_loss_sum, sizeof(float), cudaMemcpyDeviceToHost, kTensorCudaStream), 0.f);
+    CUDA_CHECK_RV(cudaMemcpyAsync(&h_valid, tl_ce_d_valid, sizeof(unsigned int), cudaMemcpyDeviceToHost, kTensorCudaStream), 0.f);
+    CUDA_CHECK_RV(cudaStreamSynchronize(kTensorCudaStream), 0.f);
+    return h_valid > 0 ? h_loss_sum / (float) h_valid : 0.f;
+}
+
+JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sampledLmHeadBackwardGPUDevice(
+    JNIEnv* env, jclass clazz, jlong dCandidateIds, jlong dCandidateGrad, jlong dNormedHidden,
+    jlong dLmHeadWeights, jlong dHidden, jlong dLmHeadGrad, jint rows, jint dModel, jint vocab, jint candidates) {
+    (void) env;
+    (void) clazz;
+    if (rows <= 0 || dModel <= 0 || vocab <= 0 || candidates <= 0) {
+        return;
+    }
+    int* candidateIds = reinterpret_cast<int*>(static_cast<uintptr_t>(dCandidateIds));
+    float* candidateGrad = reinterpret_cast<float*>(static_cast<uintptr_t>(dCandidateGrad));
+    float* normedHidden = reinterpret_cast<float*>(static_cast<uintptr_t>(dNormedHidden));
+    float* lmHeadWeights = reinterpret_cast<float*>(static_cast<uintptr_t>(dLmHeadWeights));
+    float* dHiddenBuf = reinterpret_cast<float*>(static_cast<uintptr_t>(dHidden));
+    float* dLmHeadBuf = reinterpret_cast<float*>(static_cast<uintptr_t>(dLmHeadGrad));
+    if (candidateIds == nullptr || candidateGrad == nullptr || normedHidden == nullptr
+            || lmHeadWeights == nullptr || dHiddenBuf == nullptr || dLmHeadBuf == nullptr) {
+        return;
+    }
+    int threads = jgpt_cuda_get_optimal_block_size();
+    int dhTotal = rows * dModel;
+    int dhBlocks = (dhTotal + threads - 1) / threads;
+    sampled_lm_head_dhidden_kernel<<<dhBlocks, threads, 0, kTensorCudaStream>>>(
+            candidateIds, candidateGrad, lmHeadWeights, dHiddenBuf, rows, dModel, vocab, candidates);
+    CUDA_KERNEL_CHECK();
+    int gradTotal = rows * candidates;
+    int gradBlocks = (gradTotal + threads - 1) / threads;
+    sampled_lm_head_dw_kernel<<<gradBlocks, threads, 0, kTensorCudaStream>>>(
+            candidateIds, candidateGrad, normedHidden, dLmHeadBuf, rows, dModel, vocab, candidates);
+}
+
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_accumulateAddFromHostGPUDevice(
     JNIEnv* env, jclass clazz, jlong dAcc, jfloatArray hDelta, jint off, jint len) {
     (void) clazz;

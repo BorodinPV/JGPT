@@ -1,5 +1,7 @@
 package com.veles.llm.jgpt.cuda;
 
+import com.veles.llm.jgpt.GpuFloatBuffer;
+import com.veles.llm.jgpt.GpuIntBuffer;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
 import com.veles.llm.jgpt.ops.TensorOpsBackward;
@@ -167,6 +169,62 @@ class CrossEntropyGpuTest {
         assertTrue(maxDiff < 0.02f, "max |grad_fp32 - grad_fp16|");
     }
 
+    @Test
+    void sampledCandidateCeMatchesReferenceAndSkipsMaskedRows() {
+        if (!TensorOpsGPU.isGpuAvailable()) {
+            return;
+        }
+        int rows = 5;
+        int vocab = 23;
+        int candidates = 6;
+        int totalLogits = rows * vocab;
+        int totalCandidates = rows * candidates;
+        float gradScale = 1f / 4f;
+
+        float[] logits = new float[totalLogits];
+        for (int i = 0; i < totalLogits; i++) {
+            logits[i] = (i % 19) * 0.13f - 0.9f;
+        }
+        int[] candidateIds = new int[totalCandidates];
+        for (int row = 0; row < rows; row++) {
+            int base = row * candidates;
+            if (row == rows - 1) {
+                for (int j = 0; j < candidates; j++) {
+                    candidateIds[base + j] = -1;
+                }
+                continue;
+            }
+            candidateIds[base] = (row * 5 + 3) % vocab;
+            for (int j = 1; j < candidates; j++) {
+                candidateIds[base + j] = (row * 7 + j * 3 + 1) % vocab;
+                if (candidateIds[base + j] == candidateIds[base]) {
+                    candidateIds[base + j] = (candidateIds[base + j] + 1) % vocab;
+                }
+            }
+        }
+
+        float[] refGrad = new float[totalCandidates];
+        float refLoss = referenceSampledCeLoss(logits, candidateIds, rows, vocab, candidates, gradScale, refGrad);
+
+        try (GpuFloatBuffer logitsGpu = GpuFloatBuffer.allocate(totalLogits);
+                GpuIntBuffer idsGpu = GpuIntBuffer.allocate(totalCandidates);
+                GpuFloatBuffer candLogitsGpu = GpuFloatBuffer.allocate(totalCandidates);
+                GpuFloatBuffer candGradGpu = GpuFloatBuffer.allocate(totalCandidates)) {
+            logitsGpu.copyFrom(logits, 0, totalLogits);
+            idsGpu.copyFrom(candidateIds, 0, totalCandidates);
+            candGradGpu.clear();
+            TensorOpsGPU.gatherLogitsByIdsGpuDevice(logitsGpu, idsGpu, candLogitsGpu, rows, vocab, candidates);
+            float loss = TensorOpsGPU.sampledCrossEntropyGradLossGpuDeviceFirstSlot(
+                    candLogitsGpu, idsGpu, candGradGpu, rows, candidates, gradScale);
+            assertEquals(refLoss, loss, 1e-4f);
+            float[] grad = new float[totalCandidates];
+            candGradGpu.copyTo(grad, 0, totalCandidates);
+            for (int i = 0; i < totalCandidates; i++) {
+                assertEquals(refGrad[i], grad[i], 2e-4f, "sampled grad[" + i + "]");
+            }
+        }
+    }
+
     private static float referenceCeLoss(Tensor logits, Tensor target) {
         int[] logitShape = logits.getShape();
         int batch = logitShape[0];
@@ -197,5 +255,51 @@ class CrossEntropyGpuTest {
             }
         }
         return count == 0 ? 0f : totalLoss / count;
+    }
+
+    private static float referenceSampledCeLoss(
+            float[] logits,
+            int[] candidateIds,
+            int rows,
+            int vocab,
+            int candidates,
+            float gradScale,
+            float[] gradOut) {
+        float totalLoss = 0f;
+        int valid = 0;
+        for (int row = 0; row < rows; row++) {
+            int base = row * candidates;
+            if (candidateIds[base] < 0) {
+                for (int j = 0; j < candidates; j++) {
+                    gradOut[base + j] = 0f;
+                }
+                continue;
+            }
+            float max = Float.NEGATIVE_INFINITY;
+            for (int j = 0; j < candidates; j++) {
+                int cid = candidateIds[base + j];
+                float v = cid >= 0 ? logits[row * vocab + cid] : Float.NEGATIVE_INFINITY;
+                max = Math.max(max, v);
+            }
+            float sumExp = 0f;
+            float[] exp = new float[candidates];
+            for (int j = 0; j < candidates; j++) {
+                int cid = candidateIds[base + j];
+                float e =
+                        cid >= 0
+                                ? (float) Math.exp(logits[row * vocab + cid] - max)
+                                : 0f;
+                exp[j] = e;
+                sumExp += e;
+            }
+            float targetProb = exp[0] / sumExp;
+            totalLoss -= (float) Math.log(targetProb);
+            valid++;
+            for (int j = 0; j < candidates; j++) {
+                float p = exp[j] / sumExp;
+                gradOut[base + j] = ((j == 0) ? (p - 1f) : p) * gradScale;
+            }
+        }
+        return valid == 0 ? 0f : totalLoss / valid;
     }
 }

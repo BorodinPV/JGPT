@@ -47,7 +47,11 @@ export JGPT_BLOCK_CACHE_POOL_MAX="${JGPT_BLOCK_CACHE_POOL_MAX:-2}"
 export JGPT_CE_GPU_MIN_ELEMENTS="${JGPT_CE_GPU_MIN_ELEMENTS:-0}"
 
 # Async CE (device): чтение loss после backward + synchronizeStream; с FP16 matmul совместимо.
+# Для JGPT_TRAIN_LOSS_MODE=sampled на первом этапе выключайте: JGPT_CE_ASYNC=0.
 export JGPT_CE_ASYNC="${JGPT_CE_ASYNC:-1}"
+export JGPT_TRAIN_LOSS_MODE="${JGPT_TRAIN_LOSS_MODE:-full}"
+export JGPT_SAMPLED_CE_CANDIDATES="${JGPT_SAMPLED_CE_CANDIDATES:-128}"
+export JGPT_SAMPLED_CE_NEGATIVE_MODE="${JGPT_SAMPLED_CE_NEGATIVE_MODE:-batch_shared_uniform}"
 
 export JGPT_CHECKPOINT_ASYNC="${JGPT_CHECKPOINT_ASYNC:-0}"
 

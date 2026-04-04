@@ -2024,6 +2024,89 @@ public final class TensorOpsGPU {
         return crossEntropySoftmaxGradLossGPUDeviceReadPendingFromHost();
     }
 
+    public static void gatherLogitsByIdsGpuDevice(
+            GpuFloatBuffer logits,
+            GpuIntBuffer candidateIds,
+            GpuFloatBuffer candidateLogits,
+            int rows,
+            int vocab,
+            int candidates) {
+        if (rows <= 0 || vocab <= 0 || candidates <= 0) {
+            throw new IllegalArgumentException("rows, vocab, candidates must be positive");
+        }
+        long logitNeed = (long) rows * vocab;
+        long candidateNeed = (long) rows * candidates;
+        requireMinFloats(requireGpu(logits, "logits"), logitNeed, "logits");
+        requireMinInts(requireGpuInt(candidateIds, "candidateIds"), candidateNeed, "candidateIds");
+        requireMinFloats(requireGpu(candidateLogits, "candidateLogits"), candidateNeed, "candidateLogits");
+        gatherLogitsByIdsGPUDevice(
+                logits.devicePointer(),
+                candidateIds.devicePointer(),
+                candidateLogits.devicePointer(),
+                rows,
+                vocab,
+                candidates);
+    }
+
+    public static float sampledCrossEntropyGradLossGpuDeviceFirstSlot(
+            GpuFloatBuffer candidateLogits,
+            GpuIntBuffer candidateIds,
+            GpuFloatBuffer candidateGrad,
+            int rows,
+            int candidates,
+            float gradScale) {
+        if (rows <= 0 || candidates <= 0) {
+            throw new IllegalArgumentException("rows and candidates must be positive");
+        }
+        long need = (long) rows * candidates;
+        requireMinFloats(requireGpu(candidateLogits, "candidateLogits"), need, "candidateLogits");
+        requireMinInts(requireGpuInt(candidateIds, "candidateIds"), need, "candidateIds");
+        requireMinFloats(requireGpu(candidateGrad, "candidateGrad"), need, "candidateGrad");
+        return sampledCrossEntropyGradLossGPUDeviceFirstSlot(
+                candidateLogits.devicePointer(),
+                candidateIds.devicePointer(),
+                candidateGrad.devicePointer(),
+                rows,
+                candidates,
+                gradScale);
+    }
+
+    public static void sampledLmHeadBackwardGpuDevice(
+            GpuIntBuffer candidateIds,
+            GpuFloatBuffer candidateGrad,
+            GpuFloatBuffer normedHidden,
+            GpuFloatBuffer lmHeadWeights,
+            GpuFloatBuffer dHidden,
+            GpuFloatBuffer dLmHead,
+            int rows,
+            int dModel,
+            int vocab,
+            int candidates) {
+        if (rows <= 0 || dModel <= 0 || vocab <= 0 || candidates <= 0) {
+            throw new IllegalArgumentException("rows, dModel, vocab, candidates must be positive");
+        }
+        long candNeed = (long) rows * candidates;
+        long hiddenNeed = (long) rows * dModel;
+        long weightNeed = (long) dModel * vocab;
+        requireMinInts(requireGpuInt(candidateIds, "candidateIds"), candNeed, "candidateIds");
+        requireMinFloats(requireGpu(candidateGrad, "candidateGrad"), candNeed, "candidateGrad");
+        requireMinFloats(requireGpu(normedHidden, "normedHidden"), hiddenNeed, "normedHidden");
+        requireMinFloats(requireGpu(lmHeadWeights, "lmHeadWeights"), weightNeed, "lmHeadWeights");
+        requireMinFloats(requireGpu(dHidden, "dHidden"), hiddenNeed, "dHidden");
+        requireMinFloats(requireGpu(dLmHead, "dLmHead"), weightNeed, "dLmHead");
+        sampledLmHeadBackwardGPUDevice(
+                candidateIds.devicePointer(),
+                candidateGrad.devicePointer(),
+                normedHidden.devicePointer(),
+                lmHeadWeights.devicePointer(),
+                dHidden.devicePointer(),
+                dLmHead.devicePointer(),
+                rows,
+                dModel,
+                vocab,
+                candidates);
+    }
+
     public static void rmsNormMatmulLmHeadGpuDevice(
             GpuFloatBuffer x,
             GpuFloatBuffer gamma,
@@ -2469,4 +2552,22 @@ public final class TensorOpsGPU {
         }
         nativeConvertHalfDeviceToFloatDevice(srcHalfDevicePtr, dstFloatDevicePtr, numFloats);
     }
+
+    private static native void gatherLogitsByIdsGPUDevice(
+            long dLogits, long dCandidateIds, long dCandidateLogits, int rows, int vocab, int candidates);
+
+    private static native float sampledCrossEntropyGradLossGPUDeviceFirstSlot(
+            long dCandidateLogits, long dCandidateIds, long dCandidateGrad, int rows, int candidates, float gradScale);
+
+    private static native void sampledLmHeadBackwardGPUDevice(
+            long dCandidateIds,
+            long dCandidateGrad,
+            long dNormedHidden,
+            long dLmHeadWeights,
+            long dHidden,
+            long dLmHeadGrad,
+            int rows,
+            int dModel,
+            int vocab,
+            int candidates);
 }

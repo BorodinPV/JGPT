@@ -1,6 +1,7 @@
 package com.veles.llm.jgpt.model;
 
 import com.veles.llm.jgpt.GpuFloatBuffer;
+import com.veles.llm.jgpt.GpuIntBuffer;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
 import com.veles.llm.jgpt.cuda.GpuTensor;
@@ -268,6 +269,9 @@ public final class GPTModel {
     private GpuFloatBuffer xBeforeFinalNormGpu;
     private GpuFloatBuffer lastLogitsGpu;
     private GpuFloatBuffer lastLogitsGradGpu;
+    private GpuIntBuffer lastSampledCandidateIdsGpu;
+    private GpuFloatBuffer lastSampledCandidateGradGpu;
+    private int lastSampledCandidateCount;
 
     /** Ping-pong ∂L/∂x между decoder-слоями на VRAM при {@link #deviceDecoderBackward}. */
     private GpuFloatBuffer decoderBwdGradPing;
@@ -1480,6 +1484,26 @@ public final class GPTModel {
         return lastLogitsGradGpu;
     }
 
+    public void setSampledTrainLossGrad(
+            GpuIntBuffer candidateIds, GpuFloatBuffer candidateGrad, int candidateCount) {
+        lastSampledCandidateIdsGpu = candidateIds;
+        lastSampledCandidateGradGpu = candidateGrad;
+        lastSampledCandidateCount = candidateCount;
+        lastLogitsGradGpu = null;
+    }
+
+    public void clearSampledTrainLossGrad() {
+        lastSampledCandidateIdsGpu = null;
+        lastSampledCandidateGradGpu = null;
+        lastSampledCandidateCount = 0;
+    }
+
+    public boolean hasSampledTrainLossGrad() {
+        return lastSampledCandidateIdsGpu != null
+                && lastSampledCandidateGradGpu != null
+                && lastSampledCandidateCount > 0;
+    }
+
     /**
      * Prefill с KV-cache (batch=1): заполняет кэш K/V после RoPE по всем слоям.
      *
@@ -1690,7 +1714,9 @@ public final class GPTModel {
                     "lastHidden or xBeforeFinalNorm is null — run forward(input, true) in the same step before backward");
         }
         boolean hasLogitsGrad =
-                logits.hasGrad() || (lastLogitsGradGpu != null && !lastLogitsGradGpu.isClosed());
+                logits.hasGrad()
+                        || (lastLogitsGradGpu != null && !lastLogitsGradGpu.isClosed())
+                        || hasSampledTrainLossGrad();
         if (!hasLogitsGrad) {
             throw new IllegalStateException("logits must have grad buffer (zeroGrad + CE grad)");
         }
@@ -1762,6 +1788,46 @@ public final class GPTModel {
         int flat = rows * dModel;
         int logitsFlat = rows * vocabSize;
 
+        if (hasSampledTrainLossGrad()) {
+            GpuFloatBuffer dNormedHidden = lastHiddenGpu;
+            GpuFloatBuffer dXBeforeNorm = xBeforeFinalNormGpu;
+            GpuFloatBuffer tmpNormedHidden = null;
+            GpuFloatBuffer tmpXBeforeNorm = null;
+            try {
+                if (dNormedHidden == null || dNormedHidden.isClosed()) {
+                    tmpNormedHidden = GpuFloatBuffer.allocate(flat);
+                    tmpNormedHidden.copyFrom(lastHidden.internalBuffer(), 0, flat);
+                    dNormedHidden = tmpNormedHidden;
+                }
+                if (dXBeforeNorm == null || dXBeforeNorm.isClosed()) {
+                    tmpXBeforeNorm = GpuFloatBuffer.allocate(flat);
+                    tmpXBeforeNorm.copyFrom(xBeforeFinalNorm.internalBuffer(), 0, flat);
+                    dXBeforeNorm = tmpXBeforeNorm;
+                }
+                try (GpuFloatBuffer dGradBeforeNorm =
+                        backwardFromSampledDeviceLogits(
+                                lastSampledCandidateIdsGpu,
+                                lastSampledCandidateGradGpu,
+                                dNormedHidden,
+                                dXBeforeNorm,
+                                rows,
+                                lastSampledCandidateCount,
+                                zeroParamGrads)) {
+                    if (!deviceDecoderBackward || gpuDecoderLayer == null || blockCachesDevice == null) {
+                        throw new IllegalStateException(
+                                "device logits backward requires deviceDecoderBackward, gpuDecoderLayer and "
+                                        + "BlockActivationCacheDevice from forward(training=true); check TrainingConfig / LLMConfig.");
+                    }
+                    backwardDecoderLayersDevice(dGradBeforeNorm, batch, seqLen, zeroParamGrads);
+                }
+            } finally {
+                closeGpuBuffer(tmpNormedHidden);
+                closeGpuBuffer(tmpXBeforeNorm);
+                clearSampledTrainLossGrad();
+            }
+            return;
+        }
+
         GpuFloatBuffer dLogitsGrad = lastLogitsGradGpu;
         GpuFloatBuffer dNormedHidden = lastHiddenGpu;
         GpuFloatBuffer dXBeforeNorm = xBeforeFinalNormGpu;
@@ -1799,6 +1865,57 @@ public final class GPTModel {
             closeGpuBuffer(tmpNormedHidden);
             closeGpuBuffer(tmpXBeforeNorm);
         }
+    }
+
+    public GpuFloatBuffer backwardFromSampledDeviceLogits(
+            GpuIntBuffer candidateIds,
+            GpuFloatBuffer candidateGrad,
+            GpuFloatBuffer dNormedHidden,
+            GpuFloatBuffer dXBeforeNorm,
+            int rows,
+            int candidateCount,
+            boolean zeroGpuGrads) {
+        if (!gpuResident || gpuResidentHead == null) {
+            throw new IllegalStateException("backwardFromSampledDeviceLogits requires gpuResident=true");
+        }
+        if (candidateIds == null || candidateGrad == null || candidateCount <= 0) {
+            throw new IllegalArgumentException("sampled logits backward requires candidate ids/grad");
+        }
+        float eps = TensorOpsGPU.rmsNormEps();
+        GpuFloatBuffer lmHeadBuf = gpuResidentHead.lmHeadGpu().dataBuffer();
+        GpuFloatBuffer gammaBuf = gpuResidentHead.layerNormGammaGpu().dataBuffer();
+
+        GpuTensor lmHeadGpu = gpuResidentHead.lmHeadGpu();
+        if (!lmHeadGpu.hasGradBuffer() || zeroGpuGrads) {
+            lmHeadGpu.zeroGrad();
+        }
+        GpuFloatBuffer dHidden = GpuFloatBuffer.allocate((long) rows * dModel);
+        TensorOpsGPU.sampledLmHeadBackwardGpuDevice(
+                candidateIds,
+                candidateGrad,
+                dNormedHidden,
+                lmHeadBuf,
+                dHidden,
+                lmHeadGpu.gradBuffer(),
+                rows,
+                dModel,
+                vocabSize,
+                candidateCount);
+
+        GpuTensor gammaGpu = gpuResidentHead.layerNormGammaGpu();
+        if (!gammaGpu.hasGradBuffer() || zeroGpuGrads) {
+            gammaGpu.zeroGrad();
+        }
+        GpuFloatBuffer dGradBeforeNorm = GpuFloatBuffer.allocate((long) rows * dModel);
+        GpuFloatBuffer dGGamma = GpuFloatBuffer.allocate(dModel);
+        dGradBeforeNorm.clear();
+        dGGamma.clear();
+        TensorOpsGPU.rmsNormBackwardGpuDevice(
+                dHidden, dXBeforeNorm, gammaBuf, eps, dGradBeforeNorm, dGGamma, rows, dModel);
+        TensorOpsGPU.accumulateAddGpuDevice(gammaGpu.gradBuffer(), dGGamma, layerNormFinal.size());
+        dGGamma.close();
+        dHidden.close();
+        return dGradBeforeNorm;
     }
 
     private void backwardDecoderLayersHost(Tensor gradBeforeNorm, int batch, int seqLen, boolean zeroParamGrads) {

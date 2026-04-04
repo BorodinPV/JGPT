@@ -95,7 +95,16 @@ public final class TrainingConfig {
      */
     public final boolean mergeFirstGpuResidentTrain;
 
-    /** Полная конфигурация (ранний останов + GPU-флаги). */
+    /** Train-only loss: full-vocab CE или sampled candidate loss. Eval всегда считает full-vocab CE. */
+    public final TrainLossMode trainLossMode;
+
+    /** Число кандидатов на строку в sampled train loss (target + negatives), используется только при {@link #trainLossMode}. */
+    public final int sampledCeCandidates;
+
+    /** Режим выбора negative candidates для sampled train loss. */
+    public final SampledNegativeMode sampledCeNegativeMode;
+
+    /** Полная конфигурация с train-loss режимом, ранним остановом и GPU-флагами. */
     public TrainingConfig(
             int vocabSize,
             int maxSeqLen,
@@ -125,7 +134,10 @@ public final class TrainingConfig {
             boolean fullGpuTrainStep,
             boolean deviceLogitsTrainStep,
             boolean deviceDecoderBackward,
-            boolean mergeFirstGpuResidentTrain) {
+            boolean mergeFirstGpuResidentTrain,
+            TrainLossMode trainLossMode,
+            int sampledCeCandidates,
+            SampledNegativeMode sampledCeNegativeMode) {
         this.vocabSize = vocabSize;
         this.maxSeqLen = maxSeqLen;
         this.dModel = dModel;
@@ -164,6 +176,78 @@ public final class TrainingConfig {
             this.deviceLogitsTrainStep = deviceLogitsTrainStep && this.fullGpuTrainStep;
             this.deviceDecoderBackward = deviceDecoderBackward && this.deviceLogitsTrainStep;
         }
+        this.trainLossMode = trainLossMode != null ? trainLossMode : TrainLossMode.FULL;
+        this.sampledCeCandidates = Math.max(2, sampledCeCandidates);
+        this.sampledCeNegativeMode =
+                sampledCeNegativeMode != null
+                        ? sampledCeNegativeMode
+                        : SampledNegativeMode.BATCH_SHARED_UNIFORM;
+    }
+
+    /** Полная конфигурация (ранний останов + GPU-флаги). */
+    public TrainingConfig(
+            int vocabSize,
+            int maxSeqLen,
+            int dModel,
+            int numHeads,
+            int numLayers,
+            int dIntermediate,
+            int batchSize,
+            int accumulationSteps,
+            int epochs,
+            float learningRate,
+            float warmupRatio,
+            float weightDecay,
+            float maxGradNorm,
+            int saveEverySteps,
+            int evalEverySteps,
+            LearningRateSchedule lrSchedule,
+            float minLrRatio,
+            String checkpointDir,
+            int logEverySteps,
+            int interactiveSampleEverySteps,
+            int earlyStopEvalPatience,
+            boolean earlyStopTrainDownEvalUp,
+            float earlyStopMinGradNorm,
+            int earlyStopGradNormPatience,
+            boolean useGpuResident,
+            boolean fullGpuTrainStep,
+            boolean deviceLogitsTrainStep,
+            boolean deviceDecoderBackward,
+            boolean mergeFirstGpuResidentTrain) {
+        this(
+                vocabSize,
+                maxSeqLen,
+                dModel,
+                numHeads,
+                numLayers,
+                dIntermediate,
+                batchSize,
+                accumulationSteps,
+                epochs,
+                learningRate,
+                warmupRatio,
+                weightDecay,
+                maxGradNorm,
+                saveEverySteps,
+                evalEverySteps,
+                lrSchedule,
+                minLrRatio,
+                checkpointDir,
+                logEverySteps,
+                interactiveSampleEverySteps,
+                earlyStopEvalPatience,
+                earlyStopTrainDownEvalUp,
+                earlyStopMinGradNorm,
+                earlyStopGradNormPatience,
+                useGpuResident,
+                fullGpuTrainStep,
+                deviceLogitsTrainStep,
+                deviceDecoderBackward,
+                mergeFirstGpuResidentTrain,
+                TrainLossMode.FULL,
+                128,
+                SampledNegativeMode.BATCH_SHARED_UNIFORM);
     }
 
     /** Конструктор без GPU-флагов (обратная совместимость с ранним остановом). */
@@ -222,7 +306,10 @@ public final class TrainingConfig {
                 false,
                 false,
                 false,
-                false);
+                false,
+                TrainLossMode.FULL,
+                128,
+                SampledNegativeMode.BATCH_SHARED_UNIFORM);
     }
 
     /** Без раннего останова и GPU-флагов (обратная совместимость). */
@@ -323,10 +410,14 @@ public final class TrainingConfig {
                 false);
     }
 
+    public boolean usesSampledTrainLoss() {
+        return trainLossMode.usesSampledCandidates();
+    }
+
     @Override
     public String toString() {
         return String.format(
-                "TrainingConfig{vocab=%d, seq=%d, d_model=%d, heads=%d, layers=%d, batch=%d, accum=%d, epochs=%d, lr=%.4f, lr_sched=%s, min_lr_r=%.4f, log_every=%d, interactive_every=%d, early_stop_eval_p=%d, early_stop_overfit=%s, early_stop_grad_min=%s, early_stop_grad_p=%d, gpu_resident=%s, full_gpu_step=%s, device_logits=%s, device_decoder_bwd=%s, merge_first_gpu=%s}",
+                "TrainingConfig{vocab=%d, seq=%d, d_model=%d, heads=%d, layers=%d, batch=%d, accum=%d, epochs=%d, lr=%.4f, lr_sched=%s, min_lr_r=%.4f, log_every=%d, interactive_every=%d, early_stop_eval_p=%d, early_stop_overfit=%s, early_stop_grad_min=%s, early_stop_grad_p=%d, gpu_resident=%s, full_gpu_step=%s, device_logits=%s, device_decoder_bwd=%s, merge_first_gpu=%s, train_loss=%s, sampled_candidates=%d, sampled_negative_mode=%s}",
                 vocabSize,
                 maxSeqLen,
                 dModel,
@@ -348,6 +439,9 @@ public final class TrainingConfig {
                 fullGpuTrainStep,
                 deviceLogitsTrainStep,
                 deviceDecoderBackward,
-                mergeFirstGpuResidentTrain);
+                mergeFirstGpuResidentTrain,
+                trainLossMode,
+                sampledCeCandidates,
+                sampledCeNegativeMode);
     }
 }

@@ -125,6 +125,13 @@ class JgptTrainingEnvCatalogTest {
         LLMConfig.effectiveFullGpuTrainStepFromEnv();
         LLMConfig.deviceLogitsTrainStepFromEnv();
         LLMConfig.deviceDecoderBackwardFromEnv();
+        LLMConfig.trainLossModeFromEnvOrProp();
+        LLMConfig.sampledCeCandidatesFromEnv();
+        try {
+            LLMConfig.sampledCeNegativeModeFromEnvOrProp();
+        } catch (IllegalArgumentException e) {
+            assertTrue(e.getMessage().contains("sampled CE negative mode"), e.getMessage());
+        }
         LLMConfig.gpuE2eTrainFromEnv();
         LLMConfig.decoderGpuPipelineFromEnvOrProp();
         int vs = 100;

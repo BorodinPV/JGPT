@@ -202,6 +202,21 @@ public final class LLMTrainer {
             ceTargetsDevice = null;
             ceTargetsCapRows = 0;
         }
+        if (sampledCandidateIdsDevice != null) {
+            sampledCandidateIdsDevice.close();
+            sampledCandidateIdsDevice = null;
+            sampledCandidateIdsCapElems = 0;
+        }
+        if (sampledCandidateLogitsDevice != null) {
+            sampledCandidateLogitsDevice.close();
+            sampledCandidateLogitsDevice = null;
+        }
+        if (sampledCandidateGradDevice != null) {
+            sampledCandidateGradDevice.close();
+            sampledCandidateGradDevice = null;
+            sampledCandidateFloatCapElems = 0;
+        }
+        model.clearSampledTrainLossGrad();
         model.closeGpuResidentWeights();
         if (TensorOpsGPU.isGpuAvailable()) {
             TensorOpsGPU.synchronizeStream();
@@ -257,6 +272,13 @@ public final class LLMTrainer {
     private GpuIntBuffer ceTargetsDevice;
     private int ceTargetsCapRows;
     private int[] ceHostTargetScratch;
+    private GpuIntBuffer sampledCandidateIdsDevice;
+    private int sampledCandidateIdsCapElems;
+    private GpuFloatBuffer sampledCandidateLogitsDevice;
+    private GpuFloatBuffer sampledCandidateGradDevice;
+    private int sampledCandidateFloatCapElems;
+    private int[] sampledCandidateIdsHostScratch;
+    private int[] sampledSharedNegativeScratch;
 
     /** Скрач ∂logits для fused CE в {@link #evaluate()} (градиент не используется, {@code gradScale=0}). */
     private float[] evalCeGradScratch;
@@ -370,6 +392,26 @@ public final class LLMTrainer {
             throw new IllegalArgumentException(
                     "mergeFirstGpuResidentTrain requires canFullGpuTrain (decoder pipeline)");
         }
+        if (config.usesSampledTrainLoss()) {
+            if (!config.fullGpuTrainStep || !config.deviceLogitsTrainStep || !config.deviceDecoderBackward) {
+                throw new IllegalArgumentException(
+                        "sampled train loss requires unified full GPU path "
+                                + "(fullGpuTrainStep + deviceLogitsTrainStep + deviceDecoderBackward)");
+            }
+            if (config.sampledCeNegativeMode != SampledNegativeMode.BATCH_SHARED_UNIFORM) {
+                throw new IllegalArgumentException(
+                        "sampled train loss currently supports only BATCH_SHARED_UNIFORM negatives");
+            }
+            if (ceAsyncDevice) {
+                throw new IllegalArgumentException(
+                        "sampled train loss does not support JGPT_CE_ASYNC yet; disable async CE for sampled mode");
+            }
+            log.info(
+                    "{} train-only sampled CE: candidates={} mode={} (eval остаётся full-vocab)",
+                    LogFmt.badge("LOSS"),
+                    config.sampledCeCandidates,
+                    config.sampledCeNegativeMode);
+        }
         if (config.deviceLogitsTrainStep) {
             model.setDeviceLogitsEnabled(true);
         }
@@ -437,8 +479,9 @@ public final class LLMTrainer {
                 envRawOrDash("JGPT_GENERATE_GPU_KV"));
         log.info(
                 "  пресет/env: E2E={} резидент (эфф.)={} резидент (env)={} pipeline декодера={} полный GPU шаг={} "
-                        + "логиты GPU={} decoder bwd GPU={} размер батча (ovr)={} кэш FP16={} FP16 dyn старт={} "
-                        + "FP16 dyn интервал={} FP16 dyn макс={} FP16 aux soften scale={} CUDA_LIB={}",
+                        + "логиты GPU={} decoder bwd GPU={} train loss={} sampled candidates={} sampled negatives={} "
+                        + "размер батча (ovr)={} кэш FP16={} FP16 dyn старт={} FP16 dyn интервал={} FP16 dyn макс={} "
+                        + "FP16 aux soften scale={} CUDA_LIB={}",
                 LLMConfig.gpuE2eTrainFromEnv(),
                 LLMConfig.effectiveGpuResidentTraining(),
                 envRawOrDash("JGPT_TRAIN_GPU_RESIDENT"),
@@ -446,6 +489,9 @@ public final class LLMTrainer {
                 LLMConfig.fullGpuTrainStepFromEnv(),
                 LLMConfig.deviceLogitsTrainStepFromEnv(),
                 LLMConfig.deviceDecoderBackwardFromEnv(),
+                config.trainLossMode,
+                config.usesSampledTrainLoss() ? Integer.toString(config.sampledCeCandidates) : "-",
+                config.usesSampledTrainLoss() ? config.sampledCeNegativeMode : "-",
                 envRawOrDash("JGPT_BATCH_SIZE"),
                 envRawOrDash("JGPT_ACTIVATION_CACHE_FP16"),
                 envRawOrDash("JGPT_FP16_DYNAMIC_INITIAL"),
@@ -691,7 +737,7 @@ public final class LLMTrainer {
                 long t1 = profile ? System.nanoTime() : 0L;
                 float ceScale = 1f / (float) config.accumulationSteps;
                 float loss;
-                if (ceAsyncDevice && config.deviceLogitsTrainStep && model.hasDeviceLogitsBuffers()) {
+                if (ceAsyncDevice && !config.usesSampledTrainLoss() && config.deviceLogitsTrainStep && model.hasDeviceLogitsBuffers()) {
                     applyCrossEntropyLossAndGradDeviceAsync(logits, batch.target, ceScale);
                     /* Async CE: kernel пишет ∂logits на device и D2H скаляра loss — до backward нужен барьер. */
                     TensorOpsGPU.synchronizeStream();
@@ -707,7 +753,7 @@ public final class LLMTrainer {
                         accBwdNs += t4 - t3;
                     }
                 } else {
-                    loss = applyCrossEntropyLossAndGrad(logits, batch.target, ceScale);
+                    loss = applyTrainLossAndGrad(logits, batch.target, ceScale);
                     long t3 = profile ? System.nanoTime() : 0L;
                     model.backward(logits, microInAccum == 1);
                     long t4 = profile ? System.nanoTime() : 0L;
@@ -812,11 +858,12 @@ public final class LLMTrainer {
                     if (timings != null) {
                         TrainingTimings.WindowLog timing = timings.formatForLogAndReset();
                         log.info(
-                                "{} эпоха {}/{}  шаг {}  train_loss={}  lr={}  (прогресс шагов {}/{}){}",
+                                "{} эпоха {}/{}  шаг {}  {}={}  lr={}  (прогресс шагов {}/{}){}",
                                 LogFmt.badge("STEP"),
                                 ep,
                                 config.epochs,
                                 globalStep,
+                                config.usesSampledTrainLoss() ? "sampled_train_loss" : "train_loss",
                                 String.format("%.4f", avgMicroLoss),
                                 String.format("%.2e", lr),
                                 globalStep,
@@ -827,11 +874,12 @@ public final class LLMTrainer {
                         }
                     } else {
                         log.info(
-                                "{} эпоха {}/{}  шаг {}  train_loss={}  lr={}  (прогресс шагов {}/{})",
+                                "{} эпоха {}/{}  шаг {}  {}={}  lr={}  (прогресс шагов {}/{})",
                                 LogFmt.badge("STEP"),
                                 ep,
                                 config.epochs,
                                 globalStep,
+                                config.usesSampledTrainLoss() ? "sampled_train_loss" : "train_loss",
                                 String.format("%.4f", avgMicroLoss),
                                 String.format("%.2e", lr),
                                 globalStep,
@@ -1351,6 +1399,7 @@ public final class LLMTrainer {
                 p.zeroGrad();
             }
         }
+        model.clearSampledTrainLossGrad();
         if (logits.hasGrad()) {
             logits.zeroGrad();
         }
@@ -1368,10 +1417,22 @@ public final class LLMTrainer {
     }
 
     /**
+     * CE loss + ∂L/∂logits: full-vocab CE или sampled train-only loss.
+     * Возвращаемое значение — средний loss по токенам внутри выбранного train path.
+     */
+    private float applyTrainLossAndGrad(Tensor logits, Tensor target, float gradScale) {
+        if (config.usesSampledTrainLoss()) {
+            return applySampledTrainLossAndGradDevice(logits, target, gradScale);
+        }
+        return applyCrossEntropyLossAndGrad(logits, target, gradScale);
+    }
+
+    /**
      * CE loss + ∂L/∂logits: fused softmax+CE на GPU (хостовые или device-логиты).
      * Возвращаемое значение — средний loss по токенам (единый контракт для логирования и overflow).
      */
     private float applyCrossEntropyLossAndGrad(Tensor logits, Tensor target, float gradScale) {
+        model.clearSampledTrainLossGrad();
         if (config.deviceLogitsTrainStep && model.hasDeviceLogitsBuffers()) {
             return applyCrossEntropyLossAndGradDevice(logits, target, gradScale);
         }
@@ -1434,7 +1495,7 @@ public final class LLMTrainer {
         return t;
     }
 
-    private void fillCeTargetsDeviceSanitized(Tensor target, int nrows, int vocabSize) {
+    private void fillCeTargetsHostSanitized(Tensor target, int nrows, int vocabSize) {
         if (ceHostTargetScratch == null || ceHostTargetScratch.length < nrows) {
             ceHostTargetScratch = new int[nrows];
         }
@@ -1486,10 +1547,15 @@ public final class LLMTrainer {
                             + "}");
             // #endregion
         }
+    }
+
+    private void fillCeTargetsDeviceSanitized(Tensor target, int nrows, int vocabSize) {
+        fillCeTargetsHostSanitized(target, nrows, vocabSize);
         ceTargetsDevice.copyFrom(ceHostTargetScratch, 0, nrows);
     }
 
     private float applyCrossEntropyLossAndGradDevice(Tensor logits, Tensor target, float gradScale) {
+        model.clearSampledTrainLossGrad();
         int[] logitShape = logits.getShape();
         int batch = logitShape[0];
         int seqLen = logitShape[1];
@@ -1525,6 +1591,7 @@ public final class LLMTrainer {
      * loss — {@link TensorOpsGPU#crossEntropySoftmaxGradLossGpuDeviceReadPendingFromHost()}.
      */
     private void applyCrossEntropyLossAndGradDeviceAsync(Tensor logits, Tensor target, float gradScale) {
+        model.clearSampledTrainLossGrad();
         int[] logitShape = logits.getShape();
         int batch = logitShape[0];
         int seqLen = logitShape[1];
@@ -1552,6 +1619,156 @@ public final class LLMTrainer {
                 vocabSize,
                 gradScaleOverTotal,
                 fp16Matmul);
+    }
+
+    private int effectiveSampledCandidateCount(int vocabSize) {
+        return Math.max(2, Math.min(config.sampledCeCandidates, vocabSize));
+    }
+
+    private static long mix64(long z) {
+        z = (z ^ (z >>> 33)) * 0xff51afd7ed558ccdL;
+        z = (z ^ (z >>> 33)) * 0xc4ceb9fe1a85ec53L;
+        return z ^ (z >>> 33);
+    }
+
+    private static int deterministicCandidateIndex(long key, int vocabSize) {
+        return (int) Long.remainderUnsigned(mix64(key), vocabSize);
+    }
+
+    private static boolean containsCandidate(int[] ids, int base, int used, int candidate) {
+        for (int i = 0; i < used; i++) {
+            if (ids[base + i] == candidate) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int nextDistinctCandidate(
+            int vocabSize, int excludedTarget, int[] ids, int base, int used, long key) {
+        if (vocabSize <= 1) {
+            return -1;
+        }
+        int candidate = deterministicCandidateIndex(key, vocabSize);
+        for (int tries = 0; tries < vocabSize; tries++) {
+            if (candidate != excludedTarget && !containsCandidate(ids, base, used, candidate)) {
+                return candidate;
+            }
+            candidate++;
+            if (candidate >= vocabSize) {
+                candidate = 0;
+            }
+        }
+        return -1;
+    }
+
+    private void ensureSampledCandidateDeviceBuffers(int totalCandidateElems) {
+        if (sampledCandidateIdsDevice == null || sampledCandidateIdsCapElems < totalCandidateElems) {
+            if (sampledCandidateIdsDevice != null) {
+                sampledCandidateIdsDevice.close();
+            }
+            sampledCandidateIdsDevice = GpuIntBuffer.allocate(totalCandidateElems);
+            sampledCandidateIdsCapElems = totalCandidateElems;
+        }
+        if (sampledCandidateLogitsDevice == null || sampledCandidateFloatCapElems < totalCandidateElems) {
+            if (sampledCandidateLogitsDevice != null) {
+                sampledCandidateLogitsDevice.close();
+            }
+            if (sampledCandidateGradDevice != null) {
+                sampledCandidateGradDevice.close();
+            }
+            sampledCandidateLogitsDevice = GpuFloatBuffer.allocate(totalCandidateElems);
+            sampledCandidateGradDevice = GpuFloatBuffer.allocate(totalCandidateElems);
+            sampledCandidateFloatCapElems = totalCandidateElems;
+        }
+    }
+
+    private int prepareSampledCandidateIds(Tensor target, int rows, int vocabSize, int candidates) {
+        fillCeTargetsHostSanitized(target, rows, vocabSize);
+        int total = rows * candidates;
+        if (sampledCandidateIdsHostScratch == null || sampledCandidateIdsHostScratch.length < total) {
+            sampledCandidateIdsHostScratch = new int[total];
+        }
+        int negativeCount = candidates - 1;
+        if (sampledSharedNegativeScratch == null || sampledSharedNegativeScratch.length < negativeCount) {
+            sampledSharedNegativeScratch = new int[negativeCount];
+        }
+        long sharedSeed =
+                mix64((((long) globalStep + 1L) << 32) ^ ((long) rows << 8) ^ ((long) vocabSize << 1) ^ candidates);
+        for (int j = 0; j < negativeCount; j++) {
+            sampledSharedNegativeScratch[j] =
+                    nextDistinctCandidate(
+                            vocabSize,
+                            -1,
+                            sampledSharedNegativeScratch,
+                            0,
+                            j,
+                            sharedSeed ^ ((long) (j + 1) * 0x9E3779B97F4A7C15L));
+        }
+        for (int row = 0; row < rows; row++) {
+            int base = row * candidates;
+            int targetId = ceHostTargetScratch[row];
+            sampledCandidateIdsHostScratch[base] = targetId;
+            if (targetId < 0) {
+                for (int j = 1; j < candidates; j++) {
+                    sampledCandidateIdsHostScratch[base + j] = -1;
+                }
+                continue;
+            }
+            int used = 1;
+            for (int j = 0; j < negativeCount; j++) {
+                int neg = sampledSharedNegativeScratch[j];
+                if (neg == targetId || containsCandidate(sampledCandidateIdsHostScratch, base, used, neg)) {
+                    neg =
+                            nextDistinctCandidate(
+                                    vocabSize,
+                                    targetId,
+                                    sampledCandidateIdsHostScratch,
+                                    base,
+                                    used,
+                                    sharedSeed
+                                            ^ ((long) (row + 1) * 0xD1B54A32D192ED03L)
+                                            ^ ((long) (j + 1) * 0x94D049BB133111EBL));
+                }
+                sampledCandidateIdsHostScratch[base + used] = neg;
+                used++;
+            }
+        }
+        ensureSampledCandidateDeviceBuffers(total);
+        sampledCandidateIdsDevice.copyFrom(sampledCandidateIdsHostScratch, 0, total);
+        return candidates;
+    }
+
+    private float applySampledTrainLossAndGradDevice(Tensor logits, Tensor target, float gradScale) {
+        if (!config.deviceLogitsTrainStep || !model.hasDeviceLogitsBuffers()) {
+            throw new IllegalStateException("sampled train loss requires device logits buffers");
+        }
+        int[] logitShape = logits.getShape();
+        int batch = logitShape[0];
+        int seqLen = logitShape[1];
+        int vocabSize = logitShape[2];
+        int rows = batch * seqLen;
+        int candidates = prepareSampledCandidateIds(target, rows, vocabSize, effectiveSampledCandidateCount(vocabSize));
+        int totalCandidateElems = rows * candidates;
+        sampledCandidateGradDevice.clear();
+        model.clearSampledTrainLossGrad();
+        TensorOpsGPU.gatherLogitsByIdsGpuDevice(
+                model.deviceLogitsBuffer(),
+                sampledCandidateIdsDevice,
+                sampledCandidateLogitsDevice,
+                rows,
+                vocabSize,
+                candidates);
+        float loss =
+                TensorOpsGPU.sampledCrossEntropyGradLossGpuDeviceFirstSlot(
+                        sampledCandidateLogitsDevice,
+                        sampledCandidateIdsDevice,
+                        sampledCandidateGradDevice,
+                        rows,
+                        candidates,
+                        ceFusedGradScaleOverTotal(rows, gradScale));
+        model.setSampledTrainLossGrad(sampledCandidateIdsDevice, sampledCandidateGradDevice, candidates);
+        return loss;
     }
 
     private float evaluateCrossEntropyLoss(Tensor logits, Tensor target) {
@@ -1946,14 +2163,14 @@ public final class LLMTrainer {
         Tensor logits = model.forward(batch.input, true, config.useGpuResident);
         float ceScale = 1f / (float) config.accumulationSteps;
         float loss;
-        if (ceAsyncDevice && config.deviceLogitsTrainStep && model.hasDeviceLogitsBuffers()) {
+        if (ceAsyncDevice && !config.usesSampledTrainLoss() && config.deviceLogitsTrainStep && model.hasDeviceLogitsBuffers()) {
             applyCrossEntropyLossAndGradDeviceAsync(logits, batch.target, ceScale);
             TensorOpsGPU.synchronizeStream();
             model.backward(logits, zeroGrads);
             TensorOpsGPU.synchronizeStream();
             loss = TensorOpsGPU.crossEntropySoftmaxGradLossGpuDeviceReadPendingFromHost();
         } else {
-            loss = applyCrossEntropyLossAndGrad(logits, batch.target, ceScale);
+            loss = applyTrainLossAndGrad(logits, batch.target, ceScale);
             model.backward(logits, zeroGrads);
         }
         if (TensorOpsGPU.isGpuAvailable()) {

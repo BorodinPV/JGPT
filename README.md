@@ -83,6 +83,9 @@ mvn -q test
 - `JGPT_FUSED_LM_HEAD=1`
 - `JGPT_GENERATE_GPU_KV=1`
 - `JGPT_CHECKPOINT_ASYNC=0`
+- `JGPT_TRAIN_LOSS_MODE=full`
+- `JGPT_SAMPLED_CE_CANDIDATES=128`
+- `JGPT_SAMPLED_CE_NEGATIVE_MODE=batch_shared_uniform`
 
 При префиксе `e2e` скрипт дополнительно включает `JGPT_FULL_GPU_TRAIN=1`.
 
@@ -105,6 +108,13 @@ mvn -q test
 - `JGPT_DECODER_GPU_PIPELINE=1`
 - `JGPT_DEVICE_LOGITS_TRAIN=1`
 - `GPTModel.canFullGpuTrain() == true`
+
+Train-only sampled CE:
+
+- `JGPT_TRAIN_LOSS_MODE=sampled` включает candidate loss только в training loop.
+- Eval остаётся full-vocab CE, поэтому `loss` на eval сопоставим с прежними прогонами, а `sampled_train_loss` в train-логах служит только для мониторинга train-path.
+- Первая реализация поддерживается только на unified full-GPU path (`fullGpuTrainStep + deviceLogitsTrainStep + deviceDecoderBackward`).
+- Пока не поддерживается вместе с `JGPT_CE_ASYNC=1`.
 
 Что важно:
 
@@ -157,7 +167,7 @@ export JGPT_FP16_DYNAMIC_RECOVERY_AFTER_MIN_STREAK=256
 | GPU train path | `JGPT_TRAIN_GPU_RESIDENT`, `JGPT_GPU_E2E_TRAIN`, `JGPT_FULL_GPU_TRAIN`, `JGPT_DEVICE_LOGITS_TRAIN`, `JGPT_DEVICE_DECODER_BWD`, `JGPT_DECODER_GPU_PIPELINE`, `JGPT_DECODER_LAYER_CUDA_GRAPH`, `JGPT_FUSED_LM_HEAD`, `JGPT_FUSED_FFN_RMS_W1W3`, `JGPT_GENERATE_GPU_KV` |
 | FP16 | `JGPT_FP16_MATMUL`, `JGPT_FP16_DYNAMIC_*`, `JGPT_AMP_GROWTH_INTERVAL`, `JGPT_FP16_AUX_SOFTEN*` |
 | Batching / cache | `JGPT_BATCH_*`, `JGPT_BLOCK_CACHE_*`, `JGPT_ACTIVATION_CACHE_FP16` |
-| CE / perf / I/O | `JGPT_CE_ASYNC`, `JGPT_CE_GPU_MIN_ELEMENTS`, `JGPT_PROFILE`, `JGPT_PROFILE_STEPS`, `JGPT_TIMINGS`, `JGPT_TRAIN_PERF`, `JGPT_CHECKPOINT_ASYNC`, `JGPT_EXIT_AFTER_STEP`, `JGPT_MAX_SEQUENCES`, `JGPT_JAVA_MEM`, `JGPT_LOG_COLOR` |
+| CE / perf / I/O | `JGPT_CE_ASYNC`, `JGPT_CE_GPU_MIN_ELEMENTS`, `JGPT_TRAIN_LOSS_MODE`, `JGPT_SAMPLED_CE_CANDIDATES`, `JGPT_SAMPLED_CE_NEGATIVE_MODE`, `JGPT_PROFILE`, `JGPT_PROFILE_STEPS`, `JGPT_TIMINGS`, `JGPT_TRAIN_PERF`, `JGPT_CHECKPOINT_ASYNC`, `JGPT_EXIT_AFTER_STEP`, `JGPT_MAX_SEQUENCES`, `JGPT_JAVA_MEM`, `JGPT_LOG_COLOR` |
 | Test-only probes | `JGPT_BATCH_PROBE*`, `JGPT_PROBE_*` |
 
 Часть флагов дублируется через `-Djgpt.*` в `LLMConfig`, `TrainingConfig` и `LLMTrainer`.

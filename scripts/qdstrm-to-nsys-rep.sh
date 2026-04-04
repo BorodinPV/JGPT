@@ -31,7 +31,9 @@ fi
 QDIMP=""
 for c in \
   /usr/lib/nsight-systems/host-linux-x64/QdstrmImporter \
-  /usr/lib/x86_64-linux-gnu/nsight-systems/host-linux-x64/QdstrmImporter; do
+  /usr/lib/x86_64-linux-gnu/nsight-systems/host-linux-x64/QdstrmImporter \
+  /usr/lib/nsight-systems.BAK/host-linux-x64/QdstrmImporter \
+  /usr/local/lib/nsight-systems/host-linux-x64/QdstrmImporter; do
   if [[ -x "$c" ]]; then
     QDIMP="$c"
     break

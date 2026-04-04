@@ -26,7 +26,11 @@ if ! command -v nsys &>/dev/null; then
 fi
 
 NSIGHT_HOST=""
-for c in /usr/lib/nsight-systems/host-linux-x64 /usr/lib/x86_64-linux-gnu/nsight-systems/host-linux-x64; do
+for c in \
+  /usr/lib/nsight-systems/host-linux-x64 \
+  /usr/lib/x86_64-linux-gnu/nsight-systems/host-linux-x64 \
+  /usr/lib/nsight-systems.BAK/host-linux-x64 \
+  /usr/local/lib/nsight-systems/host-linux-x64; do
   if [[ -x "$c/QdstrmImporter" ]]; then
     NSIGHT_HOST="$c"
     break

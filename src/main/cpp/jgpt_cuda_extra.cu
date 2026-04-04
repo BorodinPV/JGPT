@@ -706,6 +706,48 @@ __global__ void rms_norm_fwd_kernel_fp16(const float* src, const float* gamma, f
     }
 }
 
+/**
+ * RMSNorm forward, block-per-row.
+ * Один блок kSoftmaxBlockDim нитей обрабатывает одну строку.
+ * При lastDim=256: ровно 1 нить на элемент, серийные циклы исчезают.
+ * Запуск: gridDim.x=outer, blockDim.x=kSoftmaxBlockDim, smem=kSoftmaxNumWarps*sizeof(float).
+ */
+__global__ void rms_norm_fwd_block_kernel(
+        const float* __restrict__ src, const float* __restrict__ gamma,
+        float* __restrict__ dst, int outer, int lastDim, float eps) {
+    extern __shared__ float smem[];
+    const int o = blockIdx.x;
+    if (o >= outer) return;
+    const int tid = threadIdx.x;
+
+    float sumSq = 0.f;
+    for (int j = tid; j < lastDim; j += kSoftmaxBlockDim)
+        sumSq += src[o * lastDim + j] * src[o * lastDim + j];
+    sumSq = blockReduceSum256(sumSq, smem);
+
+    float rms = sqrtf(sumSq / (float) lastDim + eps);
+    float invRms = (rms > 0.f && isfinite(rms)) ? (1.f / rms) : 0.f;
+
+    for (int j = tid; j < lastDim; j += kSoftmaxBlockDim)
+        dst[o * lastDim + j] = src[o * lastDim + j] * invRms * gamma[j];
+}
+
+static constexpr int kRmsNormFwdBlockThreshold = 64;
+
+static void launch_rms_norm_fwd(const float* src, const float* gamma, float* dst,
+        int outer, int lastDim, float eps) {
+    if (lastDim >= kRmsNormFwdBlockThreshold) {
+        size_t smem = kSoftmaxNumWarps * sizeof(float);
+        rms_norm_fwd_block_kernel<<<outer, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(
+                src, gamma, dst, outer, lastDim, eps);
+    } else {
+        int threads = jgpt_cuda_get_optimal_block_size();
+        int blocks = (outer + threads - 1) / threads;
+        rms_norm_fwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
+                src, gamma, dst, outer, lastDim, eps);
+    }
+}
+
 __device__ float gelu_tanh_dev(float x) {
     const float SQRT_2_PI = 0.7978845608f;
     const float COEF = 0.044715f;
@@ -1970,12 +2012,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormGPU(
     env->ReleaseFloatArrayElements(h_gamma, pg, JNI_ABORT);
 
     int threads = jgpt_cuda_get_optimal_block_size();
-    int blocks = (outer + threads - 1) / threads;
-    if (useFp16) {
-        rms_norm_fwd_kernel_fp16<<<blocks, threads, 0, kTensorCudaStream>>>(d_x, d_g, d_o, outer, lastDim, eps);
-    } else {
-        rms_norm_fwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_x, d_g, d_o, outer, lastDim, eps);
-    }
+    (void) threads;
+    launch_rms_norm_fwd(d_x, d_g, d_o, outer, lastDim, eps);
     jfloat* po = env->GetFloatArrayElements(h_out, nullptr);
     if (!po) {
         cudaFree(d_x);
@@ -2004,12 +2042,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormGPUDevice(
     const float* gamma = reinterpret_cast<const float*>(static_cast<uintptr_t>(dGamma));
     float* out = reinterpret_cast<float*>(static_cast<uintptr_t>(dOut));
     int threads = jgpt_cuda_get_optimal_block_size();
-    int blocks = (outer + threads - 1) / threads;
-    if (useFp16) {
-        rms_norm_fwd_kernel_fp16<<<blocks, threads, 0, kTensorCudaStream>>>(x, gamma, out, outer, lastDim, eps);
-    } else {
-        rms_norm_fwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(x, gamma, out, outer, lastDim, eps);
-    }
+    (void) threads;
+    launch_rms_norm_fwd(x, gamma, out, outer, lastDim, eps);
 }
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormMatmulLmHeadGPUDevice(
@@ -2038,12 +2072,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormMatmulLmHeadG
     const float* w = reinterpret_cast<const float*>(static_cast<uintptr_t>(dW));
     float* logits = reinterpret_cast<float*>(static_cast<uintptr_t>(dLogits));
     int threads = jgpt_cuda_get_optimal_block_size();
-    int blocks = (rows + threads - 1) / threads;
-    if (useFp16Rms == JNI_TRUE) {
-        rms_norm_fwd_kernel_fp16<<<blocks, threads, 0, kTensorCudaStream>>>(x, gamma, normOut, rows, dModel, eps);
-    } else {
-        rms_norm_fwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(x, gamma, normOut, rows, dModel, eps);
-    }
+    (void) threads;
+    launch_rms_norm_fwd(x, gamma, normOut, rows, dModel, eps);
     const float alpha = 1.0f;
     const float beta = 0.0f;
     cublasHandle_t handle = get_extra_cublas_handle();
@@ -2087,12 +2117,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormMatmulFfnW1W3
 
     jgpt_cuda_ensure_stream();
     int threads = jgpt_cuda_get_optimal_block_size();
-    int blocks = (rows + threads - 1) / threads;
-    if (useFp16Rms == JNI_TRUE) {
-        rms_norm_fwd_kernel_fp16<<<blocks, threads, 0, kTensorCudaStream>>>(x, gamma, normOut, rows, dModel, eps);
-    } else {
-        rms_norm_fwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(x, gamma, normOut, rows, dModel, eps);
-    }
+    (void) threads;
+    launch_rms_norm_fwd(x, gamma, normOut, rows, dModel, eps);
     if (jgpt_cuda_ffn_w1w3_strided_batched_device(normOut, w1, w3, h1, gate, rows, dModel, dInt) != 1) {
         fprintf(stderr, "rmsNormMatmulFfnW1W3GPUDevice: W1+W3 strided batched failed\n");
     }
@@ -3384,7 +3410,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     env->ReleaseFloatArrayElements(h_v, pv, JNI_ABORT);
 
     int threads = jgpt_cuda_get_optimal_block_size();
-    int blocksProb = (batch * seqLen * seqLen + threads - 1) / threads;
+    (void) threads;
     // go × V^T → dp: transB GEMM (нет явного транспонирования V)
     if (!batched_sgemm_row_major_transB(d_go, d_v, d_dp, batch, seqLen, dV, seqLen, 1.0f, 0.0f)) {
         return;
@@ -3405,16 +3431,16 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
         softmax_last_dim_bwd_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(d_dp, d_p, d_ds, nrows, seqLen);
     }
     CUDA_KERNEL_CHECK();
-    scale_inplace_kernel_extra<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_ds, batch * seqLen * seqLen, scale);
+    // scale перенесён как alpha в GEMMы gQ/gK — отдельный проход scale_inplace устранён
     // P^T × go → gV: transA GEMM
     if (!batched_sgemm_row_major_transA(d_p, d_go, d_gv, batch, seqLen, seqLen, dV, 1.0f, 0.0f)) {
         return;
     }
-    if (!batched_sgemm_row_major_extra(d_ds, d_k, d_gq, batch, seqLen, seqLen, dK, 1.0f, 0.0f)) {
+    if (!batched_sgemm_row_major_extra(d_ds, d_k, d_gq, batch, seqLen, seqLen, dK, scale, 0.0f)) {
         return;
     }
     // ds^T × Q → gK: transA GEMM
-    if (!batched_sgemm_row_major_transA(d_ds, d_q, d_gk, batch, seqLen, seqLen, dK, 1.0f, 0.0f)) {
+    if (!batched_sgemm_row_major_transA(d_ds, d_q, d_gk, batch, seqLen, seqLen, dK, scale, 0.0f)) {
         return;
     }
 
@@ -3461,7 +3487,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     }
 
     int threads = jgpt_cuda_get_optimal_block_size();
+    (void) threads;
     int blocksProb = (batch * seqLen * seqLen + threads - 1) / threads;
+    (void) blocksProb;
     // go × V^T → dp: transB GEMM
     if (!batched_sgemm_row_major_transB(go, v, d_dp, batch, seqLen, dVDim, seqLen, 1.0f, 0.0f)) {
         return;
@@ -3476,16 +3504,16 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
         softmax_last_dim_bwd_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(d_dp, p, d_ds, nrows, seqLen);
     }
     CUDA_KERNEL_CHECK();
-    scale_inplace_kernel_extra<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_ds, batch * seqLen * seqLen, scale);
+    // scale перенесён как alpha в GEMMы gQ/gK — отдельный проход scale_inplace устранён
     // P^T × go → gV: transA GEMM
     if (!batched_sgemm_row_major_transA(p, go, gv, batch, seqLen, seqLen, dVDim, 1.0f, 0.0f)) {
         return;
     }
-    if (!batched_sgemm_row_major_extra(d_ds, k, gq, batch, seqLen, seqLen, dKDim, 1.0f, 0.0f)) {
+    if (!batched_sgemm_row_major_extra(d_ds, k, gq, batch, seqLen, seqLen, dKDim, scale, 0.0f)) {
         return;
     }
     // ds^T × Q → gK: transA GEMM
-    if (!batched_sgemm_row_major_transA(d_ds, q, gk, batch, seqLen, seqLen, dKDim, 1.0f, 0.0f)) {
+    if (!batched_sgemm_row_major_transA(d_ds, q, gk, batch, seqLen, seqLen, dKDim, scale, 0.0f)) {
         return;
     }
 }

@@ -94,6 +94,21 @@ public final class LLMConfig {
                 20);
     }
 
+    public static LLMConfig smart50M() {
+        return new LLMConfig(
+                "JGPT-50M-Smart",
+                8000,      // vocab
+                1024,      // seq_len
+                384,       // ← d_model
+                24,        // ← numHeads (384/24 = 16 dim/head)
+                16,        // ← numLayers
+                1536,      // ← dIntermediate (4× d_model)
+                3,         // ← batch (из-за VRAM)
+                1,
+                0.001f,
+                20);
+    }
+
     /**
      * @deprecated Заменён на {@link #small16M()} (≈16M, контекст 512).
      */

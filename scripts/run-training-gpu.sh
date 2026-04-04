@@ -1,18 +1,28 @@
 #!/usr/bin/env bash
-# Окружение только для обучения (MultiBookTrain / TrainLLM → LLMTrainer).
+# Окружение для обучения (MultiBookTrain / TrainLLM → LLMTrainer).
 # Переменные зондов (JGPT_BATCH_PROBE*, JGPT_PROBE_*) здесь не задаются — в обучении не используются.
 #
 # В логе LLMTrainer.train(): «Сводка JGPT_* (обучение)».
 #
-# Запуск:
-#   ./scripts/train-e2e-gpu.sh   # cmake build + JGPT_CUDA_LIB + e2e (perf, cuda graph слоя, fused FFN W1W3)
-#   ./run-training.sh
-#   ./run-training.sh e2e          # +JGPT_FULL_GPU_TRAIN (префикс можно повторять или передать "e2e profile")
-#   ./run-training.sh single|train|profile [аргументы для exec.args]
-#   ./run-training.sh mvn -q compile exec:java -Dexec.mainClass=com.veles.llm.jgpt.app.TrainLLM
-# Переопределение значений: VAR=value ./run-training.sh ...
+# Рекомендуемые пресеты:
 #
-# Для юнит-тестов с пустым env используйте mvn без этого скрипта.
+#   # Полный GPU e2e с FP16 и замером производительности:
+#   ./scripts/train-e2e-gpu.sh
+#
+#   # Sampled CE (train-only; быстрее, eval остаётся full-vocab):
+#   JGPT_TRAIN_LOSS_MODE=sampled JGPT_CE_ASYNC=0 JGPT_SAMPLED_CE_CANDIDATES=64 \
+#     ./scripts/train-e2e-gpu.sh
+#
+#   # Без пересборки .so (e2e):
+#   ./scripts/run-training-gpu.sh e2e
+#   ./run-training.sh e2e
+#
+#   # Отдельные точки входа:
+#   ./run-training.sh single|train [аргументы exec.args]
+#   ./run-training.sh profile
+#
+# Переопределение любого флага: VAR=value ./run-training.sh ...
+# Для unit-тестов с пустым env используйте mvn без этого скрипта.
 
 set -euo pipefail
 
@@ -46,9 +56,14 @@ export JGPT_BLOCK_CACHE_POOL_MAX="${JGPT_BLOCK_CACHE_POOL_MAX:-2}"
 
 export JGPT_CE_GPU_MIN_ELEMENTS="${JGPT_CE_GPU_MIN_ELEMENTS:-0}"
 
-# Async CE (device): чтение loss после backward + synchronizeStream; с FP16 matmul совместимо.
-# Для JGPT_TRAIN_LOSS_MODE=sampled на первом этапе выключайте: JGPT_CE_ASYNC=0.
+# Async CE: читает loss после backward+synchronizeStream; совместимо с FP16 matmul.
+# ВАЖНО: несовместимо с JGPT_TRAIN_LOSS_MODE=sampled — при sampled выставляйте JGPT_CE_ASYNC=0.
 export JGPT_CE_ASYNC="${JGPT_CE_ASYNC:-1}"
+
+# JGPT_TRAIN_LOSS_MODE:
+#   full    — полный vocab CE (дефолт; тяжелее, корректнее для мониторинга train loss)
+#   sampled — candidate CE только в train loop (быстрее; eval всегда full-vocab)
+#             при sampled: JGPT_CE_ASYNC=0, JGPT_SAMPLED_CE_CANDIDATES=64 (рекомендуется)
 export JGPT_TRAIN_LOSS_MODE="${JGPT_TRAIN_LOSS_MODE:-full}"
 export JGPT_SAMPLED_CE_CANDIDATES="${JGPT_SAMPLED_CE_CANDIDATES:-128}"
 export JGPT_SAMPLED_CE_NEGATIVE_MODE="${JGPT_SAMPLED_CE_NEGATIVE_MODE:-batch_shared_uniform}"
@@ -65,16 +80,19 @@ export JGPT_DECODER_GPU_PIPELINE="${JGPT_DECODER_GPU_PIPELINE:-1}"
 export JGPT_DEVICE_DECODER_BWD="${JGPT_DEVICE_DECODER_BWD:-1}"
 export JGPT_DEVICE_LOGITS_TRAIN="${JGPT_DEVICE_LOGITS_TRAIN:-1}"
 
+# Выйти после N-го шага оптимизатора (0 = без лимита).
+# Полезно для профилирования: JGPT_EXIT_AFTER_STEP=20 ./run-training.sh e2e
 export JGPT_EXIT_AFTER_STEP="${JGPT_EXIT_AFTER_STEP:-0}"
 
 export JGPT_FP16_MATMUL="${JGPT_FP16_MATMUL:-1}"
 
 # При FP16 matmul loss scale только динамический (JGPT_FP16_DYNAMIC_*).
+# Начальный scale: train-e2e-gpu.sh ставит 8192, здесь дефолт 65536 (агрессивнее).
 export JGPT_FP16_DYNAMIC_GROWTH_INTERVAL="${JGPT_FP16_DYNAMIC_GROWTH_INTERVAL:-2000}"
 export JGPT_FP16_DYNAMIC_INITIAL="${JGPT_FP16_DYNAMIC_INITIAL:-65536}"
 export JGPT_FP16_DYNAMIC_MAX="${JGPT_FP16_DYNAMIC_MAX:-65536}"
 
-# Один JNI RMSNorm + LM-head matmul при gpuResident; при ошибке Java — откат на раздельный путь в GPTModel.
+# Один JNI RMSNorm + LM-head matmul при gpuResident; при ошибке Java — откат на раздельный путь.
 export JGPT_FUSED_LM_HEAD="${JGPT_FUSED_LM_HEAD:-1}"
 
 export JGPT_FULL_GPU_TRAIN="${JGPT_FULL_GPU_TRAIN:-0}"
@@ -92,12 +110,14 @@ export JGPT_PROFILE_STEPS="${JGPT_PROFILE_STEPS:-20}"
 
 export JGPT_TIMINGS="${JGPT_TIMINGS:-0}"
 
-# 1 = включить сразу JGPT_PROFILE и JGPT_TIMINGS (глубина профиля — JGPT_PROFILE_STEPS).
+# 1 = включить сразу JGPT_PROFILE и JGPT_TIMINGS + подробный PERF на первые 20 шагов.
+# Выводит: прямой / лосс+∂CE / обратный / клип+опт / сумма мс / ток/с на каждый шаг.
 export JGPT_TRAIN_PERF="${JGPT_TRAIN_PERF:-0}"
 
 export JGPT_TRAIN_GPU_RESIDENT="${JGPT_TRAIN_GPU_RESIDENT:-1}"
 
-# Необязательные префиксы: ./run-training.sh e2e | e2e profile | profile | single [args…]
+# --- Обработка необязательных префиксов ---
+# e2e: включает полный GPU-шаг (JGPT_FULL_GPU_TRAIN). Можно повторять: e2e e2e → ок.
 while [[ "${1:-}" == e2e ]]; do
   shift
   export JGPT_GPU_E2E_TRAIN=1

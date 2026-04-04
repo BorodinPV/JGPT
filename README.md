@@ -81,7 +81,9 @@ JGPT_TRAIN_LOSS_MODE=sampled JGPT_CE_ASYNC=0 JGPT_SAMPLED_CE_CANDIDATES=64 \
 | Команда | Что делает |
 |---|---|
 | `./scripts/train-e2e-gpu.sh` | cmake build → `libjgpt_cuda.so` → `MultiBookTrain` (e2e GPU, PERF=1) |
+| `./scripts/train-e2e-gpu.sh allbooks` | то же, но запускает `AllBooksTrain` (весь корпус как единый датасет) |
 | `./scripts/run-training-gpu.sh e2e` | `MultiBookTrain` (e2e, без cmake build) |
+| `./scripts/run-training-gpu.sh allbooks` | `AllBooksTrain` (без cmake build) |
 | `./scripts/run-training-gpu.sh` | `MultiBookTrain` без `JGPT_FULL_GPU_TRAIN` |
 | `./scripts/run-training-gpu.sh single [args…]` | `TrainLLM` |
 | `./scripts/run-training-gpu.sh profile` | `ProfileQuickRun` |
@@ -130,7 +132,60 @@ JGPT_TRAIN_LOSS_MODE=sampled JGPT_CE_ASYNC=0 JGPT_SAMPLED_CE_CANDIDATES=64 \
 
 ---
 
-## GPU-путь и ограничения
+## Дообучение (AllBooksTrain)
+
+`AllBooksTrain` — режим обучения, при котором все `.txt` из `data/books/` объединяются в **единый датасет** и прогоняются за один Training run. Это устраняет катастрофическое забывание, которое возникает при последовательном обучении на отдельных книгах в `MultiBookTrain`.
+
+### Первый запуск
+
+```bash
+JGPT_TRAIN_LOSS_MODE=sampled JGPT_SAMPLED_CE_CANDIDATES=512 \
+JGPT_MAX_SEQ_LEN=1024 JGPT_CE_ASYNC=0 JGPT_INTERACTIVE_EVERY=0 \
+  ./scripts/train-e2e-gpu.sh allbooks
+```
+
+Чекпоинты сохраняются в `checkpoints/all_books/`, токенизатор — в `checkpoints/tokenizer_global.bin`.
+
+### Resume после прерывания
+
+Запустить ту же команду повторно — `AllBooksTrain` автоматически найдёт последний чекпоинт: сначала ищет `checkpoint_final.bin`, затем `checkpoint_epoch_N.bin` с максимальным N.
+
+### Продолжение с бо́льшим числом эпох
+
+Если обучение завершено (по умолчанию 20 эпох), но хочется продолжить:
+
+```bash
+JGPT_TRAIN_LOSS_MODE=sampled JGPT_SAMPLED_CE_CANDIDATES=512 \
+JGPT_MAX_SEQ_LEN=1024 JGPT_CE_ASYNC=0 JGPT_INTERACTIVE_EVERY=0 \
+JGPT_EPOCHS=40 \
+  ./scripts/train-e2e-gpu.sh allbooks
+```
+
+`JGPT_EPOCHS=40` увеличивает `totalTrainingSteps`. Поскольку сохранённый `globalStep` оказывается меньше нового плана, обучение возобновляется с прерванного места.
+
+### Дообучение на расширенном корпусе (новые книги)
+
+Добавьте новые `.txt` в `data/books/` и запустите с флагом `JGPT_FINETUNE=1`:
+
+```bash
+JGPT_TRAIN_LOSS_MODE=sampled JGPT_SAMPLED_CE_CANDIDATES=512 \
+JGPT_MAX_SEQ_LEN=1024 JGPT_CE_ASYNC=0 JGPT_INTERACTIVE_EVERY=0 \
+JGPT_FINETUNE=1 JGPT_EPOCHS=20 \
+  ./scripts/train-e2e-gpu.sh allbooks
+```
+
+`JGPT_FINETUNE=1` загружает веса и Adam-состояние из последнего чекпоинта, но сбрасывает `globalStep` в 0 — LR-расписание перезапускается с начала. Знания из старых книг сохраняются, Adam уже «прогрет», поэтому сходимость обычно быстрее, чем при обучении с нуля.
+
+| Env-переменная | Описание |
+|---|---|
+| `JGPT_EPOCHS` | переопределить число эпох (default: 20) |
+| `JGPT_FINETUNE` | `1` / `true` — сбросить `globalStep`, сохранив веса и Adam |
+| `JGPT_MAX_SEQ_LEN` | переопределить длину контекста (default: 2048; для RTX 3080 рекомендуется 1024) |
+| `JGPT_INTERACTIVE_EVERY` | `0` — отключить промежуточную генерацию текста во время обучения |
+
+---
+
+
 
 `LLMTrainer` при `useGpuResident=true` требует CUDA и корректный GPU-конвейер. Для полного GPU-шага нужны:
 
@@ -241,6 +296,7 @@ nsys stats /tmp/jgpt_prof.sqlite --report cuda_gpu_kern_sum
 | Batching / cache | `JGPT_BATCH_*`, `JGPT_BLOCK_CACHE_*`, `JGPT_ACTIVATION_CACHE_FP16` |
 | CE / Loss | `JGPT_CE_ASYNC`, `JGPT_CE_GPU_MIN_ELEMENTS`, `JGPT_TRAIN_LOSS_MODE`, `JGPT_SAMPLED_CE_CANDIDATES`, `JGPT_SAMPLED_CE_NEGATIVE_MODE` |
 | Perf / I/O | `JGPT_PROFILE`, `JGPT_PROFILE_STEPS`, `JGPT_TIMINGS`, `JGPT_TRAIN_PERF`, `JGPT_CHECKPOINT_ASYNC`, `JGPT_EXIT_AFTER_STEP`, `JGPT_MAX_SEQUENCES`, `JGPT_JAVA_MEM`, `JGPT_LOG_COLOR` |
+| Fine-tune / конфиг | `JGPT_EPOCHS`, `JGPT_FINETUNE`, `JGPT_MAX_SEQ_LEN`, `JGPT_BATCH_SIZE`, `JGPT_INTERACTIVE_EVERY` |
 | Test-only probes | `JGPT_BATCH_PROBE*`, `JGPT_PROBE_*` |
 
 Часть флагов дублируется через `-Djgpt.*` в `LLMConfig`, `TrainingConfig` и `LLMTrainer`.
@@ -288,7 +344,7 @@ mvn test
 | `...training` | `LLMTrainer`, `LLMConfig`, `TrainingConfig`, `AdamOptimizer`, `DynamicLossScaler`, profiling |
 | `...cuda` | `TensorCudaLibrary`, `GpuTensor`, `GpuPendingGradients` |
 | `...data` | tokenizer, dataset, `DataLoader` |
-| `...app` | `MultiBookTrain`, `TrainLLM`, `ProfileQuickRun`, `LlmTextGeneration` |
+| `...app` | `MultiBookTrain`, `AllBooksTrain`, `TrainLLM`, `ProfileQuickRun`, `LlmTextGeneration` |
 | `...util` | общие утилиты |
 
 ---

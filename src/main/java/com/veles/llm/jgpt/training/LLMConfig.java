@@ -94,18 +94,25 @@ public final class LLMConfig {
                 20);
     }
 
+    /**
+     * Крупный пресет: vocab 8000, контекст <b>2048</b>, 20 слоёв, ~55M параметров по {@link #estimateParameters()}.
+     * <p>
+     * Внимание по VRAM: attention и кэши растут примерно как {@code O(seq²)} на слой; {@code batchSize=1} и
+     * {@code sampled CE} обязательны на картах ~10 ГиБ. При {@code cudaMalloc}/OOM: уменьшить {@code maxSeqLen},
+     * {@code numLayers} или {@code JGPT_SAMPLED_CE_CANDIDATES}; не поднимать {@code JGPT_BATCH_SIZE}.
+     */
     public static LLMConfig smart50M() {
         return new LLMConfig(
                 "JGPT-50M-Smart",
-                8000,      // vocab
-                1024,      // seq_len
-                384,       // ← d_model
-                24,        // ← numHeads (384/24 = 16 dim/head)
-                16,        // ← numLayers
-                1536,      // ← dIntermediate (4× d_model)
-                3,         // ← batch (из-за VRAM)
+                8000,
+                2048,
+                384,
+                24,
+                20,
+                1536,
                 1,
-                0.001f,
+                6,
+                0.0005f,
                 20);
     }
 
@@ -137,6 +144,57 @@ public final class LLMConfig {
                 base.accumulationSteps,
                 base.learningRate,
                 base.epochs);
+    }
+
+    /**
+     * Runtime override from env {@code JGPT_MAX_SEQ_LEN}.
+     * <p>
+     * Позволяет уменьшить контекст без перекомпиляции. Актуально при OOM: на RTX 3080 10 ГиБ
+     * с 20 слоями и 24 головами кэш attention для backward = {@code heads × seq² × 2 bytes × layers}.
+     * При seq=2048 → ~4 ГиБ; при seq=1024 → ~1 ГиБ.
+     * <p>Пример: {@code JGPT_MAX_SEQ_LEN=1024 ./scripts/train-e2e-gpu.sh}
+     */
+    public static LLMConfig applySeqLenOverrideFromEnv(LLMConfig base) {
+        int overridden = readPositiveEnvInt("JGPT_MAX_SEQ_LEN", base.maxSeqLen);
+        if (overridden == base.maxSeqLen) {
+            return base;
+        }
+        return new LLMConfig(
+                base.name,
+                base.vocabSize,
+                overridden,
+                base.dModel,
+                base.numHeads,
+                base.numLayers,
+                base.dIntermediate,
+                base.batchSize,
+                base.accumulationSteps,
+                base.learningRate,
+                base.epochs);
+    }
+
+    /**
+     * Переопределяет число эпох через переменную окружения {@code JGPT_EPOCHS}.
+     *
+     * <p>Пример: {@code JGPT_EPOCHS=40 ./scripts/train-e2e-gpu.sh allbooks}
+     */
+    public static LLMConfig applyEpochsOverrideFromEnv(LLMConfig base) {
+        int overridden = readPositiveEnvInt("JGPT_EPOCHS", base.epochs);
+        if (overridden == base.epochs) {
+            return base;
+        }
+        return new LLMConfig(
+                base.name,
+                base.vocabSize,
+                base.maxSeqLen,
+                base.dModel,
+                base.numHeads,
+                base.numLayers,
+                base.dIntermediate,
+                base.batchSize,
+                base.accumulationSteps,
+                base.learningRate,
+                overridden);
     }
 
     /**
@@ -202,6 +260,34 @@ public final class LLMConfig {
     /** Env {@code JGPT_SAMPLED_CE_CANDIDATES} / prop {@code jgpt.sampledCe.candidates}. */
     public static int sampledCeCandidatesFromEnv() {
         return Math.max(2, readPositiveEnvOrPropInt("JGPT_SAMPLED_CE_CANDIDATES", "jgpt.sampledCe.candidates", 128));
+    }
+
+    /**
+     * Env {@code JGPT_INTERACTIVE_EVERY}: через сколько шагов оптимизатора генерировать текст во время
+     * обучения. {@code 0} или {@code -1} — отключить. По умолчанию 200.
+     * <p>Внимание: генерация (инференс) после каждого eval резко снижает FP16 loss scale (÷64),
+     * что вызывает overflow на следующем обучающем шаге. При нестабильном FP16 лучше выставить {@code 0}.
+     */
+    public static int interactiveEveryFromEnv(int defaultValue) {
+        String env = System.getenv("JGPT_INTERACTIVE_EVERY");
+        if (env != null && !env.isBlank()) {
+            try {
+                int v = Integer.parseInt(env.trim());
+                return Math.max(0, v);
+            } catch (NumberFormatException ignored) {
+                return defaultValue;
+            }
+        }
+        String prop = System.getProperty("jgpt.interactiveEvery");
+        if (prop != null && !prop.isBlank()) {
+            try {
+                int v = Integer.parseInt(prop.trim());
+                return Math.max(0, v);
+            } catch (NumberFormatException ignored) {
+                return defaultValue;
+            }
+        }
+        return defaultValue;
     }
 
     /** Env {@code JGPT_SAMPLED_CE_NEGATIVE_MODE} / prop {@code jgpt.sampledCe.negativeMode}. */
@@ -429,7 +515,7 @@ public final class LLMConfig {
                     0f,
                     checkpointDir,
                     50,
-                    200,
+                    interactiveEveryFromEnv(200),
                     3,
                     true,
                     1e-8f,
@@ -478,7 +564,7 @@ public final class LLMConfig {
                 0f,
                 checkpointDir,
                 50,
-                200,
+                interactiveEveryFromEnv(200),
                 3,
                 true,
                 1e-8f,

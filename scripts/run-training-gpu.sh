@@ -136,6 +136,18 @@ case "${1:-}" in
         -Dexec.mainClass=com.veles.llm.jgpt.app.TrainLLM
     fi
     ;;
+  allbooks)
+    shift
+    if [[ $# -gt 0 ]]; then
+      set -- mvn -q compile exec:java \
+        -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain \
+        -Dexec.args="$*"
+    else
+      set -- mvn -q compile exec:java \
+        -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain \
+        -Dexec.args="--boo ."
+    fi
+    ;;
   profile)
     shift
     if [[ $# -gt 0 ]]; then

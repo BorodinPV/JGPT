@@ -33,6 +33,11 @@ import org.slf4j.LoggerFactory;
  * процесса, обычно корень проекта {@code JGPT}). Чекпоинты: {@code <корень>/checkpoints/}.
  * Опции: {@code --max-sequences N} или env {@code JGPT_MAX_SEQUENCES} — ограничить число
  * окон по книге (меньше RAM, часть текста не используется).
+ * <p>
+ * После каждой завершённой книги (до освобождения VRAM) можно включить интерактивную генерацию:
+ * {@code JGPT_INTERACTIVE_AFTER_BOOK=1}. Нужна реальная консоль (TTY); иначе шаг пропускается с
+ * предупреждением в логе. Опционально: {@code JGPT_INTERACTIVE_GEN_MAX_NEW}, {@code
+ * JGPT_INTERACTIVE_GEN_TEMP}, {@code JGPT_INTERACTIVE_GEN_TOP_K}.
  */
 public final class MultiBookTrain {
 
@@ -86,8 +91,12 @@ public final class MultiBookTrain {
         }
 
         BookTrainingState state = BookTrainingState.load(statePath);
-        LLMConfig llm = LLMConfig.applyBatchSizeOverrideFromEnv(LLMConfig.small16M());
+        LLMConfig llm = LLMConfig.applySeqLenOverrideFromEnv(
+                LLMConfig.applyBatchSizeOverrideFromEnv(LLMConfig.smart50M()));
         log.info("{} эффективный размер батча: {}", LogFmt.badge("CFG"), llm.batchSize);
+        if (System.getenv("JGPT_MAX_SEQ_LEN") != null) {
+            log.info("{} maxSeqLen переопределён через JGPT_MAX_SEQ_LEN: {}", LogFmt.badge("CFG"), llm.maxSeqLen);
+        }
 
         BPETokenizer tokenizer;
         if (Files.isRegularFile(tokenizerPath)) {
@@ -213,6 +222,21 @@ public final class MultiBookTrain {
                     LogFmt.badge("DATA"),
                     nSeq,
                     dataLoader.numBatches());
+            if (nSeq <= 0) {
+                log.warn(
+                        "{} книга «{}» пропущена: нет окон для обучения (0 последовательностей). "
+                                + "Нужно минимум {} токенов, а в тексте только {}. "
+                                + "Удалите/замените слишком короткий .txt или объедините его с другим материалом.",
+                        LogFmt.badge("BOOK"),
+                        bookKey,
+                        llm.maxSeqLen + 1,
+                        dataLoader.numSequences());
+                model.closeGpuResidentWeights();
+                state.markCompleted(bookKey);
+                state.setCurrent(null);
+                state.save(statePath);
+                continue;
+            }
 
             TrainingConfig trainConfig = llm.toTrainingConfig(bookDir.toString(), vocabSize);
             LLMTrainer trainer = new LLMTrainer(model, trainConfig, dataLoader);
@@ -222,9 +246,11 @@ public final class MultiBookTrain {
             }
 
             Instant tBookTrain = Instant.now();
+            boolean stopChain = false;
             try {
                 trainer.train();
                 trainer.saveCheckpoint("final");
+                stopChain = maybeInteractiveAfterBook(model, tokenizer, bookKey);
             } finally {
                 trainer.releaseGpuResourcesAfterBook();
             }
@@ -244,12 +270,113 @@ public final class MultiBookTrain {
                 log.info("  для следующей книги в цепочке будет использован model_final.bin");
             }
             log.info("Книга «{}» обучена за {}", bookKey, humanDuration(bookDur));
+            if (stopChain) {
+                log.info(
+                        "{} остановка цепочки книг: запрошено пользователем ({} в интерактиве после книги).",
+                        LogFmt.badge("BOOK"),
+                        "quit/exit");
+                break;
+            }
         }
 
         Duration total = Duration.between(wallStart, Instant.now());
         log.info("{}", "=".repeat(60));
         log.info("Все запланированные книги обработаны.");
         log.info("Общее реальное время с запуска: {}", humanDuration(total));
+    }
+
+    /**
+     * После сохранения финального чекпоинта книги: цикл ввода промптов в консоль. Вызывается до {@link
+     * LLMTrainer#releaseGpuResourcesAfterBook()}, пока веса ещё на GPU.
+     *
+     * @return true — прервать цепочку {@code MultiBookTrain} (пользователь ввёл quit/exit); иначе false
+     */
+    private static boolean maybeInteractiveAfterBook(
+            GPTModel model, BPETokenizer tokenizer, String bookKey) {
+        if (!truthyEnv("JGPT_INTERACTIVE_AFTER_BOOK")) {
+            return false;
+        }
+        if (System.console() == null) {
+            log.warn(
+                    "{} JGPT_INTERACTIVE_AFTER_BOOK=1, но нет интерактивной консоли (System.console()==null) — шаг пропущен.",
+                    LogFmt.badge("BOOK"));
+            return false;
+        }
+        int maxNew = intEnvOr("JGPT_INTERACTIVE_GEN_MAX_NEW", 64);
+        float temp = floatEnvOr("JGPT_INTERACTIVE_GEN_TEMP", 0.9f);
+        int topK = intEnvOr("JGPT_INTERACTIVE_GEN_TOP_K", 40);
+
+        log.info("{}", "=".repeat(60));
+        log.info(
+                "{} после «{}»: интерактивная проверка (JGPT_INTERACTIVE_AFTER_BOOK=1).",
+                LogFmt.badge("BOOK"),
+                bookKey);
+        log.info(
+                "  Строка-подсказка → генерация продолжения; пустая строка → следующая книга; quit или exit → выход из цепочки.");
+        log.info("{}", "=".repeat(60));
+
+        java.io.Console console = System.console();
+        while (true) {
+            String line = console.readLine("prompt> ");
+            if (line == null) {
+                return false;
+            }
+            String trimmed = line.strip();
+            if (trimmed.isEmpty()) {
+                log.info("{} пустой ввод — переходим к следующей книге.", LogFmt.badge("BOOK"));
+                return false;
+            }
+            if ("quit".equalsIgnoreCase(trimmed) || "exit".equalsIgnoreCase(trimmed)) {
+                log.info("{} выход из цепочки книг по запросу пользователя.", LogFmt.badge("BOOK"));
+                return true;
+            }
+            try {
+                model.zeroGradParameters();
+                String out =
+                        LlmTextGeneration.generateText(
+                                model, tokenizer, trimmed, maxNew, temp, topK);
+                log.info("{} сгенерировано: {}", LogFmt.badge("BOOK"), out);
+            } catch (Exception e) {
+                log.warn("{} генерация не удалась: {}", LogFmt.badge("BOOK"), e.getMessage());
+            } finally {
+                if (TensorOpsGPU.isGpuAvailable()) {
+                    TensorOpsGPU.synchronizeStream();
+                }
+            }
+        }
+    }
+
+    private static boolean truthyEnv(String name) {
+        String v = System.getenv(name);
+        if (v == null || v.isBlank()) {
+            return false;
+        }
+        String t = v.strip();
+        return "1".equals(t) || "true".equalsIgnoreCase(t) || "yes".equalsIgnoreCase(t);
+    }
+
+    private static int intEnvOr(String name, int def) {
+        String v = System.getenv(name);
+        if (v == null || v.isBlank()) {
+            return def;
+        }
+        try {
+            return Integer.parseInt(v.strip());
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+
+    private static float floatEnvOr(String name, float def) {
+        String v = System.getenv(name);
+        if (v == null || v.isBlank()) {
+            return def;
+        }
+        try {
+            return Float.parseFloat(v.strip().replace(',', '.'));
+        } catch (NumberFormatException e) {
+            return def;
+        }
     }
 
     private static String humanDuration(Duration d) {

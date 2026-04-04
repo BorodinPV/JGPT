@@ -1,0 +1,64 @@
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/pavel/Рабочий стол/JGPT/build
+[100%] Built target jgpt_cuda
+[TensorOpsGPU] GPU инициализирован: NVIDIA GeForce RTX 3080, 9873 МБ
+[TensorOpsGPU] FP16 matmul (GemmEx): включён
+09:12:43 INFO  | [BOOK] обучение по нескольким книгам (цепочка книг)
+09:12:43 INFO  | [CFG] время старта: 2026-04-04T06:12:43.351605887Z
+09:12:43 INFO  | [DATA] каталог с текстами: /home/pavel/Рабочий стол/JGPT/data/books
+09:12:43 INFO  | [CFG] файл состояния очереди: /home/pavel/Рабочий стол/JGPT/checkpoints/training_state.properties
+09:12:43 INFO  | ============================================================
+09:12:43 INFO  | [CFG] эффективный размер батча: 1
+09:12:43 INFO  | [DATA] загрузка общего токенизатора с диска
+09:12:43 INFO  | [DATA] размер словаря: 8000
+09:12:43 INFO  | [DATA] подготовка (список книг + токенизатор) заняла: 0,11 с
+09:12:43 INFO  | [BOOK] пропуск уже завершённой книги: A.txt
+09:12:43 INFO  | [BOOK] для следующей книги тёплый старт: model_final.bin
+09:12:43 INFO  | [BOOK] книга: Bulgakov_BelayaGvardiya.txt
+09:12:43 INFO  | [CKPT] каталог чекпоинтов: /home/pavel/Рабочий стол/JGPT/checkpoints/books/Bulgakov_BelayaGvardiya.txt
+09:12:43 INFO  | Vector API (SIMD) включён: species=Species[float, 16, S_512_BIT], число линий=16
+09:12:43 INFO  |   GPU-резидентно: токен/позиция эмбеддинги + веса слоёв декодера (аттеншн+FFN) + финальный RMSNorm + LM head
+09:12:43 INFO  | Модель GPT инициализирована: vocab=8000, seq_len=1024, d_model=384, heads=24, слоёв=20
+09:12:43 INFO  |   оценка числа параметров: ~53 738 880
+09:12:43 INFO  |   кэш активаций блоков: FP16 (хост при классическом backward; на VRAM — слоты half при device-кэше)
+09:12:43 INFO  | [CKPT] продолжение с чекпоинта: checkpoint_best.bin
+09:12:43 INFO  | Веса модели загружены из файла: /home/pavel/Рабочий стол/JGPT/checkpoints/books/Bulgakov_BelayaGvardiya.txt/model_best.bin
+09:12:52 INFO  |   закодировано 318023 токенов из 504078 символов
+09:12:52 INFO  | Собрано обучающих окон (последовательностей): 310
+09:12:52 INFO  | [DATA] последовательностей: 310 (около 310 батчей на эпоху)
+09:12:53 INFO  | Динамический FP16 loss scale: старт 8192×, рост каждые 2000 успешных шагов (макс 65536×)
+09:12:53 INFO  | JGPT_FP16_DYNAMIC_RECOVERY_AFTER_MIN_STREAK=64: после стольких overflow подряд на min — сброс к 8192×
+09:12:53 INFO  | JGPT_FP16_DYNAMIC_RESET_EACH_EPOCH=1: в начале каждой эпохи loss scale сбрасывается к стартовому.
+09:12:53 INFO  | [LOSS] train-only sampled CE: candidates=32 mode=BATCH_SHARED_UNIFORM (eval остаётся full-vocab)
+09:12:53 INFO  | [PERF] sampled PERF accounting: candidate-id prep + candidate LM-head входят в "прямой"; "лосс+∂CE" покрывает только sampled CE
+09:12:54 INFO  | Чекпоинт загружен (v2 + Adam): /home/pavel/Рабочий стол/JGPT/checkpoints/books/Bulgakov_BelayaGvardiya.txt/checkpoint_best.bin (шаг 300, лучший оценочный loss 4.2756)
+09:12:54 INFO  | [TRAIN] старт обучения
+09:12:54 INFO  | [CFG] конфигурация: TrainingConfig{vocab=8000, seq=1024, d_model=384, heads=24, layers=20, batch=1, accum=6, epochs=20, lr=0,0005, lr_sched=COSINE, min_lr_r=0,0000, log_every=50, interactive_every=200, early_stop_eval_p=3, early_stop_overfit=true, early_stop_grad_min=1,0e-08, early_stop_grad_p=8, gpu_resident=true, full_gpu_step=true, device_logits=true, device_decoder_bwd=true, merge_first_gpu=false, train_loss=SAMPLED, sampled_candidates=32, sampled_negative_mode=BATCH_SHARED_UNIFORM}
+09:12:54 INFO  | Расписание LR: COSINE (min_lr_ratio=0.0), разогрев: шаги 104 из 1040 (доля warmup 0.1)
+09:12:54 INFO  | Накопление градиента: 6 микробатч(а/ей) на один шаг оптимизатора
+09:12:54 INFO  | Логирование: каждые 50 шаг(ов); автогенерация текста: каждые 200 шагов (русские промпты)
+09:12:54 INFO  | Данные: 310 последовательностей, 310 батчей/эпоха, всего ~1040 шагов оптимизатора
+09:12:54 INFO  | GPU-резидент: веса и шаг оптимизатора на VRAM; синхронизация с хостом — ленивая при чекпоинте.
+09:12:54 INFO  | GPU-путь (факт): полный шаг=true, логиты на GPU=true, backward декодера на GPU=true, допускается полный GPU-цикл=true, pipeline декодера=true
+09:12:54 INFO  | Ранний останов: терпение_eval=3, train↓_eval↑=true, мин_норма_grad=1.0e-08, терпение_grad=8
+09:12:54 INFO  | Ускорение (см. также логи TensorOpsGPU при старте JVM):
+09:12:54 INFO  |   • FP16 GEMM (matmul / внимание / matmul+ReLU): вкл.
+09:12:54 INFO  |   • Динамический loss scale: текущий 8192×, рост каждые 2000 успешных шагов (max 65536×); снимается перед клипом
+09:12:54 INFO  |   • При overflow шаг пропускается, scale снижается; после стабильных шагов — осторожный рост (интервал 2000)
+09:12:54 INFO  |   • CE train (sampled) на GPU: вкл. — буфер кандидатных логитов ~32768 float (batch×seq×candidates); eval по-прежнему full-vocab ~8192000 float; порог CE ≥ 0 float (устар., перем. JGPT_CE_GPU_MIN_ELEMENTS)
+09:12:54 INFO  | Сводка JGPT_* (обучение): батч direct=true, pinned=true; prefetch=true; async чекпоинт=false; выход после шага=0 (выкл.); trainPerf=1; profile=0; timings=0; generateGpuKv=1
+09:12:54 INFO  |   пресет/env: E2E=true резидент (эфф.)=true резидент (env)=1 pipeline декодера=true полный GPU шаг=true логиты GPU=true decoder bwd GPU=true train loss=SAMPLED sampled candidates=32 sampled negatives=BATCH_SHARED_UNIFORM размер батча (ovr)=— кэш FP16=1 FP16 dyn старт=8192 FP16 dyn интервал=2000 FP16 dyn макс=65536 FP16 aux soften scale=1 CUDA_LIB=(задан)
+09:12:54 INFO  |   TensorOpsGPU (при загрузке класса): FP16_MATMUL=true CE_мин_элементов=0
+09:12:54 INFO  |   JVM: maxHeap≈7992 МиБ; env JGPT_JAVA_MEM=—
+09:12:54 INFO  |   в train() не используются: JGPT_BATCH_PROBE* / JGPT_PROBE_* (зонды в отдельных тестах)
+09:12:54 INFO  | JGPT_TRAIN_PERF=1: как JGPT_PROFILE=1 + JGPT_TIMINGS=1 — подробный PERF на первые 20 шаг(ов) после старта/reset/eval; у train_loss — ток/с и фазы каждые 50 шаг(ов). После forward выполняется cuda stream sync — «прямой» включает GPU-forward, «лосс+∂CE» в основном CE (артефакт только этого режима).
+09:12:54 INFO  | [PERF] подробный PERF включён на 20 шаг(ов) после start
+09:12:54 INFO  | Фоновая подготовка следующего батча на CPU (JGPT_BATCH_PREFETCH=1; выключить: 0 или -Djgpt.batch.prefetch=false).
+09:12:54 INFO  | [EPOCH] эпоха 1/20: батчей в эпохе 310
+09:12:54 INFO  | Данные перемешаны (новый порядок батчей на эпоху).
+09:12:54 INFO  | [FP16] reset к 8192× в начале эпохи (JGPT_FP16_DYNAMIC_RESET_EACH_EPOCH)
+09:12:54 INFO  | [PERF] подробный PERF включён на 20 шаг(ов) после fp16-reset
+09:12:55 INFO  | [PERF] шаг 301 [fp16-reset 1/20]: прямой=288,88 мс  лосс+∂CE=0,51 мс  обратн=421,06 мс  клип+опт=255,96 мс  сумма=966,42 мс  ток/с≈6358
+09:12:56 INFO  | [PERF] шаг 302 [fp16-reset 2/20]: прямой=245,06 мс  лосс+∂CE=1,14 мс  обратн=376,74 мс  клип+опт=38,19 мс  сумма=661,13 мс  ток/с≈9293
+[TensorOpsGPU] cuBLAS will be initialized per-thread with TF32 tensor ops

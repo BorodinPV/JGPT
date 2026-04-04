@@ -605,7 +605,11 @@ public final class LLMTrainer {
                     config.earlyStopGradNormPatience);
         }
 
-        int logitElems = config.batchSize * config.maxSeqLen * config.vocabSize;
+        int trainCeFloatElems =
+                config.usesSampledTrainLoss()
+                        ? config.batchSize * config.maxSeqLen * effectiveSampledCandidateCount(config.vocabSize)
+                        : config.batchSize * config.maxSeqLen * config.vocabSize;
+        int evalFullLogitElems = config.batchSize * config.maxSeqLen * config.vocabSize;
         log.info("Ускорение (см. также логи TensorOpsGPU при старте JVM):");
         log.info(
                 "  • FP16 GEMM (matmul / внимание / matmul+ReLU): {}",
@@ -622,12 +626,23 @@ public final class LLMTrainer {
         } else {
             log.info("  • Масштаб loss FP16: не используется (FP16 matmul выкл.)");
         }
-        log.info(
-                "  • CE и градиент по логитам на GPU: {} (логиты: {} float; порог CE ≥ {} float, перем. {})",
-                TensorOpsGPU.shouldUseGpuCrossEntropy(logitElems) ? "вкл." : "выкл.",
-                logitElems,
-                TensorOpsGPU.ceGpuMinElements(),
-                "JGPT_CE_GPU_MIN_ELEMENTS");
+        if (config.usesSampledTrainLoss()) {
+            log.info(
+                    "  • CE train (sampled) на GPU: {} — буфер кандидатных логитов ~{} float (batch×seq×candidates); "
+                            + "eval по-прежнему full-vocab ~{} float; порог CE ≥ {} float (устар., перем. {})",
+                    TensorOpsGPU.shouldUseGpuCrossEntropy(trainCeFloatElems) ? "вкл." : "выкл.",
+                    trainCeFloatElems,
+                    evalFullLogitElems,
+                    TensorOpsGPU.ceGpuMinElements(),
+                    "JGPT_CE_GPU_MIN_ELEMENTS");
+        } else {
+            log.info(
+                    "  • CE и градиент по логитам на GPU: {} (логиты: {} float; порог CE ≥ {} float, перем. {})",
+                    TensorOpsGPU.shouldUseGpuCrossEntropy(trainCeFloatElems) ? "вкл." : "выкл.",
+                    trainCeFloatElems,
+                    TensorOpsGPU.ceGpuMinElements(),
+                    "JGPT_CE_GPU_MIN_ELEMENTS");
+        }
 
         logTensorTrainingEnvSnapshot();
 
@@ -2161,6 +2176,16 @@ public final class LLMTrainer {
 
     public float getBestLoss() {
         return bestLoss;
+    }
+
+    /**
+     * Сбрасывает {@code globalStep} в 0 и обновляет шаг оптимайзера.
+     * Используется при дообучении ({@code JGPT_FINETUNE=1}): веса и Adam-буферы
+     * сохраняются, но косинусный LR-расписание перезапускается с начала.
+     */
+    public void resetGlobalStep() {
+        globalStep = 0;
+        optimizer.setStep(0);
     }
 
     /**

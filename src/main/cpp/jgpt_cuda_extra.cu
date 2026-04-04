@@ -230,9 +230,9 @@ static thread_local size_t tl_attn_bwd_host_total = 0;
 
 static bool attn_bwd_host_ensure(
         size_t bytesProb, size_t bytesQK, size_t bytesV, float** d_go, float** d_p, float** d_q, float** d_k,
-        float** d_v, float** d_vt, float** d_pt, float** d_dp, float** d_ds, float** d_dst, float** d_gq,
-        float** d_gk, float** d_gv) {
-    size_t total = 5U * bytesProb + 4U * bytesQK + 4U * bytesV;
+        float** d_v, float** d_dp, float** d_ds,
+        float** d_gq, float** d_gk, float** d_gv) {
+    size_t total = 3U * bytesProb + 4U * bytesQK + 3U * bytesV;
     if (total > tl_attn_bwd_host_total) {
         cudaFree(tl_attn_bwd_host);
         tl_attn_bwd_host = nullptr;
@@ -254,15 +254,9 @@ static bool attn_bwd_host_ensure(
     off += bytesQK;
     *d_v = reinterpret_cast<float*>(base + off);
     off += bytesV;
-    *d_vt = reinterpret_cast<float*>(base + off);
-    off += bytesV;
-    *d_pt = reinterpret_cast<float*>(base + off);
-    off += bytesProb;
     *d_dp = reinterpret_cast<float*>(base + off);
     off += bytesProb;
     *d_ds = reinterpret_cast<float*>(base + off);
-    off += bytesProb;
-    *d_dst = reinterpret_cast<float*>(base + off);
     off += bytesProb;
     *d_gq = reinterpret_cast<float*>(base + off);
     off += bytesQK;
@@ -284,8 +278,8 @@ static thread_local void* tl_attn_bwd_aux = nullptr;
 static thread_local size_t tl_attn_bwd_aux_total = 0;
 
 static bool attn_bwd_aux_ensure(
-        size_t bytesProb, size_t bytesV, float** d_vt, float** d_pt, float** d_dp, float** d_ds, float** d_dst) {
-    size_t total = bytesV + 4U * bytesProb;
+        size_t bytesProb, size_t bytesV, float** d_dp, float** d_ds) {
+    size_t total = 2U * bytesProb;
     if (total > tl_attn_bwd_aux_total) {
         cudaFree(tl_attn_bwd_aux);
         tl_attn_bwd_aux = nullptr;
@@ -297,17 +291,10 @@ static bool attn_bwd_aux_ensure(
     }
     unsigned char* base = static_cast<unsigned char*>(tl_attn_bwd_aux);
     size_t off = 0;
-    *d_vt = reinterpret_cast<float*>(base + off);
-    off += bytesV;
-    *d_pt = reinterpret_cast<float*>(base + off);
-    off += bytesProb;
     *d_dp = reinterpret_cast<float*>(base + off);
     off += bytesProb;
     *d_ds = reinterpret_cast<float*>(base + off);
-    off += bytesProb;
-    *d_dst = reinterpret_cast<float*>(base + off);
-    off += bytesProb;
-    (void) off;
+    (void) bytesV;
     return true;
 }
 
@@ -449,6 +436,45 @@ __global__ void softmax_last_dim_block_kernel(
     const float inv = 1.f / fmaxf(sumv, 1e-12f);
     for (int j = tid; j < inner; j += kSoftmaxBlockDim)
         rowDst[j] = expf(rowSrc[j] - maxv) * inv;
+}
+
+/**
+ * Слитый (scale + causal-mask + softmax), block-per-row для attention.
+ * Устраняет отдельные вызовы scale_inplace и add_mask_inplace — читает d_scores только один раз.
+ * Для causal mask: row % inner — query-позиция; mask[qPos * inner + j] добавляется к scaled logit.
+ * Запуск: gridDim.x=nrows, blockDim.x=kSoftmaxBlockDim, smem=kSoftmaxNumWarps*sizeof(float).
+ */
+__global__ void softmax_scaled_masked_block_kernel(
+        const float* __restrict__ src, float* __restrict__ dst,
+        const float* __restrict__ mask, float scale,
+        int nrows, int inner) {
+    extern __shared__ float smem[];
+    const int row = blockIdx.x;
+    if (row >= nrows) return;
+    const int tid = threadIdx.x;
+    const float* rowSrc = src + (ptrdiff_t)row * inner;
+    float*       rowDst = dst + (ptrdiff_t)row * inner;
+    const int qPos = row % inner;  // query-позиция в последовательности для causal mask
+
+    float maxv = -INFINITY;
+    for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
+        float v = rowSrc[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        maxv = fmaxf(maxv, v);
+    }
+    maxv = blockReduceMax256(maxv, smem);
+
+    float sumv = 0.f;
+    for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
+        float v = rowSrc[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        sumv += expf(v - maxv);
+    }
+    sumv = blockReduceSum256(sumv, smem);
+
+    const float inv = 1.f / fmaxf(sumv, 1e-12f);
+    for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
+        float v = rowSrc[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        rowDst[j] = expf(v - maxv) * inv;
+    }
 }
 
 /**
@@ -1255,6 +1281,60 @@ __global__ void rms_norm_bwd_kernel(const float* gOut, const float* x, const flo
     }
 }
 
+/**
+ * RMSNorm backward, block-per-row. Одна строка = один блок kSoftmaxBlockDim нитей.
+ * При lastDim = d_model = 256: ровно 1 нить на элемент, серийные циклы исчезают.
+ * Запуск: gridDim.x=outer, blockDim.x=kSoftmaxBlockDim, smem=kSoftmaxNumWarps*sizeof(float).
+ */
+__global__ void rms_norm_bwd_block_kernel(
+        const float* __restrict__ gOut, const float* __restrict__ x,
+        const float* __restrict__ gamma, float eps,
+        float* __restrict__ gX, float* __restrict__ gGamma, int outer, int lastDim) {
+    extern __shared__ float smem[];
+    const int o = blockIdx.x;
+    if (o >= outer) return;
+    const int tid = threadIdx.x;
+
+    // Вычислить sumSq = sum(x[j]^2) по строке
+    float sumSq = 0.f;
+    for (int j = tid; j < lastDim; j += kSoftmaxBlockDim)
+        sumSq += x[o * lastDim + j] * x[o * lastDim + j];
+    sumSq = blockReduceSum256(sumSq, smem);
+
+    float rms = sqrtf(sumSq / (float) lastDim + eps);
+    float invRms = (rms > 0.f && isfinite(rms)) ? (1.f / rms) : 0.f;
+
+    // Вычислить sumXGrad = sum(x[j] * gamma[j] * gOut[j])
+    float localXG = 0.f;
+    for (int j = tid; j < lastDim; j += kSoftmaxBlockDim)
+        localXG += x[o * lastDim + j] * gamma[j] * gOut[o * lastDim + j];
+    float sumXGrad = blockReduceSum256(localXG, smem);
+    float meanXGrad = sumXGrad / (float) lastDim;
+
+    // Записать gX; gGamma накапливается атомарно (across outer строк)
+    for (int j = tid; j < lastDim; j += kSoftmaxBlockDim) {
+        int idx = o * lastDim + j;
+        atomicAdd(&gGamma[j], gOut[idx] * x[idx] * invRms);
+        gX[idx] += invRms * gamma[j] * gOut[idx] - invRms * invRms * invRms * x[idx] * meanXGrad;
+    }
+}
+
+static constexpr int kRmsNormBwdBlockThreshold = 64; // block-per-row при lastDim >= этого
+
+static void launch_rms_norm_bwd(const float* gOut, const float* x, const float* gamma, float eps,
+        float* gX, float* gGamma, int outer, int lastDim) {
+    if (lastDim >= kRmsNormBwdBlockThreshold) {
+        size_t smem = kSoftmaxNumWarps * sizeof(float);
+        rms_norm_bwd_block_kernel<<<outer, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(
+                gOut, x, gamma, eps, gX, gGamma, outer, lastDim);
+    } else {
+        int threads = jgpt_cuda_get_optimal_block_size();
+        int blocks = (outer + threads - 1) / threads;
+        rms_norm_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
+                gOut, x, gamma, eps, gX, gGamma, outer, lastDim);
+    }
+}
+
 #define CUDA_CHECK_X(call) \
     do { \
         cudaError_t err = (call); \
@@ -1415,6 +1495,62 @@ static bool batched_sgemm_row_major_extra(
     return true;
 }
 
+// Row-major C(M×N) = A(M×K) × B^T,  где B хранится как N×K row-major.
+// Устраняет необходимость явно транспонировать B перед GEMM.
+static bool batched_sgemm_row_major_transB(
+        const float* d_A, const float* d_B, float* d_C,
+        int batchCount, int M, int K, int N, float alpha, float beta) {
+    cublasHandle_t handle = get_extra_cublas_handle();
+    long long strideA = (long long) M * K;
+    long long strideB = (long long) N * K;   // B is N×K row-major
+    long long strideC = (long long) M * N;
+    // cuBLAS col-major: C_col(N×M) = B_col^T(N×K) × A_col(K×M)
+    cublasStatus_t st = cublasSgemmStridedBatched(
+            handle,
+            CUBLAS_OP_T,   // transpose B (K×N col-major → N×K)
+            CUBLAS_OP_N,
+            N, M, K,
+            &alpha,
+            d_B, K, strideB,    // B: N×K row-major = K×N col-major, ldb=K
+            d_A, K, strideA,    // A: M×K row-major = K×M col-major, lda=K
+            &beta,
+            d_C, N, strideC,
+            batchCount);
+    if (st != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "[TensorOpsGPU] extra batched sgemm (transB) failed: %d\n", (int) st);
+        return false;
+    }
+    return true;
+}
+
+// Row-major C(M×N) = A^T × B,  где A хранится как K×M row-major, B — K×N row-major.
+// Устраняет необходимость явно транспонировать A перед GEMM.
+static bool batched_sgemm_row_major_transA(
+        const float* d_A, const float* d_B, float* d_C,
+        int batchCount, int M, int K, int N, float alpha, float beta) {
+    cublasHandle_t handle = get_extra_cublas_handle();
+    long long strideA = (long long) K * M;   // A is K×M row-major
+    long long strideB = (long long) K * N;   // B is K×N row-major
+    long long strideC = (long long) M * N;
+    // cuBLAS col-major: C_col(N×M) = B_col(N×K) × A_col^T(K×M)
+    cublasStatus_t st = cublasSgemmStridedBatched(
+            handle,
+            CUBLAS_OP_N,
+            CUBLAS_OP_T,   // transpose A (M×K col-major → K×M)
+            N, M, K,
+            &alpha,
+            d_B, N, strideB,    // B: K×N row-major = N×K col-major, ldb=N
+            d_A, M, strideA,    // A: K×M row-major = M×K col-major, lda=M
+            &beta,
+            d_C, N, strideC,
+            batchCount);
+    if (st != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "[TensorOpsGPU] extra batched sgemm (transA) failed: %d\n", (int) st);
+        return false;
+    }
+    return true;
+}
+
 static thread_local void* tl_attn_fwd_aux = nullptr;
 static thread_local size_t tl_attn_fwd_aux_total = 0;
 
@@ -1423,11 +1559,10 @@ static bool attn_fwd_aux_ensure(
         size_t bytesProb,
         size_t bytesMask,
         bool with_mask,
-        float** d_kt,
         float** d_scores,
         float** d_probs,
         float** d_mask) {
-    size_t total = bytesQK + bytesProb * 2U;
+    size_t total = bytesProb * 2U;
     if (with_mask) {
         total += bytesMask;
     }
@@ -1442,8 +1577,6 @@ static bool attn_fwd_aux_ensure(
     }
     unsigned char* base = static_cast<unsigned char*>(tl_attn_fwd_aux);
     size_t off = 0;
-    *d_kt = reinterpret_cast<float*>(base + off);
-    off += bytesQK;
     *d_scores = reinterpret_cast<float*>(base + off);
     off += bytesProb;
     *d_probs = reinterpret_cast<float*>(base + off);
@@ -1453,6 +1586,7 @@ static bool attn_fwd_aux_ensure(
     } else {
         *d_mask = nullptr;
     }
+    (void) bytesQK;
     return true;
 }
 
@@ -1460,10 +1594,9 @@ static bool attn_fwd_aux_ensure(
 static bool attn_fwd_aux_ensure_qk_probs_only(
         size_t bytesQK,
         size_t bytesProb,
-        float** d_kt,
         float** d_scores,
         float** d_probs) {
-    size_t total = bytesQK + bytesProb * 2U;
+    size_t total = bytesProb * 2U;
     if (total > tl_attn_fwd_aux_total) {
         cudaFree(tl_attn_fwd_aux);
         tl_attn_fwd_aux = nullptr;
@@ -1475,11 +1608,10 @@ static bool attn_fwd_aux_ensure_qk_probs_only(
     }
     unsigned char* base = static_cast<unsigned char*>(tl_attn_fwd_aux);
     size_t off = 0;
-    *d_kt = reinterpret_cast<float*>(base + off);
-    off += bytesQK;
     *d_scores = reinterpret_cast<float*>(base + off);
     off += bytesProb;
     *d_probs = reinterpret_cast<float*>(base + off);
+    (void) bytesQK;
     return true;
 }
 
@@ -1487,7 +1619,6 @@ static bool attn_fwd_run_core(
         float* d_q,
         float* d_k,
         float* d_v,
-        float* d_kt,
         float* d_scores,
         float* d_probs,
         float* d_out,
@@ -1498,24 +1629,17 @@ static bool attn_fwd_run_core(
         int dV,
         float scale,
         bool use_fp16_softmax) {
-    int threads = jgpt_cuda_get_optimal_block_size();
-    int blocksQK = (batch * seqLen * dK + threads - 1) / threads;
-    int blocksProb = (batch * seqLen * seqLen + threads - 1) / threads;
-    transpose_last2_3d_kernel<<<blocksQK, threads, 0, kTensorCudaStream>>>(d_k, d_kt, batch, seqLen, dK);
-    CUDA_KERNEL_CHECK_RV(false);
-    if (!batched_sgemm_row_major_extra(d_q, d_kt, d_scores, batch, seqLen, dK, seqLen, 1.0f, 0.0f)) {
+    (void) use_fp16_softmax;
+    // Q × K^T → scores: transB GEMM (нет явного транспонирования K)
+    if (!batched_sgemm_row_major_transB(d_q, d_k, d_scores, batch, seqLen, dK, seqLen, 1.0f, 0.0f)) {
         return false;
     }
-    scale_inplace_kernel_extra<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_scores, batch * seqLen * seqLen, scale);
-    CUDA_KERNEL_CHECK_RV(false);
-    if (d_mask != nullptr) {
-        add_mask_inplace_kernel<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_scores, d_mask, batch, seqLen);
-        CUDA_KERNEL_CHECK_RV(false);
-    }
+    // Слитый scale + causal-mask + softmax: читаем d_scores один раз вместо трёх отдельных проходов
     int nrows = batch * seqLen;
     {
         size_t smem = kSoftmaxNumWarps * sizeof(float);
-        softmax_last_dim_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(d_scores, d_probs, nrows, seqLen);
+        softmax_scaled_masked_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(
+                d_scores, d_probs, d_mask, scale, nrows, seqLen);
     }
     CUDA_KERNEL_CHECK_RV(false);
     if (!batched_sgemm_row_major_extra(d_probs, d_v, d_out, batch, seqLen, seqLen, dV, 1.0f, 0.0f)) {
@@ -3113,8 +3237,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     size_t bytesProb = (size_t) batch * (size_t) seqLen * (size_t) seqLen * sizeof(float);
     size_t bytesMask = (size_t) seqLen * (size_t) seqLen * sizeof(float);
     const bool with_mask = h_mask != nullptr;
-    float *d_kt = nullptr, *d_scores = nullptr, *d_probs = nullptr, *d_mask_dev = nullptr;
-    if (!attn_fwd_aux_ensure(bytesQK, bytesProb, bytesMask, with_mask, &d_kt, &d_scores, &d_probs, &d_mask_dev)) {
+    float *d_scores = nullptr, *d_probs = nullptr, *d_mask_dev = nullptr;
+    if (!attn_fwd_aux_ensure(bytesQK, bytesProb, bytesMask, with_mask, &d_scores, &d_probs, &d_mask_dev)) {
         return;
     }
 
@@ -3132,7 +3256,6 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
                 pq,
                 pk,
                 pv,
-                d_kt,
                 d_scores,
                 d_probs,
                 pout,
@@ -3186,8 +3309,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
 
     size_t bytesQK = (size_t) batch * (size_t) seqLen * (size_t) dKDim * sizeof(float);
     size_t bytesProb = (size_t) batch * (size_t) seqLen * (size_t) seqLen * sizeof(float);
-    float *d_kt = nullptr, *d_scores = nullptr, *d_probs = nullptr;
-    if (!attn_fwd_aux_ensure_qk_probs_only(bytesQK, bytesProb, &d_kt, &d_scores, &d_probs)) {
+    float *d_scores = nullptr, *d_probs = nullptr;
+    if (!attn_fwd_aux_ensure_qk_probs_only(bytesQK, bytesProb, &d_scores, &d_probs)) {
         return;
     }
 
@@ -3201,7 +3324,6 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
                 pq,
                 pk,
                 pv,
-                d_kt,
                 d_scores,
                 d_probs,
                 pout,
@@ -3235,10 +3357,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     size_t bytesQK = (size_t) batch * (size_t) seqLen * (size_t) dK * sizeof(float);
     size_t bytesV = (size_t) batch * (size_t) seqLen * (size_t) dV * sizeof(float);
     float *d_go = nullptr, *d_p = nullptr, *d_q = nullptr, *d_k = nullptr, *d_v = nullptr;
-    float *d_vt = nullptr, *d_pt = nullptr, *d_dp = nullptr, *d_ds = nullptr, *d_dst = nullptr;
+    float *d_dp = nullptr, *d_ds = nullptr;
     float *d_gq = nullptr, *d_gk = nullptr, *d_gv = nullptr;
-    if (!attn_bwd_host_ensure(bytesProb, bytesQK, bytesV, &d_go, &d_p, &d_q, &d_k, &d_v, &d_vt, &d_pt, &d_dp, &d_ds,
-                &d_dst, &d_gq, &d_gk, &d_gv)) {
+    if (!attn_bwd_host_ensure(bytesProb, bytesQK, bytesV, &d_go, &d_p, &d_q, &d_k, &d_v, &d_dp, &d_ds,
+                &d_gq, &d_gk, &d_gv)) {
         return;
     }
 
@@ -3262,11 +3384,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     env->ReleaseFloatArrayElements(h_v, pv, JNI_ABORT);
 
     int threads = jgpt_cuda_get_optimal_block_size();
-    int blocksV = (batch * seqLen * dV + threads - 1) / threads;
     int blocksProb = (batch * seqLen * seqLen + threads - 1) / threads;
-    transpose_last2_3d_kernel<<<blocksV, threads, 0, kTensorCudaStream>>>(d_v, d_vt, batch, seqLen, dV);
-    transpose_last2_3d_kernel<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_p, d_pt, batch, seqLen, seqLen);
-    if (!batched_sgemm_row_major_extra(d_go, d_vt, d_dp, batch, seqLen, dV, seqLen, 1.0f, 0.0f)) {
+    // go × V^T → dp: transB GEMM (нет явного транспонирования V)
+    if (!batched_sgemm_row_major_transB(d_go, d_v, d_dp, batch, seqLen, dV, seqLen, 1.0f, 0.0f)) {
         return;
     }
 
@@ -3286,15 +3406,15 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     }
     CUDA_KERNEL_CHECK();
     scale_inplace_kernel_extra<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_ds, batch * seqLen * seqLen, scale);
-    if (!batched_sgemm_row_major_extra(d_pt, d_go, d_gv, batch, seqLen, seqLen, dV, 1.0f, 0.0f)) {
+    // P^T × go → gV: transA GEMM
+    if (!batched_sgemm_row_major_transA(d_p, d_go, d_gv, batch, seqLen, seqLen, dV, 1.0f, 0.0f)) {
         return;
     }
     if (!batched_sgemm_row_major_extra(d_ds, d_k, d_gq, batch, seqLen, seqLen, dK, 1.0f, 0.0f)) {
         return;
     }
-
-    transpose_last2_3d_kernel<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_ds, d_dst, batch, seqLen, seqLen);
-    if (!batched_sgemm_row_major_extra(d_dst, d_q, d_gk, batch, seqLen, seqLen, dK, 1.0f, 0.0f)) {
+    // ds^T × Q → gK: transA GEMM
+    if (!batched_sgemm_row_major_transA(d_ds, d_q, d_gk, batch, seqLen, seqLen, dK, 1.0f, 0.0f)) {
         return;
     }
 
@@ -3335,17 +3455,15 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     float* gk = reinterpret_cast<float*>(static_cast<uintptr_t>(dGradK));
     float* gv = reinterpret_cast<float*>(static_cast<uintptr_t>(dGradV));
 
-    float *d_vt = nullptr, *d_pt = nullptr, *d_dp = nullptr, *d_ds = nullptr, *d_dst = nullptr;
-    if (!attn_bwd_aux_ensure(bytesProb, bytesV, &d_vt, &d_pt, &d_dp, &d_ds, &d_dst)) {
+    float *d_dp = nullptr, *d_ds = nullptr;
+    if (!attn_bwd_aux_ensure(bytesProb, bytesV, &d_dp, &d_ds)) {
         return;
     }
 
     int threads = jgpt_cuda_get_optimal_block_size();
-    int blocksV = (batch * seqLen * dVDim + threads - 1) / threads;
     int blocksProb = (batch * seqLen * seqLen + threads - 1) / threads;
-    transpose_last2_3d_kernel<<<blocksV, threads, 0, kTensorCudaStream>>>(v, d_vt, batch, seqLen, dVDim);
-    transpose_last2_3d_kernel<<<blocksProb, threads, 0, kTensorCudaStream>>>(p, d_pt, batch, seqLen, seqLen);
-    if (!batched_sgemm_row_major_extra(go, d_vt, d_dp, batch, seqLen, dVDim, seqLen, 1.0f, 0.0f)) {
+    // go × V^T → dp: transB GEMM
+    if (!batched_sgemm_row_major_transB(go, v, d_dp, batch, seqLen, dVDim, seqLen, 1.0f, 0.0f)) {
         return;
     }
 
@@ -3359,15 +3477,15 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     }
     CUDA_KERNEL_CHECK();
     scale_inplace_kernel_extra<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_ds, batch * seqLen * seqLen, scale);
-    if (!batched_sgemm_row_major_extra(d_pt, go, gv, batch, seqLen, seqLen, dVDim, 1.0f, 0.0f)) {
+    // P^T × go → gV: transA GEMM
+    if (!batched_sgemm_row_major_transA(p, go, gv, batch, seqLen, seqLen, dVDim, 1.0f, 0.0f)) {
         return;
     }
     if (!batched_sgemm_row_major_extra(d_ds, k, gq, batch, seqLen, seqLen, dKDim, 1.0f, 0.0f)) {
         return;
     }
-
-    transpose_last2_3d_kernel<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_ds, d_dst, batch, seqLen, seqLen);
-    if (!batched_sgemm_row_major_extra(d_dst, q, gk, batch, seqLen, seqLen, dKDim, 1.0f, 0.0f)) {
+    // ds^T × Q → gK: transA GEMM
+    if (!batched_sgemm_row_major_transA(d_ds, q, gk, batch, seqLen, seqLen, dKDim, 1.0f, 0.0f)) {
         return;
     }
 }
@@ -3913,8 +4031,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormBackwardGPU(
     env->ReleaseFloatArrayElements(h_gGamma, pgg, JNI_ABORT);
 
     int threads = jgpt_cuda_get_optimal_block_size();
-    int blocks = (outer + threads - 1) / threads;
-    rms_norm_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_go, d_x, d_g, eps, d_gx, d_gg, outer, lastDim);
+    (void) threads;
+    launch_rms_norm_bwd(d_go, d_x, d_g, eps, d_gx, d_gg, outer, lastDim);
     pgx = env->GetFloatArrayElements(h_gX, nullptr);
     pgg = env->GetFloatArrayElements(h_gGamma, nullptr);
     if (!pgx || !pgg) {
@@ -3952,8 +4070,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormBackwardGPUDe
     float* gx = reinterpret_cast<float*>(static_cast<uintptr_t>(dGX));
     float* gg = reinterpret_cast<float*>(static_cast<uintptr_t>(dGGamma));
     int threads = jgpt_cuda_get_optimal_block_size();
-    int blocks = (outer + threads - 1) / threads;
-    rms_norm_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(go, x, gamma, eps, gx, gg, outer, lastDim);
+    (void) threads;
+    launch_rms_norm_bwd(go, x, gamma, eps, gx, gg, outer, lastDim);
 }
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_multiplyBackwardGPU(
@@ -4950,10 +5068,11 @@ extern "C" void jgpt_cuda_graph_prewarm_sdpa_aux_and_cublas(int bAttn, int seqLe
     const size_t bytesQK = (size_t) bAttn * (size_t) seqLen * (size_t) dK * sizeof(float);
     const size_t bytesProb = (size_t) bAttn * (size_t) seqLen * (size_t) seqLen * sizeof(float);
     float *d_kt = nullptr, *d_scores = nullptr, *d_probs = nullptr;
-    if (!attn_fwd_aux_ensure_qk_probs_only(bytesQK, bytesProb, &d_kt, &d_scores, &d_probs)) {
+    if (!attn_fwd_aux_ensure_qk_probs_only(bytesQK, bytesProb, &d_scores, &d_probs)) {
         fprintf(stderr, "jgpt_cuda_graph_prewarm_sdpa_aux_and_cublas: attn_fwd_aux_ensure_qk_probs_only failed\n");
         return;
     }
+    (void) d_kt;
 
     const size_t outElems = (size_t) bAttn * (size_t) seqLen * (size_t) dV;
     if (check_size_overflow(outElems, sizeof(float), 1)) {

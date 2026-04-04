@@ -10,6 +10,7 @@ import com.veles.llm.jgpt.ops.TensorOpsBackward;
 import com.veles.llm.jgpt.ops.TransformerBackward;
 import com.veles.llm.jgpt.training.LLMConfig;
 import com.veles.llm.jgpt.training.LLMTrainer;
+import com.veles.llm.jgpt.util.DebugGpuTrain;
 
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
@@ -48,51 +49,39 @@ public final class GPTModel {
 
     private static final Logger log = LoggerFactory.getLogger(GPTModel.class);
 
-    // #region agent log
-    private static final Path AGENT_DEBUG_LOG_B39372 =
-            Path.of("/home/pavel/StudioProjects/.cursor/debug-b39372.log");
-
     private static void agentLogB39372LayerGrad(int layer, int flat) {
-        try (var w = Files.newBufferedWriter(
-                AGENT_DEBUG_LOG_B39372, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-            w.write(
-                    "{\"sessionId\":\"b39372\",\"hypothesisId\":\"H_layer_grad\",\"location\":\"GPTModel.backwardDecoderLayersDevice\",\"message\":\"nonfinite_grad_after_block\",\"data\":{\"layer\":"
-                            + layer
-                            + ",\"flat\":"
-                            + flat
-                            + "},\"timestamp\":"
-                            + System.currentTimeMillis()
-                            + "}\n");
-        } catch (IOException ignored) {
-        }
+        DebugGpuTrain.appendJsonLine(
+                "{\"sessionId\":\"b39372\",\"hypothesisId\":\"H_layer_grad\",\"location\":\"GPTModel.backwardDecoderLayersDevice\",\"message\":\"nonfinite_grad_after_block\",\"data\":{\"layer\":"
+                        + layer
+                        + ",\"flat\":"
+                        + flat
+                        + "},\"timestamp\":"
+                        + System.currentTimeMillis()
+                        + "}");
     }
 
     private static void agentLogB39372RmsBuf(
             String hypothesisId, String location, String message, float a, float b, float c, float d, long n) {
-        try (var w = Files.newBufferedWriter(
-                AGENT_DEBUG_LOG_B39372, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-            w.write(
-                    "{\"sessionId\":\"b39372\",\"hypothesisId\":\""
-                            + hypothesisId
-                            + "\",\"location\":\""
-                            + location
-                            + "\",\"message\":\""
-                            + message
-                            + "\",\"data\":{\"n\":"
-                            + n
-                            + ",\"s0\":"
-                            + a
-                            + ",\"s1\":"
-                            + b
-                            + ",\"s2\":"
-                            + c
-                            + ",\"s3\":"
-                            + d
-                            + "},\"timestamp\":"
-                            + System.currentTimeMillis()
-                            + "}\n");
-        } catch (IOException ignored) {
-        }
+        DebugGpuTrain.appendJsonLine(
+                "{\"sessionId\":\"b39372\",\"hypothesisId\":\""
+                        + hypothesisId
+                        + "\",\"location\":\""
+                        + location
+                        + "\",\"message\":\""
+                        + message
+                        + "\",\"data\":{\"n\":"
+                        + n
+                        + ",\"s0\":"
+                        + a
+                        + ",\"s1\":"
+                        + b
+                        + ",\"s2\":"
+                        + c
+                        + ",\"s3\":"
+                        + d
+                        + "},\"timestamp\":"
+                        + System.currentTimeMillis()
+                        + "}");
     }
 
     /**
@@ -100,19 +89,13 @@ public final class GPTModel {
      * lastLogitsGrad (1 if cleared).
      */
     private static void agentLogB39372ScratchHandoff(int mask) {
-        try (var w = Files.newBufferedWriter(
-                AGENT_DEBUG_LOG_B39372, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-            w.write(
-                    "{\"sessionId\":\"b39372\",\"hypothesisId\":\"H_scratch_handoff\",\"location\":\"GPTModel.clearGpuResidentDecoderScratchForTrainHandoff\",\"message\":\"cleared_resident_scratch\",\"data\":{\"mask\":"
-                            + mask
-                            + "},\"timestamp\":"
-                            + System.currentTimeMillis()
-                            + "}\n");
-        } catch (IOException ignored) {
-        }
+        DebugGpuTrain.appendJsonLine(
+                "{\"sessionId\":\"b39372\",\"hypothesisId\":\"H_scratch_handoff\",\"location\":\"GPTModel.clearGpuResidentDecoderScratchForTrainHandoff\",\"message\":\"cleared_resident_scratch\",\"data\":{\"mask\":"
+                        + mask
+                        + "},\"timestamp\":"
+                        + System.currentTimeMillis()
+                        + "}");
     }
-
-    // #endregion
 
     private static final AtomicBoolean FUSED_LM_HEAD_FAILURE_LOGGED = new AtomicBoolean();
 
@@ -257,6 +240,10 @@ public final class GPTModel {
     private int cachedCausalMaskSeqLen = -1;
     private Tensor cachedLmHeadTranspose;
     private boolean cachedLmHeadTransposeValid;
+
+    /** Кэш {@link #gpuTensorByTrainableParameter()}: пересоздаётся только при явном сбросе. */
+    private Map<Tensor, GpuTensor> cachedGpuParamMap;
+    private boolean cachedGpuParamMapValid;
     private Tensor lastInputTokens;
     private int lastSeqLen;
     private Tensor backwardGradHidden;
@@ -513,6 +500,9 @@ public final class GPTModel {
         if (!gpuResident) {
             throw new IllegalStateException("gpuTensorByTrainableParameter requires gpuResident=true");
         }
+        if (cachedGpuParamMapValid && cachedGpuParamMap != null) {
+            return cachedGpuParamMap;
+        }
         Map<Tensor, GpuTensor> map = new IdentityHashMap<>();
         if (tokenEmbedding.weightsGpu != null) {
             map.put(tokenEmbedding.weights, tokenEmbedding.weightsGpu);
@@ -524,7 +514,14 @@ public final class GPTModel {
             gpuDecoderLayer[i].collectMapping(map);
         }
         gpuResidentHead.collectMapping(lmHead, layerNormFinal, map);
+        cachedGpuParamMap = map;
+        cachedGpuParamMapValid = true;
         return map;
+    }
+
+    /** Сбрасывает кэш {@link #gpuTensorByTrainableParameter()} — вызывать при добавлении/удалении GPU-тензоров. */
+    public void invalidateGpuParamMapCache() {
+        cachedGpuParamMapValid = false;
     }
 
     private static boolean resolveDecoderGpuPipeline() {
@@ -711,6 +708,7 @@ public final class GPTModel {
     /** Освобождает {@link GpuTensor} финальных весов; после вызова {@link #isGpuResident()} остаётся {@code true}, но
      * {@link #forwardGpuLmHead(Tensor)} бросит (буферы закрыты). */
     public void closeGpuResidentWeights() {
+        invalidateGpuParamMapCache();
         tokenEmbedding.closeGpuWeights();
         positionEmbedding.closeGpuWeights();
         closeEmbeddingScratchGpu();
@@ -772,6 +770,7 @@ public final class GPTModel {
         closeBlockCachesDevice();
         closeEmbeddingScratchGpu();
         clearGpuResidentDecoderScratchForTrainHandoff();
+        clearSampledTrainLossGrad();
         if (decoderLayerGraphExec != null) {
             destroyDecoderLayerCudaGraphs();
             decoderLayerGraphCaptureKey = Integer.MIN_VALUE;
@@ -832,9 +831,7 @@ public final class GPTModel {
             lastLogitsGradGpu.clear();
             m |= 256;
         }
-        // #region agent log
         agentLogB39372ScratchHandoff(m);
-        // #endregion
     }
 
     private static GpuFloatBuffer closeGpuBuffer(GpuFloatBuffer buf) {
@@ -1070,10 +1067,94 @@ public final class GPTModel {
             xBeforeFinalNorm = null;
         }
         int stubLen = logitsFlatElems;
-        if (logitsShapeStub == null || logitsShapeStub.length < stubLen) {
+        if (logitsShapeStub == null || logitsShapeStub.length != stubLen) {
             logitsShapeStub = new float[stubLen];
         }
         return Tensor.wrap(logitsShapeStub, new int[] {batch, seqLen, vocabSize});
+    }
+
+    /**
+     * Sampled-train-only: финальный RMSNorm + dot по столбцам LM-head только для {@code candidateIds}.
+     * Не материализует {@link #lastLogitsGpu} ({@code rows×vocab}); закрывает предыдущие VRAM-буферы полных логитов.
+     *
+     * <p>Явный split-путь (RMSNorm + kernel кандидатов), без {@code JGPT_FUSED_LM_HEAD}, чтобы не получать полную
+     * матрицу логитов как побочный продукт fusion.
+     *
+     * @return тензор-заглушка формы {@code [batch, seq_len, 1]}: candidate logits и их градиенты остаются на device,
+     *     а этот Tensor несёт только метаданные шага для существующего train/backward orchestration.
+     */
+    public Tensor forwardGpuLmHeadCandidateLogitsFromDevice(
+            GpuFloatBuffer xBeforeNormDevice,
+            int batch,
+            int seqLen,
+            GpuIntBuffer candidateIds,
+            GpuFloatBuffer candidateLogitsOut,
+            int candidateCount,
+            boolean fillLastHiddenForBackward) {
+        if (!gpuResident || gpuResidentHead == null) {
+            throw new IllegalStateException("forwardGpuLmHeadCandidateLogitsFromDevice требует gpuResident=true");
+        }
+        if (!TensorOpsGPU.isGpuAvailable()) {
+            throw new IllegalStateException("forwardGpuLmHeadCandidateLogitsFromDevice требует CUDA");
+        }
+        if (candidateIds == null || candidateLogitsOut == null || candidateCount <= 0) {
+            throw new IllegalArgumentException("candidateIds/candidateLogitsOut/candidateCount");
+        }
+        int rows = batch * seqLen;
+        int flat = rows * dModel;
+        long candElemsLong = (long) rows * candidateCount;
+        if (candElemsLong > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("rows*candidateCount overflow");
+        }
+        int candElems = (int) candElemsLong;
+        if (xBeforeNormDevice.numFloats() < flat) {
+            throw new IllegalArgumentException("xBeforeNormDevice слишком мал");
+        }
+        if (candidateIds.numInts() < candElems) {
+            throw new IllegalArgumentException("candidateIds buffer too small");
+        }
+        if (candidateLogitsOut.numFloats() < candElems) {
+            throw new IllegalArgumentException("candidateLogitsOut buffer too small");
+        }
+        float eps = TensorOpsGPU.rmsNormEps();
+        lmHeadNormScratchGpu = ensureGpuBuffer(lmHeadNormScratchGpu, flat);
+        lastLogitsGpu = closeGpuBuffer(lastLogitsGpu);
+        lastLogitsGradGpu = closeGpuBuffer(lastLogitsGradGpu);
+
+        TensorOpsGPU.rmsNormGpuDevice(
+                xBeforeNormDevice,
+                gpuResidentHead.layerNormGammaGpu().dataBuffer(),
+                eps,
+                lmHeadNormScratchGpu,
+                rows,
+                dModel);
+        TensorOpsGPU.lmHeadCandidateLogitsGpuDevice(
+                lmHeadNormScratchGpu,
+                gpuResidentHead.lmHeadGpu().dataBuffer(),
+                candidateIds,
+                candidateLogitsOut,
+                rows,
+                dModel,
+                vocabSize,
+                candidateCount);
+
+        if (fillLastHiddenForBackward) {
+            xBeforeFinalNormGpu = ensureGpuBuffer(xBeforeFinalNormGpu, flat);
+            xBeforeFinalNormGpu.copyFromDevice(xBeforeNormDevice, flat);
+            lastHiddenGpu = ensureGpuBuffer(lastHiddenGpu, flat);
+            lastHiddenGpu.copyFromDevice(lmHeadNormScratchGpu, flat);
+            lastHidden = null;
+            xBeforeFinalNorm = null;
+        }
+        int stubLen = rows;
+        if (logitsShapeStub == null || logitsShapeStub.length != stubLen) {
+            logitsShapeStub = new float[stubLen];
+        }
+        /*
+         * Sampled path keeps candidate logits and grads on device; this tensor is only a lightweight carrier
+         * for batch/seq metadata into the existing backward/optimizer orchestration.
+         */
+        return Tensor.wrap(logitsShapeStub, new int[] {batch, seqLen, 1});
     }
 
     /**
@@ -1153,31 +1234,31 @@ public final class GPTModel {
         }
         GpuFloatBuffer dGradBeforeNorm = GpuFloatBuffer.allocate((long) rows * dModel);
         GpuFloatBuffer dGGamma = GpuFloatBuffer.allocate(dModel);
-        // #region agent log
-        TensorOpsGPU.synchronizeStream();
-        float[] preGx = new float[4];
-        dGradBeforeNorm.copyTo(preGx, 0, Math.min(4, rows * dModel));
-        agentLogB39372RmsBuf(
-                "H_uninit",
-                "GPTModel.backwardFromDeviceLogits",
-                "dGradBeforeNorm_before_clear",
-                preGx[0],
-                preGx.length > 1 ? preGx[1] : 0f,
-                preGx.length > 2 ? preGx[2] : 0f,
-                preGx.length > 3 ? preGx[3] : 0f,
-                (long) rows * dModel);
-        float[] preGg = new float[1];
-        dGGamma.copyTo(preGg, 0, 1);
-        agentLogB39372RmsBuf(
-                "H_uninit",
-                "GPTModel.backwardFromDeviceLogits",
-                "dGGamma_before_clear",
-                preGg[0],
-                0f,
-                0f,
-                0f,
-                dModel);
-        // #endregion
+        if (DebugGpuTrain.isEnabled()) {
+            TensorOpsGPU.synchronizeStream();
+            float[] preGx = new float[4];
+            dGradBeforeNorm.copyTo(preGx, 0, Math.min(4, rows * dModel));
+            agentLogB39372RmsBuf(
+                    "H_uninit",
+                    "GPTModel.backwardFromDeviceLogits",
+                    "dGradBeforeNorm_before_clear",
+                    preGx[0],
+                    preGx.length > 1 ? preGx[1] : 0f,
+                    preGx.length > 2 ? preGx[2] : 0f,
+                    preGx.length > 3 ? preGx[3] : 0f,
+                    (long) rows * dModel);
+            float[] preGg = new float[1];
+            dGGamma.copyTo(preGg, 0, 1);
+            agentLogB39372RmsBuf(
+                    "H_uninit",
+                    "GPTModel.backwardFromDeviceLogits",
+                    "dGGamma_before_clear",
+                    preGg[0],
+                    0f,
+                    0f,
+                    0f,
+                    dModel);
+        }
         // rms_norm_bwd accumulates into gX / gGamma; cudaMalloc/async content is undefined.
         dGradBeforeNorm.clear();
         dGGamma.clear();
@@ -1389,6 +1470,73 @@ public final class GPTModel {
     }
 
     /**
+     * Полный GPU-forward обучения для sampled CE: декодер на VRAM + финальный RMSNorm + кандидатные логиты без
+     * материализации {@code rows×vocab} логитов на GPU.
+     *
+     * <p>Требует тот же контракт, что ветка {@code vramEmbedDecoderLm} в {@link #forward(Tensor, boolean, boolean)}:
+     * {@link #deviceLogitsEnabled}, {@link #deviceDecoderBackward}, резидентные эмбеддинги и CUDA.
+     *
+     * @param candidateIds {@code rows × candidateCount} int на GPU (уже заполнен на хосте→device)
+     * @param candidateLogitsOut {@code rows × candidateCount} float на GPU (заполняется)
+     */
+    public Tensor forwardTrainingDeviceSampled(
+            Tensor inputTokens, GpuIntBuffer candidateIds, GpuFloatBuffer candidateLogitsOut, int candidateCount) {
+        if (!lastForwardWasTraining) {
+            closeBlockCachesDevice();
+            blockCachesDevice = null;
+        }
+        try {
+            int[] inputShape = inputTokens.getShape();
+            if (inputShape.length != 2) {
+                throw new IllegalArgumentException("inputTokens must be 2D [batch, seq_len]");
+            }
+            int batch = inputShape[0];
+            int seqLen = inputShape[1];
+            if (seqLen > maxSeqLen) {
+                throw new IllegalArgumentException("seq_len " + seqLen + " > max_seq_len " + maxSeqLen);
+            }
+            boolean vramEmbedDecoderLm =
+                    deviceLogitsEnabled
+                            && deviceDecoderBackward
+                            && gpuDecoderLayer != null
+                            && TensorOpsGPU.isGpuAvailable()
+                            && gpuResident
+                            && tokenEmbedding.hasWeightsGpu()
+                            && positionEmbedding.hasWeightsGpu()
+                            && TensorOpsGPU.shouldUseGpuElementwise(batch * seqLen * dModel);
+            if (!vramEmbedDecoderLm) {
+                throw new IllegalStateException(
+                        "forwardTrainingDeviceSampled requires deviceLogitsEnabled, deviceDecoderBackward, decoder GPU pipeline and resident embeddings");
+            }
+            lastInputTokens = inputTokens;
+            lastSeqLen = seqLen;
+            Tensor mask = getOrCreateCausalMask(seqLen);
+            lastMask = mask;
+
+            blockCaches = null;
+            if (blockCachesDevice == null || blockCachesDevice.length != numLayers) {
+                closeBlockCachesDevice();
+                blockCachesDevice = new BlockActivationCacheDevice[numLayers];
+            }
+            for (int i = 0; i < numLayers; i++) {
+                if (blockCachesDevice[i] == null) {
+                    blockCachesDevice[i] = new BlockActivationCacheDevice();
+                }
+                blockCachesDevice[i].ensure(batch, seqLen, dModel, numHeads, dIntermediate);
+            }
+
+            GpuFloatBuffer emb = forwardGpuEmbeddings(inputTokens);
+            GpuFloatBuffer decOut = forwardGpuDecoder(emb, mask, true, batch, seqLen);
+            xBeforeFinalNorm = null;
+            lastHidden = null;
+            return forwardGpuLmHeadCandidateLogitsFromDevice(
+                    decOut, batch, seqLen, candidateIds, candidateLogitsOut, candidateCount, true);
+        } finally {
+            lastForwardWasTraining = true;
+        }
+    }
+
+    /**
      * Полный проход по {@code numLayers} декодер-блокам (аттеншн + FFN), с resident GPU-буферами внутри
      * {@link DecoderBlock#forward} при {@link #gpuResident}. Тот же цикл, что между embedding и финальной
      * RMSNorm в {@link #forward(Tensor, boolean, boolean)} — вынесен для профилирования (Nsight) и единой точки
@@ -1465,6 +1613,17 @@ public final class GPTModel {
         return lastLogitsGpu != null
                 && !lastLogitsGpu.isClosed()
                 && lastHiddenGpu != null
+                && !lastHiddenGpu.isClosed()
+                && xBeforeFinalNormGpu != null
+                && !xBeforeFinalNormGpu.isClosed();
+    }
+
+    /**
+     * VRAM-активации под backward финального RMSNorm/LM-head без полного буфера логитов — после
+     * {@link #forwardTrainingDeviceSampled} / {@link #forwardGpuLmHeadCandidateLogitsFromDevice}.
+     */
+    public boolean hasDeviceSampledTrainLmHeadActivations() {
+        return lastHiddenGpu != null
                 && !lastHiddenGpu.isClosed()
                 && xBeforeFinalNormGpu != null
                 && !xBeforeFinalNormGpu.isClosed();
@@ -1687,7 +1846,7 @@ public final class GPTModel {
      * Перед вызовом нужен {@code forward(..., true)} в том же шаге.
      */
     public void backward(Tensor logits) {
-        backward(logits, true);
+        backward(logits, true, false);
     }
 
     /**
@@ -1695,6 +1854,18 @@ public final class GPTModel {
      *     если {@code false} — накапливать в существующие буферы (gradient accumulation после первого микробатча).
      */
     public void backward(Tensor logits, boolean zeroParamGrads) {
+        backward(logits, zeroParamGrads, false);
+    }
+
+    /**
+     * @param zeroParamGrads если {@code true} — обнулить градиенты параметров перед backward (обычный шаг);
+     *     если {@code false} — накапливать в существующие буферы (gradient accumulation после первого микробатча).
+     * @param gpuTrainableGradsAlreadyZero подсказка от тренера: ∂ обучаемых параметров на VRAM уже обнулены после
+     *     прошлого шага оптимизатора — можно пропустить {@link #zeroGpuTrainableParameterGrads()} (экономия
+     *     {@code cudaMemsetAsync} на параметр). Имеет смысл только при {@link #isGpuResident()} и
+     *     {@code zeroParamGrads == true}; иначе игнорируется.
+     */
+    public void backward(Tensor logits, boolean zeroParamGrads, boolean gpuTrainableGradsAlreadyZero) {
         if (blockCaches == null && blockCachesDevice == null) {
             throw new IllegalStateException(
                     lastForwardWasTraining
@@ -1722,9 +1893,15 @@ public final class GPTModel {
         }
 
         if (zeroParamGrads) {
-            zeroGradParameters();
+            /* При device-logits + VRAM хостовые ∂ параметров в этом шаге не используются — не тратить CPU на fill. */
+            if (!(deviceLogitsEnabled && gpuResident && gpuResidentHead != null)) {
+                zeroGradParameters();
+            }
             if (gpuResident) {
-                zeroGpuTrainableParameterGrads();
+                /* После успешного GPU step тренер уже обнулил ∂ на VRAM — повторный memset в начале шага избыточен. */
+                if (!gpuTrainableGradsAlreadyZero) {
+                    zeroGpuTrainableParameterGrads();
+                }
             }
         }
 
@@ -1804,7 +1981,8 @@ public final class GPTModel {
                     tmpXBeforeNorm.copyFrom(xBeforeFinalNorm.internalBuffer(), 0, flat);
                     dXBeforeNorm = tmpXBeforeNorm;
                 }
-                try (GpuFloatBuffer dGradBeforeNorm =
+                // Buffer belongs to thread-local workspace — must NOT close it here
+                GpuFloatBuffer dGradBeforeNorm =
                         backwardFromSampledDeviceLogits(
                                 lastSampledCandidateIdsGpu,
                                 lastSampledCandidateGradGpu,
@@ -1812,14 +1990,13 @@ public final class GPTModel {
                                 dXBeforeNorm,
                                 rows,
                                 lastSampledCandidateCount,
-                                zeroParamGrads)) {
-                    if (!deviceDecoderBackward || gpuDecoderLayer == null || blockCachesDevice == null) {
-                        throw new IllegalStateException(
-                                "device logits backward requires deviceDecoderBackward, gpuDecoderLayer and "
-                                        + "BlockActivationCacheDevice from forward(training=true); check TrainingConfig / LLMConfig.");
-                    }
-                    backwardDecoderLayersDevice(dGradBeforeNorm, batch, seqLen, zeroParamGrads);
+                                zeroParamGrads);
+                if (!deviceDecoderBackward || gpuDecoderLayer == null || blockCachesDevice == null) {
+                    throw new IllegalStateException(
+                            "device logits backward requires deviceDecoderBackward, gpuDecoderLayer and "
+                                    + "BlockActivationCacheDevice from forward(training=true); check TrainingConfig / LLMConfig.");
                 }
+                backwardDecoderLayersDevice(dGradBeforeNorm, batch, seqLen, zeroParamGrads);
             } finally {
                 closeGpuBuffer(tmpNormedHidden);
                 closeGpuBuffer(tmpXBeforeNorm);
@@ -1881,7 +2058,6 @@ public final class GPTModel {
         if (candidateIds == null || candidateGrad == null || candidateCount <= 0) {
             throw new IllegalArgumentException("sampled logits backward requires candidate ids/grad");
         }
-        float eps = TensorOpsGPU.rmsNormEps();
         GpuFloatBuffer lmHeadBuf = gpuResidentHead.lmHeadGpu().dataBuffer();
         GpuFloatBuffer gammaBuf = gpuResidentHead.layerNormGammaGpu().dataBuffer();
 
@@ -1889,33 +2065,27 @@ public final class GPTModel {
         if (!lmHeadGpu.hasGradBuffer() || zeroGpuGrads) {
             lmHeadGpu.zeroGrad();
         }
-        GpuFloatBuffer dHidden = GpuFloatBuffer.allocate((long) rows * dModel);
-        TensorOpsGPU.sampledLmHeadBackwardGpuDevice(
-                candidateIds,
-                candidateGrad,
-                dNormedHidden,
-                lmHeadBuf,
-                dHidden,
-                lmHeadGpu.gradBuffer(),
-                rows,
-                dModel,
-                vocabSize,
-                candidateCount);
 
         GpuTensor gammaGpu = gpuResidentHead.layerNormGammaGpu();
         if (!gammaGpu.hasGradBuffer() || zeroGpuGrads) {
             gammaGpu.zeroGrad();
         }
-        GpuFloatBuffer dGradBeforeNorm = GpuFloatBuffer.allocate((long) rows * dModel);
-        GpuFloatBuffer dGGamma = GpuFloatBuffer.allocate(dModel);
-        dGradBeforeNorm.clear();
-        dGGamma.clear();
-        TensorOpsGPU.rmsNormBackwardGpuDevice(
-                dHidden, dXBeforeNorm, gammaBuf, eps, dGradBeforeNorm, dGGamma, rows, dModel);
-        TensorOpsGPU.accumulateAddGpuDevice(gammaGpu.gradBuffer(), dGGamma, layerNormFinal.size());
-        dGGamma.close();
-        dHidden.close();
-        return dGradBeforeNorm;
+
+        // Workspace-backed: no cudaMalloc per step (dHidden, dGradBeforeNorm, dGGamma)
+        return TransformerBackward.backwardSampledLmHeadDevice(
+                candidateIds,
+                candidateGrad,
+                dNormedHidden,
+                dXBeforeNorm,
+                lmHeadBuf,
+                lmHeadGpu.gradBuffer(),
+                gammaBuf,
+                gammaGpu.gradBuffer(),
+                layerNormFinal.size(),
+                rows,
+                dModel,
+                vocabSize,
+                candidateCount);
     }
 
     private void backwardDecoderLayersHost(Tensor gradBeforeNorm, int batch, int seqLen, boolean zeroParamGrads) {
@@ -2018,16 +2188,32 @@ public final class GPTModel {
                     attnResident,
                     ffnResident);
 
-            TensorOpsGPU.synchronizeStream();
-            if (TensorOpsGPU.anyNonFiniteGpuDevice(gradNext, flat)) {
-                // #region agent log
-                agentLogB39372LayerGrad(layer, flat);
-                // #endregion
+            if (DebugGpuTrain.perLayerFiniteCheck()) {
+                if (TensorOpsGPU.anyNonFiniteGpuDevice(gradNext, flat)) {
+                    log.warn(
+                            "Non-finite gradient after decoder layer {} ({} elements). "
+                                    + "Enable JGPT_DEBUG_GPU_TRAIN=1 for JSONL diagnostics; "
+                                    + "JGPT_BWD_LAYER_FINITE_CHECK=0 and no debug = one check after stack only.",
+                            layer,
+                            flat);
+                    agentLogB39372LayerGrad(layer, flat);
+                }
             }
 
             GpuFloatBuffer tmp = gradCur;
             gradCur = gradNext;
             gradNext = tmp;
+        }
+
+        if (!DebugGpuTrain.perLayerFiniteCheck()) {
+            if (TensorOpsGPU.anyNonFiniteGpuDevice(gradCur, flat)) {
+                log.warn(
+                        "Non-finite gradient after decoder stack ({} elements). "
+                                + "Enable JGPT_DEBUG_GPU_TRAIN=1 for JSONL or JGPT_BWD_LAYER_FINITE_CHECK=1 "
+                                + "to localize by layer.",
+                        flat);
+                agentLogB39372LayerGrad(-1, flat);
+            }
         }
 
         tokenEmbedding.backwardScatterFromDeviceGrad(lastInputTokens, gradCur, batch, seqLen);

@@ -29,5 +29,7 @@ public final class GpuWorkspaceCleanup {
         GpuAttentionResidentWorkspace.releaseThreadLocal();
         GpuBlockWorkspace.releaseThreadLocal();
         GpuForwardBlockWorkspace.releaseThreadLocal();
+        GpuSampledLmHeadBackwardWorkspace.releaseThreadLocal();
+        GpuTransformerOuterBackwardWorkspace.releaseThreadLocal();
     }
 }

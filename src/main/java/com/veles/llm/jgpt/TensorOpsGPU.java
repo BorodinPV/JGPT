@@ -714,6 +714,17 @@ public final class TensorOpsGPU {
     public static native boolean anyNonFiniteGPUDevice(long dSrc, int n);
 
     /**
+     * Фьюзированная проверка NaN/Inf по нескольким device-буферам; один JNI-вызов и одна
+     * синхронизация стрима в конце. Быстрее чем N вызовов {@link #anyNonFiniteGPUDevice}.
+     *
+     * @param dPtrs  device-указатели (как {@code long})
+     * @param lens   число float в каждом буфере
+     * @param nBufs  число буферов
+     * @return {@code true}, если хотя бы один элемент — NaN или Inf
+     */
+    public static native boolean anyNonFiniteGPUDeviceMulti(long[] dPtrs, int[] lens, int nBufs);
+
+    /**
      * CE + softmax + grad on device pointers; targets H2D (small O(B×S)), loss D2H scalar.
      * Logits are modified in-place (softmax applied), grad written to dGrad.
      *
@@ -1899,6 +1910,38 @@ public final class TensorOpsGPU {
     }
 
     /**
+     * Фьюзированная проверка NaN/Inf по списку буферов на GPU; один JNI-вызов и одна синхронизация.
+     * Пропускает null/closed буферы.
+     *
+     * @param bufs   буферы для проверки
+     * @param lens   длины (в float) каждого буфера; {@code lens[i] <= 0} → буфер пропускается
+     * @param nBufs  реальное число элементов в массивах (≤ {@code bufs.length})
+     * @return {@code true}, если хотя бы в одном буфере есть NaN или Inf
+     */
+    public static boolean anyNonFiniteGpuDeviceMulti(GpuFloatBuffer[] bufs, int[] lens, int nBufs) {
+        if (nBufs <= 0 || bufs == null || lens == null) {
+            return false;
+        }
+        long[] ptrs = new long[nBufs];
+        int[] safeLens = new int[nBufs];
+        int count = 0;
+        for (int i = 0; i < nBufs; i++) {
+            GpuFloatBuffer b = bufs[i];
+            int n = lens[i];
+            if (b == null || b.isClosed() || n <= 0) {
+                continue;
+            }
+            ptrs[count] = b.devicePointer();
+            safeLens[count] = n;
+            count++;
+        }
+        if (count == 0) {
+            return false;
+        }
+        return anyNonFiniteGPUDeviceMulti(ptrs, safeLens, count);
+    }
+
+    /**
      * CE + softmax + grad on device; targets are host-side (small O(B×S)).
      *
      * @return mean CE loss
@@ -2044,6 +2087,40 @@ public final class TensorOpsGPU {
                 candidateIds.devicePointer(),
                 candidateLogits.devicePointer(),
                 rows,
+                vocab,
+                candidates);
+    }
+
+    /**
+     * LM-head только по кандидатам: эквивалентно {@code matmul(normedHidden, W)} с последующим gather по id, без
+     * материализации полных логитов {@code rows × vocab}.
+     */
+    public static void lmHeadCandidateLogitsGpuDevice(
+            GpuFloatBuffer normedHidden,
+            GpuFloatBuffer lmHeadWeights,
+            GpuIntBuffer candidateIds,
+            GpuFloatBuffer candidateLogits,
+            int rows,
+            int dModel,
+            int vocab,
+            int candidates) {
+        if (rows <= 0 || dModel <= 0 || vocab <= 0 || candidates <= 0) {
+            throw new IllegalArgumentException("rows, dModel, vocab, candidates must be positive");
+        }
+        long hiddenNeed = (long) rows * dModel;
+        long weightNeed = (long) dModel * vocab;
+        long candidateNeed = (long) rows * candidates;
+        requireMinFloats(requireGpu(normedHidden, "normedHidden"), hiddenNeed, "normedHidden");
+        requireMinFloats(requireGpu(lmHeadWeights, "lmHeadWeights"), weightNeed, "lmHeadWeights");
+        requireMinInts(requireGpuInt(candidateIds, "candidateIds"), candidateNeed, "candidateIds");
+        requireMinFloats(requireGpu(candidateLogits, "candidateLogits"), candidateNeed, "candidateLogits");
+        lmHeadCandidateLogitsGPUDevice(
+                normedHidden.devicePointer(),
+                lmHeadWeights.devicePointer(),
+                candidateIds.devicePointer(),
+                candidateLogits.devicePointer(),
+                rows,
+                dModel,
                 vocab,
                 candidates);
     }
@@ -2555,6 +2632,16 @@ public final class TensorOpsGPU {
 
     private static native void gatherLogitsByIdsGPUDevice(
             long dLogits, long dCandidateIds, long dCandidateLogits, int rows, int vocab, int candidates);
+
+    private static native void lmHeadCandidateLogitsGPUDevice(
+            long dNormedHidden,
+            long dLmHead,
+            long dCandidateIds,
+            long dCandidateLogits,
+            int rows,
+            int dModel,
+            int vocab,
+            int candidates);
 
     private static native float sampledCrossEntropyGradLossGPUDeviceFirstSlot(
             long dCandidateLogits, long dCandidateIds, long dCandidateGrad, int rows, int candidates, float gradScale);

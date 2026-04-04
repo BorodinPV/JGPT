@@ -1,17 +1,14 @@
 package com.veles.llm.jgpt.ops;
 
 import com.veles.llm.jgpt.GpuFloatBuffer;
+import com.veles.llm.jgpt.GpuIntBuffer;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
 import com.veles.llm.jgpt.cuda.GpuPendingGradients;
 import com.veles.llm.jgpt.model.BlockActivationCache;
 import com.veles.llm.jgpt.model.BlockActivationCacheDevice;
+import com.veles.llm.jgpt.util.DebugGpuTrain;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.Objects;
 
 /**
@@ -26,35 +23,25 @@ import java.util.Objects;
  */
 public final class TransformerBackward {
 
-    // #region agent log
-    private static final Path AGENT_DEBUG_LOG_B39372 =
-            Path.of("/home/pavel/StudioProjects/.cursor/debug-b39372.log");
-
     private static void agentLogB39372RmsTargets(
             float dx0, float dx1, float ng0, float ng1, int rows, int dModel) {
-        try (var w = Files.newBufferedWriter(
-                AGENT_DEBUG_LOG_B39372, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-            w.write(
-                    "{\"sessionId\":\"b39372\",\"hypothesisId\":\"H_rms_accum_tgt\",\"location\":\"TransformerBackward.transformerBlockBackwardGpuDevice\",\"message\":\"pre_clear_rmsnorm1_out_buffers\",\"data\":{\"rows\":"
-                            + rows
-                            + ",\"dModel\":"
-                            + dModel
-                            + ",\"dx0\":"
-                            + dx0
-                            + ",\"dx1\":"
-                            + dx1
-                            + ",\"ng0\":"
-                            + ng0
-                            + ",\"ng1\":"
-                            + ng1
-                            + "},\"timestamp\":"
-                            + System.currentTimeMillis()
-                            + "}\n");
-        } catch (IOException ignored) {
-        }
+        DebugGpuTrain.appendJsonLine(
+                "{\"sessionId\":\"b39372\",\"hypothesisId\":\"H_rms_accum_tgt\",\"location\":\"TransformerBackward.transformerBlockBackwardGpuDevice\",\"message\":\"pre_clear_rmsnorm1_out_buffers\",\"data\":{\"rows\":"
+                        + rows
+                        + ",\"dModel\":"
+                        + dModel
+                        + ",\"dx0\":"
+                        + dx0
+                        + ",\"dx1\":"
+                        + dx1
+                        + ",\"ng0\":"
+                        + ng0
+                        + ",\"ng1\":"
+                        + ng1
+                        + "},\"timestamp\":"
+                        + System.currentTimeMillis()
+                        + "}");
     }
-
-    // #endregion
 
     private TransformerBackward() {}
 
@@ -1172,6 +1159,76 @@ public final class TransformerBackward {
     }
 
     /**
+     * Sampled LM head backward on GPU using thread-local workspace; eliminates per-step
+     * {@code cudaMalloc} for {@code dHidden}, {@code dGradBeforeNorm}, {@code dGGamma}.
+     *
+     * <p><b>Ownership:</b> returns the workspace {@code dGradBeforeNorm} buffer — caller must
+     * <b>NOT</b> close it. The buffer is valid until the next call to this method on the same
+     * thread, or until {@link GpuWorkspaceCleanup#releaseAllGpuWorkspacesThreadLocal()}.
+     *
+     * @param lmHeadWeights    device weight matrix [dModel × vocabSize]
+     * @param lmHeadGrad       device grad buffer for LM head [dModel × vocabSize]
+     * @param normGamma        device gamma of the final RMSNorm [dModel]
+     * @param normGammaGrad    device grad buffer for gamma [dModel]
+     * @param normGammaSize    number of floats in gamma (== dModel)
+     */
+    public static GpuFloatBuffer backwardSampledLmHeadDevice(
+            GpuIntBuffer candidateIds,
+            GpuFloatBuffer candidateGrad,
+            GpuFloatBuffer dNormedHidden,
+            GpuFloatBuffer dXBeforeNorm,
+            GpuFloatBuffer lmHeadWeights,
+            GpuFloatBuffer lmHeadGrad,
+            GpuFloatBuffer normGamma,
+            GpuFloatBuffer normGammaGrad,
+            int normGammaSize,
+            int rows,
+            int dModel,
+            int vocabSize,
+            int candidateCount) {
+        Objects.requireNonNull(candidateIds, "candidateIds");
+        Objects.requireNonNull(candidateGrad, "candidateGrad");
+        Objects.requireNonNull(dNormedHidden, "dNormedHidden");
+        Objects.requireNonNull(dXBeforeNorm, "dXBeforeNorm");
+        Objects.requireNonNull(lmHeadWeights, "lmHeadWeights");
+        Objects.requireNonNull(lmHeadGrad, "lmHeadGrad");
+        Objects.requireNonNull(normGamma, "normGamma");
+        Objects.requireNonNull(normGammaGrad, "normGammaGrad");
+
+        GpuSampledLmHeadBackwardWorkspace ws = GpuSampledLmHeadBackwardWorkspace.local();
+        ws.ensure(rows, dModel);
+
+        GpuFloatBuffer dHidden = ws.getDHidden();
+        GpuFloatBuffer dGradBeforeNorm = ws.getDGradBeforeNorm();
+        GpuFloatBuffer dGGamma = ws.getDGGamma();
+
+        // dHidden fully overwritten by sampledLmHeadBackwardGpuDevice — no need to clear
+        TensorOpsGPU.sampledLmHeadBackwardGpuDevice(
+                candidateIds,
+                candidateGrad,
+                dNormedHidden,
+                lmHeadWeights,
+                dHidden,
+                lmHeadGrad,
+                rows,
+                dModel,
+                vocabSize,
+                candidateCount);
+
+        // rmsNormBackwardGpuDevice uses += on outputs; must zero before call
+        dGradBeforeNorm.clear();
+        dGGamma.clear();
+        TensorOpsGPU.rmsNormBackwardGpuDevice(
+                dHidden, dXBeforeNorm, normGamma,
+                TensorOpsGPU.rmsNormEps(),
+                dGradBeforeNorm, dGGamma,
+                rows, dModel);
+        TensorOpsGPU.accumulateAddGpuDevice(normGammaGrad, dGGamma, normGammaSize);
+
+        return dGradBeforeNorm;
+    }
+
+    /**
      * Decoder block backward entirely on device: grad flow stays in {@link GpuFloatBuffer}.
      */
     public static void transformerBlockBackwardGpuDevice(
@@ -1197,68 +1254,70 @@ public final class TransformerBackward {
         int rows = batch * seqLen;
         int flat = rows * dModel;
 
-        try (GpuFloatBuffer dGradXRes1 = GpuFloatBuffer.allocate(flat);
-             GpuFloatBuffer dGradNorm1Path = GpuFloatBuffer.allocate(flat);
-             GpuFloatBuffer dNorm1 = GpuFloatBuffer.allocate(dModel);
-             GpuFloatBuffer xInScratch = GpuFloatBuffer.allocate(flat);
-             GpuFloatBuffer norm1GammaTmp =
-                     attnResident == null ? GpuFloatBuffer.allocate(dModel) : null) {
-            fusedFfnNormResidualBackwardGpuDevice(
-                    dGradOut,
-                    cache,
-                    W1,
-                    W2,
-                    W3,
-                    norm2,
-                    dGradXRes1,
-                    gradW1,
-                    gradW2,
-                    gradW3,
-                    gradNorm2,
-                    ffnResident);
-            fusedAttentionBackwardGpuDevice(
-                    dGradXRes1,
-                    cache,
-                    Wq,
-                    Wk,
-                    Wv,
-                    Wo,
-                    numHeads,
-                    dGradNorm1Path,
-                    gradWq,
-                    gradWk,
-                    gradWv,
-                    gradWo,
-                    attnResident);
+        GpuTransformerOuterBackwardWorkspace outer = GpuTransformerOuterBackwardWorkspace.local();
+        outer.ensure(rows, dModel);
+        GpuFloatBuffer dGradXRes1 = outer.getDGradXRes1();
+        GpuFloatBuffer dGradNorm1Path = outer.getDGradNorm1Path();
+        GpuFloatBuffer dNorm1 = outer.getDNorm1();
+        GpuFloatBuffer xInScratch = outer.getXInScratch();
+        GpuFloatBuffer norm1GammaTmp = attnResident == null ? outer.norm1GammaStaging() : null;
 
-            GpuFloatBuffer norm1Gamma = attnResident != null ? attnResident.normGamma() : norm1GammaTmp;
-            if (norm1GammaTmp != null) {
-                norm1GammaTmp.copyFrom(norm1.internalBuffer(), 0, dModel);
-            }
-            cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.X_IN, xInScratch, flat);
-            // #region agent log
+        fusedFfnNormResidualBackwardGpuDevice(
+                dGradOut,
+                cache,
+                W1,
+                W2,
+                W3,
+                norm2,
+                dGradXRes1,
+                gradW1,
+                gradW2,
+                gradW3,
+                gradNorm2,
+                ffnResident);
+        fusedAttentionBackwardGpuDevice(
+                dGradXRes1,
+                cache,
+                Wq,
+                Wk,
+                Wv,
+                Wo,
+                numHeads,
+                dGradNorm1Path,
+                gradWq,
+                gradWk,
+                gradWv,
+                gradWo,
+                attnResident);
+
+        GpuFloatBuffer norm1Gamma = attnResident != null ? attnResident.normGamma() : norm1GammaTmp;
+        if (norm1GammaTmp != null) {
+            norm1GammaTmp.copyFrom(norm1.internalBuffer(), 0, dModel);
+        }
+        cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.X_IN, xInScratch, flat);
+        if (DebugGpuTrain.isEnabled()) {
             TensorOpsGPU.synchronizeStream();
             float[] tgx = new float[2];
             dGradXIn.copyTo(tgx, 0, Math.min(2, flat));
             float[] tn1 = new float[2];
             dNorm1.copyTo(tn1, 0, Math.min(2, dModel));
-            agentLogB39372RmsTargets(tgx[0], tgx.length > 1 ? tgx[1] : 0f, tn1[0], tn1.length > 1 ? tn1[1] : 0f, rows, dModel);
-            // #endregion
-            // rms_norm_bwd uses += on gX; ping-pong / malloc content must be zero.
-            dGradXIn.clear();
-            dNorm1.clear();
-            TensorOpsGPU.rmsNormBackwardGpuDevice(
-                    dGradNorm1Path,
-                    xInScratch,
-                    norm1Gamma,
-                    TensorOpsGPU.rmsNormEps(),
-                    dGradXIn,
-                    dNorm1,
-                    rows,
-                    dModel);
-            TensorOpsGPU.accumulateAddGpuDevice(dGradXIn, dGradXRes1, flat);
-            GpuPendingGradients.accumulate(gradNorm1, dNorm1, dModel);
+            agentLogB39372RmsTargets(
+                    tgx[0], tgx.length > 1 ? tgx[1] : 0f, tn1[0], tn1.length > 1 ? tn1[1] : 0f, rows, dModel);
         }
+        // rms_norm_bwd uses += on gX; ping-pong / malloc content must be zero.
+        dGradXIn.clear();
+        dNorm1.clear();
+        TensorOpsGPU.rmsNormBackwardGpuDevice(
+                dGradNorm1Path,
+                xInScratch,
+                norm1Gamma,
+                TensorOpsGPU.rmsNormEps(),
+                dGradXIn,
+                dNorm1,
+                rows,
+                dModel);
+        TensorOpsGPU.accumulateAddGpuDevice(dGradXIn, dGradXRes1, flat);
+        GpuPendingGradients.accumulate(gradNorm1, dNorm1, dModel);
     }
 
 }

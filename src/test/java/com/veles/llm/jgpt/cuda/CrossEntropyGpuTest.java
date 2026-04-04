@@ -225,6 +225,62 @@ class CrossEntropyGpuTest {
         }
     }
 
+    @Test
+    void lmHeadCandidateLogitsMatchesMatmulGather() {
+        if (!TensorOpsGPU.isGpuAvailable()) {
+            return;
+        }
+        int rows = 3;
+        int dModel = 16;
+        int vocab = 31;
+        int candidates = 5;
+        var rng = new java.util.Random(123);
+        float[] normed = new float[rows * dModel];
+        float[] w = new float[dModel * vocab];
+        for (int i = 0; i < normed.length; i++) {
+            normed[i] = rng.nextFloat() * 2f - 1f;
+        }
+        for (int i = 0; i < w.length; i++) {
+            w[i] = rng.nextFloat() * 0.5f - 0.25f;
+        }
+        int[] candidateIds = new int[rows * candidates];
+        for (int i = 0; i < candidateIds.length; i++) {
+            candidateIds[i] = rng.nextInt(vocab);
+        }
+        float[] fullLogits = new float[rows * vocab];
+        for (int r = 0; r < rows; r++) {
+            for (int vi = 0; vi < vocab; vi++) {
+                float acc = 0f;
+                for (int d = 0; d < dModel; d++) {
+                    acc += normed[r * dModel + d] * w[d * vocab + vi];
+                }
+                fullLogits[r * vocab + vi] = acc;
+            }
+        }
+        float[] expected = new float[rows * candidates];
+        for (int i = 0; i < expected.length; i++) {
+            int r = i / candidates;
+            int cid = candidateIds[i];
+            expected[i] = cid >= 0 ? fullLogits[r * vocab + cid] : Float.NEGATIVE_INFINITY;
+        }
+
+        try (GpuFloatBuffer normedGpu = GpuFloatBuffer.allocate(normed.length);
+                GpuFloatBuffer wGpu = GpuFloatBuffer.allocate(w.length);
+                GpuIntBuffer idsGpu = GpuIntBuffer.allocate(candidateIds.length);
+                GpuFloatBuffer outGpu = GpuFloatBuffer.allocate(expected.length)) {
+            normedGpu.copyFrom(normed, 0, normed.length);
+            wGpu.copyFrom(w, 0, w.length);
+            idsGpu.copyFrom(candidateIds, 0, candidateIds.length);
+            TensorOpsGPU.lmHeadCandidateLogitsGpuDevice(
+                    normedGpu, wGpu, idsGpu, outGpu, rows, dModel, vocab, candidates);
+            float[] got = new float[expected.length];
+            outGpu.copyTo(got, 0, got.length);
+            for (int i = 0; i < got.length; i++) {
+                assertEquals(expected[i], got[i], 1e-4f, "cand[" + i + "]");
+            }
+        }
+    }
+
     private static float referenceCeLoss(Tensor logits, Tensor target) {
         int[] logitShape = logits.getShape();
         int batch = logitShape[0];

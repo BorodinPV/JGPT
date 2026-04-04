@@ -116,6 +116,8 @@ class SampledTrainLossGpuTest {
                     new LLMTrainer(model, sampledFullGpu(Files.createTempDirectory("jgpt-sampled-grad")), dummyLoader());
             LLMTrainer.TestMicrobatchResult r = trainer.testHarnessForwardCeBackward(fixedBatch(48, 2, 8), true);
             assertTrue(Float.isFinite(r.ceLoss));
+            assertEquals(2 * 8, r.logits.size(), "sampled path should keep only lightweight host stub metadata");
+            assertNull(model.deviceLogitsBuffer(), "sampled path should not allocate full VRAM logits");
             assertNull(model.deviceLogitsGradBuffer(), "sampled path should not materialize dense device logits grad");
 
             Map<Tensor, GpuTensor> map = model.gpuTensorByTrainableParameter();

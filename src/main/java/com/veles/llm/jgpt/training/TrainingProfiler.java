@@ -10,7 +10,8 @@ import org.slf4j.LoggerFactory;
  * Лёгкое профилирование шага обучения (наносекунды). Включается через env {@code JGPT_PROFILE=1} или
  * комбинированное {@code JGPT_TRAIN_PERF=1}.
  *
- * <p>Разбивка: forward (только {@link GPTModel#forward}), затем loss + градиент по CE в логитах, затем
+ * <p>Разбивка: forward (enqueue {@link GPTModel#forward} / sampled train forward; при {@link TensorTrainingPerfEnv}
+ * дополнительно cuda stream sync, чтобы «прямой» включал GPU-forward), затем loss + градиент по CE, затем
  * {@link GPTModel#backward}, затем клип + Adam.
  */
 public final class TrainingProfiler {

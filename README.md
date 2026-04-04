@@ -113,8 +113,9 @@ Train-only sampled CE:
 
 - `JGPT_TRAIN_LOSS_MODE=sampled` включает candidate loss только в training loop.
 - Eval остаётся full-vocab CE, поэтому `loss` на eval сопоставим с прежними прогонами, а `sampled_train_loss` в train-логах служит только для мониторинга train-path.
-- Первая реализация поддерживается только на unified full-GPU path (`fullGpuTrainStep + deviceLogitsTrainStep + deviceDecoderBackward`).
+- На unified full-GPU path (`fullGpuTrainStep + deviceLogitsTrainStep + deviceDecoderBackward`) train-forward считает только `rows×K` кандидатных логитов (LM-head по id), **без** материализации `rows×vocab` на VRAM; полные логиты остаются для full CE / eval.
 - Пока не поддерживается вместе с `JGPT_CE_ASYNC=1`.
+- Диагностика GPU-обучения (по умолчанию выкл.): `JGPT_DEBUG_GPU_TRAIN=1` и при необходимости `JGPT_DEBUG_GPU_TRAIN_LOG=/path/jgpt-debug.jsonl`; `JGPT_BWD_LAYER_FINITE_CHECK=1` — проверка ∂ после каждого decoder-слоя (дороже). `JGPT_TRAIN_PERF=1` добавляет cuda stream sync после forward для честного PERF-разбиения фаз.
 
 Что важно:
 

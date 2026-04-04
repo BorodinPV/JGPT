@@ -41,8 +41,17 @@ public final class GpuPendingGradients {
     /** Если буфер больше нужного размера более чем вдвое — пересоздаём, чтобы не держать лишнюю VRAM. */
     private static final int SHRINK_FACTOR = 2;
 
-    private static final ThreadLocal<Map<Tensor, Entry>> LOCAL =
-            ThreadLocal.withInitial(IdentityHashMap::new);
+    private static final class ThreadLocalState {
+        final Map<Tensor, Entry> map = new IdentityHashMap<>();
+        GpuFloatBuffer[] anyNonFiniteScratchBufs;
+        int[] anyNonFiniteScratchLens;
+    }
+
+    private static final ThreadLocal<ThreadLocalState> LOCAL = ThreadLocal.withInitial(ThreadLocalState::new);
+
+    private static ThreadLocalState tls() {
+        return LOCAL.get();
+    }
 
     private GpuPendingGradients() {}
 
@@ -87,7 +96,7 @@ public final class GpuPendingGradients {
             throw new IllegalArgumentException(
                     "length " + length + " != target.size() " + expected + " (GpuPendingGradients expects full parameter grad)");
         }
-        Map<Tensor, Entry> map = LOCAL.get();
+        Map<Tensor, Entry> map = tls().map;
         Entry e = map.get(target);
         if (e != null && e.expectedSize != expected) {
             throw new IllegalStateException(
@@ -120,7 +129,7 @@ public final class GpuPendingGradients {
      * @throws IllegalStateException если для какого-либо dirty параметра нет записи в {@code paramToGpu}
      */
     public static void flushMergeToGpuGrads(java.util.Map<com.veles.llm.jgpt.core.Tensor, GpuTensor> paramToGpu) {
-        Map<Tensor, Entry> map = LOCAL.get();
+        Map<Tensor, Entry> map = tls().map;
         for (Map.Entry<Tensor, Entry> it : map.entrySet()) {
             Tensor target = it.getKey();
             Entry e = it.getValue();
@@ -154,7 +163,7 @@ public final class GpuPendingGradients {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
-        Map<Tensor, Entry> map = LOCAL.get();
+        Map<Tensor, Entry> map = tls().map;
         for (Entry e : map.values()) {
             if (!e.dirty || e.usedLength <= 0) {
                 continue;
@@ -173,7 +182,7 @@ public final class GpuPendingGradients {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
-        Map<Tensor, Entry> map = LOCAL.get();
+        Map<Tensor, Entry> map = tls().map;
         for (Entry e : map.values()) {
             e.buffer.clear();
             e.dirty = false;
@@ -184,22 +193,40 @@ public final class GpuPendingGradients {
     /**
      * Проверка NaN/Inf в несброшенных накопленных дельтах (до {@link #flushAllToHost} /
      * {@link #flushMergeToGpuGrads}).
+     *
+     * <p>Использует фьюзированный GPU-вызов: один JNI и одна синхронизация стрима для всех dirty-
+     * буферов, вместо отдельного round-trip на параметр.
      */
     public static boolean anyNonFinitePending() {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return false;
         }
-        Map<Tensor, Entry> map = LOCAL.get();
-        for (Map.Entry<Tensor, Entry> it : map.entrySet()) {
-            Entry e = it.getValue();
-            if (!e.dirty || e.usedLength <= 0) {
-                continue;
-            }
-            if (TensorOpsGPU.anyNonFiniteGpuDevice(e.buffer, e.usedLength)) {
-                return true;
+        ThreadLocalState st = tls();
+        Map<Tensor, Entry> map = st.map;
+
+        // Собираем dirty-буферы без аллокации на каждый вызов (scratch в thread-local, grow-only).
+        int capacity = map.size();
+        if (capacity == 0) {
+            return false;
+        }
+        if (st.anyNonFiniteScratchBufs == null || st.anyNonFiniteScratchBufs.length < capacity) {
+            st.anyNonFiniteScratchBufs = new GpuFloatBuffer[capacity];
+            st.anyNonFiniteScratchLens = new int[capacity];
+        }
+        GpuFloatBuffer[] bufs = st.anyNonFiniteScratchBufs;
+        int[] lens = st.anyNonFiniteScratchLens;
+        int count = 0;
+        for (Entry e : map.values()) {
+            if (e.dirty && e.usedLength > 0) {
+                bufs[count] = e.buffer;
+                lens[count] = e.usedLength;
+                count++;
             }
         }
-        return false;
+        if (count == 0) {
+            return false;
+        }
+        return TensorOpsGPU.anyNonFiniteGpuDeviceMulti(bufs, lens, count);
     }
 
     /**
@@ -209,7 +236,7 @@ public final class GpuPendingGradients {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return "";
         }
-        Map<Tensor, Entry> map = LOCAL.get();
+        Map<Tensor, Entry> map = tls().map;
         for (Map.Entry<Tensor, Entry> it : map.entrySet()) {
             Entry e = it.getValue();
             if (!e.dirty || e.usedLength <= 0) {
@@ -236,7 +263,7 @@ public final class GpuPendingGradients {
      */
     public static boolean allDirtyTargetsHaveGpuTensor(Map<Tensor, GpuTensor> paramToGpu) {
         Objects.requireNonNull(paramToGpu, "paramToGpu");
-        Map<Tensor, Entry> map = LOCAL.get();
+        Map<Tensor, Entry> map = tls().map;
         for (Map.Entry<Tensor, Entry> it : map.entrySet()) {
             Entry e = it.getValue();
             if (!e.dirty || e.usedLength <= 0) {
@@ -254,7 +281,7 @@ public final class GpuPendingGradients {
      * как «чистые» до следующего {@link #accumulate}.
      */
     public static void flushAllToHost() {
-        Map<Tensor, Entry> map = LOCAL.get();
+        Map<Tensor, Entry> map = tls().map;
         for (Map.Entry<Tensor, Entry> kv : map.entrySet()) {
             Tensor target = kv.getKey();
             Entry e = kv.getValue();
@@ -283,7 +310,7 @@ public final class GpuPendingGradients {
         if (!TensorOpsGPU.isGpuAvailable() || scale == 1f) {
             return;
         }
-        Map<Tensor, Entry> map = LOCAL.get();
+        Map<Tensor, Entry> map = tls().map;
         for (Entry e : map.values()) {
             if (!e.dirty || e.usedLength <= 0) {
                 continue;
@@ -295,7 +322,7 @@ public final class GpuPendingGradients {
     /** Есть ли несброшенные накопленные дельты для данного параметра в текущем потоке. */
     public static boolean isDirty(Tensor target) {
         Objects.requireNonNull(target, "target");
-        Entry e = LOCAL.get().get(target);
+        Entry e = tls().map.get(target);
         return e != null && e.dirty && e.usedLength > 0;
     }
 
@@ -303,7 +330,7 @@ public final class GpuPendingGradients {
      * Краткая сводка по текущему потоку (для логов): число «грязных» записей и суммарный {@code usedLength}.
      */
     public static String currentThreadDebugSummary() {
-        Map<Tensor, Entry> map = LOCAL.get();
+        Map<Tensor, Entry> map = tls().map;
         int dirtyEntries = 0;
         long pendingFloats = 0L;
         for (Entry e : map.values()) {
@@ -327,11 +354,13 @@ public final class GpuPendingGradients {
      */
     public static void cleanupThreadLocal() {
         GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
-        Map<Tensor, Entry> map = LOCAL.get();
-        for (Entry e : map.values()) {
+        ThreadLocalState st = LOCAL.get();
+        for (Entry e : st.map.values()) {
             e.buffer.close();
         }
-        map.clear();
+        st.map.clear();
+        st.anyNonFiniteScratchBufs = null;
+        st.anyNonFiniteScratchLens = null;
         LOCAL.remove();
     }
 

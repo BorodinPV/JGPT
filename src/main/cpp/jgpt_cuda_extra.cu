@@ -317,81 +317,6 @@ static void attn_bwd_aux_free_cached() {
     tl_attn_bwd_aux_total = 0;
 }
 
-static thread_local float* tl_attn_bwd_scores = nullptr;
-static thread_local size_t tl_attn_bwd_scores_bytes = 0;
-
-static bool attn_bwd_scores_ensure(size_t bytes) {
-    if (bytes == 0U) {
-        return false;
-    }
-    if (bytes > tl_attn_bwd_scores_bytes) {
-        cudaFree(tl_attn_bwd_scores);
-        tl_attn_bwd_scores = nullptr;
-        tl_attn_bwd_scores_bytes = 0;
-        if (cudaMalloc(reinterpret_cast<void**>(&tl_attn_bwd_scores), bytes) != cudaSuccess) {
-            return false;
-        }
-        tl_attn_bwd_scores_bytes = bytes;
-    }
-    return true;
-}
-
-static void attn_bwd_scores_free_cached() {
-    cudaFree(tl_attn_bwd_scores);
-    tl_attn_bwd_scores = nullptr;
-    tl_attn_bwd_scores_bytes = 0;
-}
-
-static thread_local float* tl_attn_bwd_kt = nullptr;
-static thread_local size_t tl_attn_bwd_kt_bytes = 0;
-
-static bool attn_bwd_kt_ensure(size_t bytes) {
-    if (bytes == 0U) {
-        return false;
-    }
-    if (bytes > tl_attn_bwd_kt_bytes) {
-        cudaFree(tl_attn_bwd_kt);
-        tl_attn_bwd_kt = nullptr;
-        tl_attn_bwd_kt_bytes = 0;
-        if (cudaMalloc(reinterpret_cast<void**>(&tl_attn_bwd_kt), bytes) != cudaSuccess) {
-            return false;
-        }
-        tl_attn_bwd_kt_bytes = bytes;
-    }
-    return true;
-}
-
-static void attn_bwd_kt_free_cached() {
-    cudaFree(tl_attn_bwd_kt);
-    tl_attn_bwd_kt = nullptr;
-    tl_attn_bwd_kt_bytes = 0;
-}
-
-static thread_local float* tl_attn_bwd_mask = nullptr;
-static thread_local size_t tl_attn_bwd_mask_bytes = 0;
-
-static bool attn_bwd_mask_ensure(size_t bytes) {
-    if (bytes == 0U) {
-        return false;
-    }
-    if (bytes > tl_attn_bwd_mask_bytes) {
-        cudaFree(tl_attn_bwd_mask);
-        tl_attn_bwd_mask = nullptr;
-        tl_attn_bwd_mask_bytes = 0;
-        if (cudaMalloc(reinterpret_cast<void**>(&tl_attn_bwd_mask), bytes) != cudaSuccess) {
-            return false;
-        }
-        tl_attn_bwd_mask_bytes = bytes;
-    }
-    return true;
-}
-
-static void attn_bwd_mask_free_cached() {
-    cudaFree(tl_attn_bwd_mask);
-    tl_attn_bwd_mask = nullptr;
-    tl_attn_bwd_mask_bytes = 0;
-}
-
 // ========== Ядра (float32) ==========
 
 __global__ void softmax_last_dim_kernel(const float* src, float* dst, int nrows, int inner) {
@@ -441,6 +366,89 @@ __global__ void softmax_last_dim_kernel_fp16(const float* src, float* dst, int n
     for (int j = 0; j < inner; j++) {
         dst[base + j] *= inv;
     }
+}
+
+// ========== Block-per-row softmax (оптимизированная версия для inner >= 64) ==========
+//
+// Проблема «одна нить на строку»: все нити варпа обращаются к разным строкам →
+// нет коалесценции. При inner=512 каждая нить делает 3 последовательных цикла по 512 эл.
+//
+// Решение: один блок на строку (gridDim.x = nrows, blockDim.x = kSoftmaxBlockDim=256).
+// Нити блока читают ОДНУ строку с шагом blockDim.x — warp читает 32 смежных float → отличная
+// коалесценция. Редукция max/sum — через warp-shuffle + shared memory между warpами.
+
+static constexpr int kSoftmaxBlockDim       = 256;         // нитей на блок
+static constexpr int kSoftmaxNumWarps       = kSoftmaxBlockDim / 32;  // 8
+static constexpr int kSoftmaxBlockThreshold = 64;          // при inner >= этого → block-per-row
+
+__device__ __forceinline__ float warpReduceMax32(float v) {
+    v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, 16));
+    v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, 8));
+    v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, 4));
+    v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, 2));
+    v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, 1));
+    return v;
+}
+
+__device__ __forceinline__ float warpReduceSum32(float v) {
+    v += __shfl_xor_sync(0xffffffff, v, 16);
+    v += __shfl_xor_sync(0xffffffff, v, 8);
+    v += __shfl_xor_sync(0xffffffff, v, 4);
+    v += __shfl_xor_sync(0xffffffff, v, 2);
+    v += __shfl_xor_sync(0xffffffff, v, 1);
+    return v;
+}
+
+// Вызывается всеми kSoftmaxBlockDim нитями; возвращает broadcast-max блока.
+__device__ float blockReduceMax256(float v, float* smem) {
+    v = warpReduceMax32(v);
+    if ((threadIdx.x & 31) == 0) smem[threadIdx.x >> 5] = v;
+    __syncthreads();
+    float bv = (threadIdx.x < kSoftmaxNumWarps) ? smem[threadIdx.x] : -INFINITY;
+    if (threadIdx.x < 32) bv = warpReduceMax32(bv);
+    if (threadIdx.x == 0) smem[0] = bv;
+    __syncthreads();
+    return smem[0];
+}
+
+// Вызывается всеми kSoftmaxBlockDim нитями; возвращает broadcast-sum блока.
+__device__ float blockReduceSum256(float v, float* smem) {
+    v = warpReduceSum32(v);
+    if ((threadIdx.x & 31) == 0) smem[threadIdx.x >> 5] = v;
+    __syncthreads();
+    float bv = (threadIdx.x < kSoftmaxNumWarps) ? smem[threadIdx.x] : 0.f;
+    if (threadIdx.x < 32) bv = warpReduceSum32(bv);
+    if (threadIdx.x == 0) smem[0] = bv;
+    __syncthreads();
+    return smem[0];
+}
+
+/**
+ * Softmax по последней оси, block-per-row.
+ * Запуск: gridDim.x=nrows, blockDim.x=kSoftmaxBlockDim, smem=kSoftmaxNumWarps*sizeof(float).
+ */
+__global__ void softmax_last_dim_block_kernel(
+        const float* __restrict__ src, float* __restrict__ dst, int nrows, int inner) {
+    extern __shared__ float smem[];
+    const int row = blockIdx.x;
+    if (row >= nrows) return;
+    const int tid = threadIdx.x;
+    const float* rowSrc = src + (ptrdiff_t)row * inner;
+    float*       rowDst = dst + (ptrdiff_t)row * inner;
+
+    float maxv = -INFINITY;
+    for (int j = tid; j < inner; j += kSoftmaxBlockDim)
+        maxv = fmaxf(maxv, rowSrc[j]);
+    maxv = blockReduceMax256(maxv, smem);
+
+    float sumv = 0.f;
+    for (int j = tid; j < inner; j += kSoftmaxBlockDim)
+        sumv += expf(rowSrc[j] - maxv);
+    sumv = blockReduceSum256(sumv, smem);
+
+    const float inv = 1.f / fmaxf(sumv, 1e-12f);
+    for (int j = tid; j < inner; j += kSoftmaxBlockDim)
+        rowDst[j] = expf(rowSrc[j] - maxv) * inv;
 }
 
 /**
@@ -1049,41 +1057,25 @@ __global__ void softmax_last_dim_bwd_kernel(const float* gOut, const float* p, f
 }
 
 /**
- * ∂L/∂logits для softmax по последней оси при пересчёте вероятностей из logits.
- * Forward может использовать FP16-exp; backward здесь считает exp в FP32: иначе при сильно отрицательном diff
- * __float2half(diff) даёт 0 или -inf → sum=0 → 1/sum=Inf → NaN в VJP.
+ * Backward softmax по последней оси, block-per-row. VJP: gIn[j] += p[j]*(gOut[j] - dot(p,gOut)).
+ * Запуск: gridDim.x=nrows, blockDim.x=kSoftmaxBlockDim, smem=kSoftmaxNumWarps*sizeof(float).
  */
-__global__ void softmax_last_dim_bwd_from_logits_fp16(
-        const float* logits, const float* gOut, float* gIn, int nrows, int inner) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= nrows) {
-        return;
-    }
-    int base = row * inner;
-    float maxv = -INFINITY;
-    for (int j = 0; j < inner; j++) {
-        maxv = fmaxf(maxv, logits[base + j]);
-    }
-    float sum = 0.f;
-    for (int j = 0; j < inner; j++) {
-        float diff = logits[base + j] - maxv;
-        float e = expf(diff);
-        sum += e;
-    }
-    float inv = 1.f / fmaxf(sum, 1e-12f);
+__global__ void softmax_last_dim_bwd_block_kernel(
+        const float* __restrict__ gOut, const float* __restrict__ p,
+        float* __restrict__ gIn, int nrows, int inner) {
+    extern __shared__ float smem[];
+    const int row = blockIdx.x;
+    if (row >= nrows) return;
+    const int tid = threadIdx.x;
+    const ptrdiff_t base = (ptrdiff_t)row * inner;
+
     float dot = 0.f;
-    for (int j = 0; j < inner; j++) {
-        float diff = logits[base + j] - maxv;
-        float e = expf(diff);
-        float p_j = e * inv;
-        dot += p_j * gOut[base + j];
-    }
-    for (int j = 0; j < inner; j++) {
-        float diff = logits[base + j] - maxv;
-        float e = expf(diff);
-        float p_j = e * inv;
-        gIn[base + j] += p_j * (gOut[base + j] - dot);
-    }
+    for (int j = tid; j < inner; j += kSoftmaxBlockDim)
+        dot += p[base + j] * gOut[base + j];
+    dot = blockReduceSum256(dot, smem);
+
+    for (int j = tid; j < inner; j += kSoftmaxBlockDim)
+        gIn[base + j] += p[base + j] * (gOut[base + j] - dot);
 }
 
 /* ========== Missing helper kernels (были пропущены) ========== */
@@ -1291,16 +1283,36 @@ __global__ void rms_norm_bwd_kernel(const float* gOut, const float* x, const flo
     } while (0)
 
 static void launch_softmax_last_dim(const float* src, float* dst, int nrows, int inner, bool use_fp16_softmax) {
-    int threads = jgpt_cuda_get_optimal_block_size();
-    int blocks = (nrows + threads - 1) / threads;
-    if (use_fp16_softmax) {
-        softmax_last_dim_kernel_fp16<<<blocks, threads, 0, kTensorCudaStream>>>(src, dst, nrows, inner);
+    if (inner >= kSoftmaxBlockThreshold) {
+        size_t smem = kSoftmaxNumWarps * sizeof(float);
+        softmax_last_dim_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(src, dst, nrows, inner);
     } else {
-        softmax_last_dim_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(src, dst, nrows, inner);
+        int threads = jgpt_cuda_get_optimal_block_size();
+        int blocks = (nrows + threads - 1) / threads;
+        if (use_fp16_softmax) {
+            softmax_last_dim_kernel_fp16<<<blocks, threads, 0, kTensorCudaStream>>>(src, dst, nrows, inner);
+        } else {
+            softmax_last_dim_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(src, dst, nrows, inner);
+        }
     }
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         fprintf(stderr, "launch_softmax error: %s\n", cudaGetErrorString(err));
+    }
+}
+
+static void launch_softmax_last_dim_bwd(const float* gOut, const float* p, float* gIn, int nrows, int inner) {
+    if (inner >= kSoftmaxBlockThreshold) {
+        size_t smem = kSoftmaxNumWarps * sizeof(float);
+        softmax_last_dim_bwd_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(gOut, p, gIn, nrows, inner);
+    } else {
+        int threads = jgpt_cuda_get_optimal_block_size();
+        int blocks = (nrows + threads - 1) / threads;
+        softmax_last_dim_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(gOut, p, gIn, nrows, inner);
+    }
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "launch_softmax_bwd error: %s\n", cudaGetErrorString(err));
     }
 }
 
@@ -1501,11 +1513,9 @@ static bool attn_fwd_run_core(
         CUDA_KERNEL_CHECK_RV(false);
     }
     int nrows = batch * seqLen;
-    int blocksRows = (nrows + threads - 1) / threads;
-    if (use_fp16_softmax) {
-        softmax_last_dim_kernel_fp16<<<blocksRows, threads, 0, kTensorCudaStream>>>(d_scores, d_probs, nrows, seqLen);
-    } else {
-        softmax_last_dim_kernel<<<blocksRows, threads, 0, kTensorCudaStream>>>(d_scores, d_probs, nrows, seqLen);
+    {
+        size_t smem = kSoftmaxNumWarps * sizeof(float);
+        softmax_last_dim_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(d_scores, d_probs, nrows, seqLen);
     }
     CUDA_KERNEL_CHECK_RV(false);
     if (!batched_sgemm_row_major_extra(d_probs, d_v, d_out, batch, seqLen, seqLen, dV, 1.0f, 0.0f)) {
@@ -3217,6 +3227,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     jfloatArray h_v, jfloatArray h_gradQ, jfloatArray h_gradK, jfloatArray h_gradV,
     jint batch, jint seqLen, jint dK, jint dV, jfloat scale, jfloatArray h_mask, jboolean useFp16Softmax) {
     (void) clazz;
+    (void) h_mask;
     if (batch <= 0 || seqLen <= 0 || dK <= 0 || dV <= 0) {
         return;
     }
@@ -3263,47 +3274,17 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     CUDA_CHECK_X(cudaMemset(d_ds, 0, bytesProb));
 
     int nrows = batch * seqLen;
-    int blocksSmBwd = (nrows + threads - 1) / threads;
-    if (useFp16Softmax == JNI_TRUE) {
-        if (!attn_bwd_scores_ensure(bytesProb) || !attn_bwd_kt_ensure(bytesQK)) {
-            return;
-        }
-        float* d_scores = tl_attn_bwd_scores;
-        float* d_kt = tl_attn_bwd_kt;
-        float* d_mask = nullptr;
-        const bool with_mask = h_mask != nullptr;
-        size_t bytesMask = (size_t) seqLen * (size_t) seqLen * sizeof(float);
-        if (with_mask) {
-            if (!attn_bwd_mask_ensure(bytesMask)) {
-                return;
-            }
-            d_mask = tl_attn_bwd_mask;
-            jfloat* pm = env->GetFloatArrayElements(h_mask, nullptr);
-            if (!pm) {
-                return;
-            }
-            CUDA_CHECK_X(cudaMemcpyAsync(d_mask, pm, bytesMask, cudaMemcpyHostToDevice, kTensorCudaStream));
-            env->ReleaseFloatArrayElements(h_mask, pm, JNI_ABORT);
-        }
-        int blocksQK = (batch * seqLen * dK + threads - 1) / threads;
-        transpose_last2_3d_kernel<<<blocksQK, threads, 0, kTensorCudaStream>>>(d_k, d_kt, batch, seqLen, dK);
-        CUDA_KERNEL_CHECK();
-        if (!batched_sgemm_row_major_extra(d_q, d_kt, d_scores, batch, seqLen, dK, seqLen, 1.0f, 0.0f)) {
-            return;
-        }
-        scale_inplace_kernel_extra<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_scores, batch * seqLen * seqLen, scale);
-        CUDA_KERNEL_CHECK();
-        if (d_mask != nullptr) {
-            add_mask_inplace_kernel<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_scores, d_mask, batch, seqLen);
-            CUDA_KERNEL_CHECK();
-        }
-        softmax_last_dim_bwd_from_logits_fp16<<<blocksSmBwd, threads, 0, kTensorCudaStream>>>(
-            d_scores, d_dp, d_ds, nrows, seqLen);
-        CUDA_KERNEL_CHECK();
-    } else {
-        softmax_last_dim_bwd_kernel<<<blocksSmBwd, threads, 0, kTensorCudaStream>>>(d_dp, d_p, d_ds, nrows, seqLen);
-        CUDA_KERNEL_CHECK();
+    /*
+     * Раньше при useFp16Softmax пересчитывали QK^T/scores на device и гоняли softmax_last_dim_bwd_from_logits_fp16.
+     * Forward softmax_last_dim_kernel_fp16 уже пишет вероятности в FP32 (exp в FP32 — см. комментарий к ядру);
+     * сохранённые probs совпадают с softmax(scores), поэтому достаточно стандартного VJP по p — без лишнего GEMM QK.
+     */
+    (void) useFp16Softmax;
+    {
+        size_t smem = kSoftmaxNumWarps * sizeof(float);
+        softmax_last_dim_bwd_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(d_dp, d_p, d_ds, nrows, seqLen);
     }
+    CUDA_KERNEL_CHECK();
     scale_inplace_kernel_extra<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_ds, batch * seqLen * seqLen, scale);
     if (!batched_sgemm_row_major_extra(d_pt, d_go, d_gv, batch, seqLen, seqLen, dV, 1.0f, 0.0f)) {
         return;
@@ -3338,6 +3319,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     jlong dMask, jboolean useFp16Softmax) {
     (void) env;
     (void) clazz;
+    (void) dMask;
     if (dGradOut == 0 || dProbs == 0 || dQ == 0 || dK == 0 || dV == 0 || dGradQ == 0 || dGradK == 0 || dGradV == 0
             || batch <= 0 || seqLen <= 0 || dKDim <= 0 || dVDim <= 0) {
         return;
@@ -3370,34 +3352,12 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     CUDA_CHECK_X(cudaMemset(d_ds, 0, bytesProb));
 
     int nrows = batch * seqLen;
-    int blocksSmBwd = (nrows + threads - 1) / threads;
-    size_t bytesQK = (size_t) batch * (size_t) seqLen * (size_t) dKDim * sizeof(float);
-    if (useFp16Softmax == JNI_TRUE) {
-        if (!attn_bwd_scores_ensure(bytesProb) || !attn_bwd_kt_ensure(bytesQK)) {
-            return;
-        }
-        float* d_scores = tl_attn_bwd_scores;
-        float* d_kt = tl_attn_bwd_kt;
-        float* maskPtr = dMask != 0 ? reinterpret_cast<float*>(static_cast<uintptr_t>(dMask)) : nullptr;
-        int blocksQK = (batch * seqLen * dKDim + threads - 1) / threads;
-        transpose_last2_3d_kernel<<<blocksQK, threads, 0, kTensorCudaStream>>>(k, d_kt, batch, seqLen, dKDim);
-        CUDA_KERNEL_CHECK();
-        if (!batched_sgemm_row_major_extra(q, d_kt, d_scores, batch, seqLen, dKDim, seqLen, 1.0f, 0.0f)) {
-            return;
-        }
-        scale_inplace_kernel_extra<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_scores, batch * seqLen * seqLen, scale);
-        CUDA_KERNEL_CHECK();
-        if (maskPtr != nullptr) {
-            add_mask_inplace_kernel<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_scores, maskPtr, batch, seqLen);
-            CUDA_KERNEL_CHECK();
-        }
-        softmax_last_dim_bwd_from_logits_fp16<<<blocksSmBwd, threads, 0, kTensorCudaStream>>>(
-            d_scores, d_dp, d_ds, nrows, seqLen);
-        CUDA_KERNEL_CHECK();
-    } else {
-        softmax_last_dim_bwd_kernel<<<blocksSmBwd, threads, 0, kTensorCudaStream>>>(d_dp, p, d_ds, nrows, seqLen);
-        CUDA_KERNEL_CHECK();
+    (void) useFp16Softmax;
+    {
+        size_t smem = kSoftmaxNumWarps * sizeof(float);
+        softmax_last_dim_bwd_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(d_dp, p, d_ds, nrows, seqLen);
     }
+    CUDA_KERNEL_CHECK();
     scale_inplace_kernel_extra<<<blocksProb, threads, 0, kTensorCudaStream>>>(d_ds, batch * seqLen * seqLen, scale);
     if (!batched_sgemm_row_major_extra(d_pt, go, gv, batch, seqLen, seqLen, dVDim, 1.0f, 0.0f)) {
         return;
@@ -3817,9 +3777,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_softmaxLastDimBackwa
     env->ReleaseFloatArrayElements(h_probs, pp, JNI_ABORT);
     env->ReleaseFloatArrayElements(h_gIn, pgi, JNI_ABORT);
 
-    int threads = jgpt_cuda_get_optimal_block_size();
-    int blocks = (nrows + threads - 1) / threads;
-    softmax_last_dim_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_go, d_p, d_gi, nrows, inner);
+    launch_softmax_last_dim_bwd(d_go, d_p, d_gi, nrows, inner);
     pgi = env->GetFloatArrayElements(h_gIn, nullptr);
     if (!pgi) {
         cudaFree(d_go);
@@ -4401,6 +4359,55 @@ __global__ void any_nonfinite_kernel(const float* src, unsigned int* flag, int n
     }
 }
 
+/* Фьюзированная проверка NaN/Inf по нескольким device-буферам: один cudaStreamSynchronize в конце.
+ * Каждый буфер обрабатывается отдельным запуском any_nonfinite_kernel на том же стриме (async).
+ * Флаг обнуляется один раз перед первым ядром. */
+JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_anyNonFiniteGPUDeviceMulti(
+    JNIEnv* env, jclass clazz, jlongArray dPtrs, jintArray lens, jint nBufs) {
+    (void) clazz;
+    if (nBufs <= 0) {
+        return JNI_FALSE;
+    }
+    jlong* pp = env->GetLongArrayElements(dPtrs, nullptr);
+    jint*  ll = env->GetIntArrayElements(lens, nullptr);
+    if (!pp || !ll) {
+        if (pp) env->ReleaseLongArrayElements(dPtrs, pp, JNI_ABORT);
+        if (ll) env->ReleaseIntArrayElements(lens,  ll, JNI_ABORT);
+        return JNI_FALSE;
+    }
+
+    if (g_any_nonfinite_flag == nullptr) {
+        cudaError_t e = cudaMalloc(reinterpret_cast<void**>(&g_any_nonfinite_flag), sizeof(unsigned int));
+        if (e != cudaSuccess) {
+            env->ReleaseLongArrayElements(dPtrs, pp, JNI_ABORT);
+            env->ReleaseIntArrayElements(lens,  ll, JNI_ABORT);
+            return JNI_FALSE;
+        }
+    }
+    /* Единственный memset перед всеми ядрами. */
+    CUDA_CHECK_RV(cudaMemsetAsync(g_any_nonfinite_flag, 0, sizeof(unsigned int), kTensorCudaStream), JNI_FALSE);
+
+    int threads = jgpt_cuda_get_optimal_block_size();
+    for (jint i = 0; i < nBufs; i++) {
+        jint n = ll[i];
+        if (n <= 0) continue;
+        uintptr_t up = static_cast<uintptr_t>(pp[i]);
+        if (up == 0) continue;
+        float* src = reinterpret_cast<float*>(up);
+        int blocks = (n + threads - 1) / threads;
+        any_nonfinite_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(src, g_any_nonfinite_flag, n);
+    }
+
+    env->ReleaseLongArrayElements(dPtrs, pp, JNI_ABORT);
+    env->ReleaseIntArrayElements(lens,  ll, JNI_ABORT);
+
+    unsigned int h_flag = 0;
+    CUDA_CHECK_RV(cudaMemcpyAsync(&h_flag, g_any_nonfinite_flag, sizeof(unsigned int),
+                                  cudaMemcpyDeviceToHost, kTensorCudaStream), JNI_FALSE);
+    CUDA_CHECK_RV(cudaStreamSynchronize(kTensorCudaStream), JNI_FALSE);
+    return h_flag != 0 ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_anyNonFiniteGPUDevice(
     JNIEnv* env, jclass clazz, jlong dSrc, jint n) {
     (void) env;
@@ -4636,6 +4643,38 @@ JNIEXPORT jfloat JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftma
     return v > 0 ? lossSum / (float) v : 0.f;
 }
 
+/** Для каждой пары (строка, k): logits_out = dot(normedHidden[row,:], W[:,cid]).
+ *  W [dModel x vocab] row-major как в {@code matmul(rows x dModel) @ (dModel x vocab)}:
+ *  W[d, v] по адресу {@code lmHead + d * vocab + v}. */
+__global__ void lm_head_candidate_logits_kernel(
+    const float* normedHidden,
+    const float* lmHead,
+    const int* candidateIds,
+    float* candidateLogits,
+    int rows,
+    int dModel,
+    int vocab,
+    int candidates) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = rows * candidates;
+    if (idx >= total) {
+        return;
+    }
+    int row = idx / candidates;
+    int cid = candidateIds[idx];
+    if (cid < 0 || cid >= vocab) {
+        candidateLogits[idx] = -INFINITY;
+        return;
+    }
+    const float* hRow = normedHidden + row * dModel;
+    const float* col = lmHead + cid;
+    float acc = 0.f;
+    for (int d = 0; d < dModel; d++) {
+        acc += hRow[d] * col[d * vocab];
+    }
+    candidateLogits[idx] = acc;
+}
+
 __global__ void gather_logits_by_ids_kernel(
     const float* logits, const int* candidateIds, float* candidateLogits, int rows, int vocab, int candidates) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -4784,6 +4823,29 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_gatherLogitsByIdsGPU
     int blocks = (total + threads - 1) / threads;
     gather_logits_by_ids_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
             logits, candidateIds, candidateLogits, rows, vocab, candidates);
+}
+
+JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_lmHeadCandidateLogitsGPUDevice(
+    JNIEnv* env, jclass clazz, jlong dNormedHidden, jlong dLmHead, jlong dCandidateIds, jlong dCandidateLogits,
+    jint rows, jint dModel, jint vocab, jint candidates) {
+    (void) env;
+    (void) clazz;
+    if (rows <= 0 || dModel <= 0 || vocab <= 0 || candidates <= 0) {
+        return;
+    }
+    float* normedHidden = reinterpret_cast<float*>(static_cast<uintptr_t>(dNormedHidden));
+    float* lmHead = reinterpret_cast<float*>(static_cast<uintptr_t>(dLmHead));
+    int* candidateIds = reinterpret_cast<int*>(static_cast<uintptr_t>(dCandidateIds));
+    float* candidateLogits = reinterpret_cast<float*>(static_cast<uintptr_t>(dCandidateLogits));
+    if (normedHidden == nullptr || lmHead == nullptr || candidateIds == nullptr || candidateLogits == nullptr) {
+        return;
+    }
+    int total = rows * candidates;
+    int threads = jgpt_cuda_get_optimal_block_size();
+    int blocks = (total + threads - 1) / threads;
+    lm_head_candidate_logits_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
+            normedHidden, lmHead, candidateIds, candidateLogits, rows, dModel, vocab, candidates);
+    CUDA_KERNEL_CHECK();
 }
 
 JNIEXPORT jfloat JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sampledCrossEntropyGradLossGPUDeviceFirstSlot(
@@ -4941,9 +5003,6 @@ void jgpt_cuda_extra_cleanup(void) {
     adamw_pool_free_cached();
     attn_bwd_host_free_cached();
     attn_bwd_aux_free_cached();
-    attn_bwd_scores_free_cached();
-    attn_bwd_kt_free_cached();
-    attn_bwd_mask_free_cached();
 }
 
 #ifdef __cplusplus

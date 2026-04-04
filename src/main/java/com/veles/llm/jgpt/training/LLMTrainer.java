@@ -12,6 +12,7 @@ import com.veles.llm.jgpt.data.DataLoader;
 import com.veles.llm.jgpt.model.GPTModel;
 import com.veles.llm.jgpt.ops.GpuWorkspaceCleanup;
 import com.veles.llm.jgpt.ops.TensorOps;
+import com.veles.llm.jgpt.util.DebugGpuTrain;
 import com.veles.llm.jgpt.util.LogFmt;
 
 import java.util.Map;
@@ -27,13 +28,12 @@ import java.io.ObjectInputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -57,31 +57,19 @@ public final class LLMTrainer {
 
     private static final Logger log = LoggerFactory.getLogger(LLMTrainer.class);
 
-    // #region agent log
-    private static final Path AGENT_DEBUG_LOG =
-            Path.of("/home/pavel/StudioProjects/.cursor/debug-b39372.log");
-
     private static void agentLogB39372(String hypothesisId, String location, String message, String dataJson) {
-        try (var w =
-                Files.newBufferedWriter(
-                        AGENT_DEBUG_LOG,
-                        StandardCharsets.UTF_8,
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.APPEND)) {
-            w.write(
-                    "{\"sessionId\":\"b39372\",\"hypothesisId\":\""
-                            + hypothesisId
-                            + "\",\"location\":\""
-                            + location
-                            + "\",\"message\":\""
-                            + message
-                            + "\",\"data\":"
-                            + dataJson
-                            + ",\"timestamp\":"
-                            + System.currentTimeMillis()
-                            + "}\n");
-        } catch (IOException ignored) {
-        }
+        DebugGpuTrain.appendJsonLine(
+                "{\"sessionId\":\"b39372\",\"hypothesisId\":\""
+                        + hypothesisId
+                        + "\",\"location\":\""
+                        + location
+                        + "\",\"message\":\""
+                        + message
+                        + "\",\"data\":"
+                        + dataJson
+                        + ",\"timestamp\":"
+                        + System.currentTimeMillis()
+                        + "}");
     }
 
     private static String jsonEsc(String s) {
@@ -90,7 +78,6 @@ public final class LLMTrainer {
         }
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
-    // #endregion agent log
 
     /**
      * После overflow: все {@code zeroGrad} / clear на GPU ставят async-работу в очередь. Без барьера следующий
@@ -143,10 +130,12 @@ public final class LLMTrainer {
             return;
         }
         model.prepareForTrainingAfterInteractiveGeneration();
+        sampledTrainCandidatesPerRow = 0;
         /* Инвариант перед train: не тащить ∂ параметров и pending с инференса (KV/CE gradScale=0 всё равно могут
          * оставить мусор на путях fusion). Затем барьер stream — см. Коммент к overflow после eval. */
         model.zeroGradParameters();
         model.zeroGpuTrainableParameterGrads();
+        gpuTrainableParamGradsKnownClean = true;
         GpuPendingGradients.clearAllPendingGpuBuffers();
         GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
         TensorOpsGPU.synchronizeStream();
@@ -156,34 +145,34 @@ public final class LLMTrainer {
                 float s0 = dynamicLossScaler.getScale();
                 dynamicLossScaler.softenScaleAfterAuxiliaryGpuWork(reason);
                 float s1 = dynamicLossScaler.getScale();
-                // #region agent log
-                agentLogB39372(
-                        "H_aux_soften",
-                        "LLMTrainer.synchronizeTrainingPipelineAfterGpuAuxiliaryInfer",
-                        "post_fp16_soften",
-                        "{\"globalStep\":"
-                                + globalStep
-                                + ",\"reason\":\""
-                                + jsonEsc(reason)
-                                + "\",\"scaleBefore\":"
-                                + s0
-                                + ",\"scaleAfter\":"
-                                + s1
-                                + "}");
-                // #endregion
+                if (DebugGpuTrain.isEnabled()) {
+                    agentLogB39372(
+                            "H_aux_soften",
+                            "LLMTrainer.synchronizeTrainingPipelineAfterGpuAuxiliaryInfer",
+                            "post_fp16_soften",
+                            "{\"globalStep\":"
+                                    + globalStep
+                                    + ",\"reason\":\""
+                                    + jsonEsc(reason)
+                                    + "\",\"scaleBefore\":"
+                                    + s0
+                                    + ",\"scaleAfter\":"
+                                    + s1
+                                    + "}");
+                }
             }
         }
-        // #region agent log
-        agentLogB39372(
-                "H_aux_fence",
-                "LLMTrainer",
-                "post_aux_infer_reset",
-                "{\"globalStep\":"
-                        + globalStep
-                        + ",\"reason\":\""
-                        + jsonEsc(reason)
-                        + "\"}");
-        // #endregion
+        if (DebugGpuTrain.isEnabled()) {
+            agentLogB39372(
+                    "H_aux_fence",
+                    "LLMTrainer",
+                    "post_aux_infer_reset",
+                    "{\"globalStep\":"
+                            + globalStep
+                            + ",\"reason\":\""
+                            + jsonEsc(reason)
+                            + "\"}");
+        }
     }
 
     /**
@@ -216,18 +205,19 @@ public final class LLMTrainer {
             sampledCandidateGradDevice = null;
             sampledCandidateFloatCapElems = 0;
         }
+        sampledTrainCandidatesPerRow = 0;
         model.clearSampledTrainLossGrad();
         model.closeGpuResidentWeights();
         if (TensorOpsGPU.isGpuAvailable()) {
             TensorOpsGPU.synchronizeStream();
         }
-        // #region agent log
-        agentLogB39372(
-                "H_book_handoff",
-                "LLMTrainer.releaseGpuResourcesAfterBook",
-                "after_book_cleanup",
-                "{}");
-        // #endregion
+        if (DebugGpuTrain.isEnabled()) {
+            agentLogB39372(
+                    "H_book_handoff",
+                    "LLMTrainer.releaseGpuResourcesAfterBook",
+                    "after_book_cleanup",
+                    "{}");
+        }
     }
 
     private final GPTModel model;
@@ -279,9 +269,28 @@ public final class LLMTrainer {
     private int sampledCandidateFloatCapElems;
     private int[] sampledCandidateIdsHostScratch;
     private int[] sampledSharedNegativeScratch;
+    /** Число кандидатов на строку после {@link #prepareSampledCandidateIds} (для CE без повторной подготовки). */
+    private int sampledTrainCandidatesPerRow;
 
     /** Скрач ∂logits для fused CE в {@link #evaluate()} (градиент не используется, {@code gradScale=0}). */
     private float[] evalCeGradScratch;
+
+    /**
+     * После {@link #zeroGpuGradsMarkingParamGradsClean}: ∂ обучаемых параметров на VRAM гарантированно нули.
+     * Сбрасывается в {@link #clipAndOptimizerStep} (хостовый Adam без zeroGpuGrads) и при первом запуске.
+     */
+    private boolean gpuTrainableParamGradsKnownClean;
+
+    /** Переиспользуемые массивы для {@link #checkGpuParamGradsNonFiniteFused} (без аллокации на шаг). */
+    private GpuFloatBuffer[] nonFiniteParamBufsScratch = new GpuFloatBuffer[0];
+    private int[] nonFiniteParamLensScratch = new int[0];
+
+    /** Переиспользуемые массивы для sumSquares по GPU grad-буферам (без аллокации на шаг). */
+    private long[] sumSqPtrsScratch = new long[0];
+    private int[] sumSqLensScratch = new int[0];
+
+    /** Scratch-список тензоров для FP16 unscale logits (размер <= 1, alloc пропускается если ещё нет). */
+    private final List<Tensor> logitsOnlyScratch = new ArrayList<>(1);
 
     /**
      * Если задано: после синхронного v2-чекпоинта запись model_*.bin и токенизатора уходит в фон
@@ -411,6 +420,10 @@ public final class LLMTrainer {
                     LogFmt.badge("LOSS"),
                     config.sampledCeCandidates,
                     config.sampledCeNegativeMode);
+            log.info(
+                    "{} sampled PERF accounting: candidate-id prep + candidate LM-head входят в \"прямой\"; "
+                            + "\"лосс+∂CE\" покрывает только sampled CE",
+                    LogFmt.badge("PERF"));
         }
         if (config.deviceLogitsTrainStep) {
             model.setDeviceLogitsEnabled(true);
@@ -624,7 +637,8 @@ public final class LLMTrainer {
         TrainingTimings timings = TrainingTimings.fromEnv();
         if (TensorTrainingPerfEnv.enabled()) {
             log.info(
-                    "JGPT_TRAIN_PERF=1: как JGPT_PROFILE=1 + JGPT_TIMINGS=1 — подробный PERF на первые {} шаг(ов) после старта/reset/eval; у train_loss — ток/с и фазы каждые {} шаг(ов).",
+                    "JGPT_TRAIN_PERF=1: как JGPT_PROFILE=1 + JGPT_TIMINGS=1 — подробный PERF на первые {} шаг(ов) после старта/reset/eval; у train_loss — ток/с и фазы каждые {} шаг(ов). "
+                            + "После forward выполняется cuda stream sync — «прямой» включает GPU-forward, «лосс+∂CE» в основном CE (артефакт только этого режима).",
                     profiler != null ? profiler.maxDetailSteps() : 0,
                     config.logEverySteps);
         } else {
@@ -733,7 +747,24 @@ public final class LLMTrainer {
                 accTokens += (long) batch.input.getShape()[0] * config.maxSeqLen;
 
                 long t0 = profile ? System.nanoTime() : 0L;
-                Tensor logits = model.forward(batch.input, true, config.useGpuResident);
+                Tensor logits;
+                if (canDeviceSampledTrainForward()) {
+                    int batchSz = batch.input.getShape()[0];
+                    int seqLen = batch.input.getShape()[1];
+                    int vocabSize = config.vocabSize;
+                    int rows = batchSz * seqLen;
+                    int candCount = effectiveSampledCandidateCount(vocabSize);
+                    prepareSampledCandidateIds(batch.target, rows, vocabSize, candCount);
+                    logits =
+                            model.forwardTrainingDeviceSampled(
+                                    batch.input, sampledCandidateIdsDevice, sampledCandidateLogitsDevice, candCount);
+                } else {
+                    logits = model.forward(batch.input, true, config.useGpuResident);
+                }
+                if (TensorTrainingPerfEnv.enabled() && TensorOpsGPU.isGpuAvailable()) {
+                    /* Честное разбиение PERF: весь GPU-forward до барьера входит в «прямой»; на скорость шага не влияет. */
+                    TensorOpsGPU.synchronizeStream();
+                }
                 long t1 = profile ? System.nanoTime() : 0L;
                 float ceScale = 1f / (float) config.accumulationSteps;
                 float loss;
@@ -742,7 +773,13 @@ public final class LLMTrainer {
                     /* Async CE: kernel пишет ∂logits на device и D2H скаляра loss — до backward нужен барьер. */
                     TensorOpsGPU.synchronizeStream();
                     long t3 = profile ? System.nanoTime() : 0L;
-                    model.backward(logits, microInAccum == 1);
+                    model.backward(
+                            logits,
+                            microInAccum == 1,
+                            config.fullGpuTrainStep
+                                    && model.isGpuResident()
+                                    && gpuTrainableParamGradsKnownClean
+                                    && microInAccum == 1);
                     /* Backward ставит GPU kernels; перед clip/overflow-check нужен барьер готовности ∂. */
                     TensorOpsGPU.synchronizeStream();
                     loss = TensorOpsGPU.crossEntropySoftmaxGradLossGpuDeviceReadPendingFromHost();
@@ -755,7 +792,13 @@ public final class LLMTrainer {
                 } else {
                     loss = applyTrainLossAndGrad(logits, batch.target, ceScale);
                     long t3 = profile ? System.nanoTime() : 0L;
-                    model.backward(logits, microInAccum == 1);
+                    model.backward(
+                            logits,
+                            microInAccum == 1,
+                            config.fullGpuTrainStep
+                                    && model.isGpuResident()
+                                    && gpuTrainableParamGradsKnownClean
+                                    && microInAccum == 1);
                     long t4 = profile ? System.nanoTime() : 0L;
                     if (profile) {
                         accFwdNs += t1 - t0;
@@ -801,7 +844,7 @@ public final class LLMTrainer {
                         zeroGradients(logits);
                         clearGpuParamGradsAfterOverflowSkip();
                         if (config.fullGpuTrainStep && model.isGpuResident()) {
-                            zeroGpuGrads(model.gpuTensorByTrainableParameter());
+                            zeroGpuGradsMarkingParamGradsClean(model.gpuTensorByTrainableParameter());
                         }
                         synchronizeGpuAfterOverflowSkip();
                     }
@@ -1113,6 +1156,7 @@ public final class LLMTrainer {
             if (!dynamicLossScaler.step(hasOverflow)) {
                 zeroGradients(logits);
                 clearGpuParamGradsAfterOverflowSkip();
+                markGpuTrainableParamGradsMaybeDirtyAfterHostOptimizerPath();
                 logGradientOverflowSkipped(dynamicLossScaler.getScale());
                 synchronizeGpuAfterOverflowSkip();
                 return false;
@@ -1120,6 +1164,7 @@ public final class LLMTrainer {
         } else if (hasOverflow) {
             zeroGradients(logits);
             clearGpuParamGradsAfterOverflowSkip();
+            markGpuTrainableParamGradsMaybeDirtyAfterHostOptimizerPath();
             synchronizeGpuAfterOverflowSkip();
             return false;
         }
@@ -1139,6 +1184,7 @@ public final class LLMTrainer {
         model.onParametersUpdated();
 
         zeroGradients(logits);
+        markGpuTrainableParamGradsMaybeDirtyAfterHostOptimizerPath();
         return true;
     }
 
@@ -1168,13 +1214,10 @@ public final class LLMTrainer {
         }
         boolean deviceGradNonFinite = false;
         if (!hasOverflow) {
-            for (Map.Entry<Tensor, GpuTensor> e : paramMap.entrySet()) {
-                GpuTensor gt = e.getValue();
-                if (gt.hasGradBuffer() && TensorOpsGPU.anyNonFiniteGpuDevice(gt.gradBuffer(), e.getKey().size())) {
-                    hasOverflow = true;
-                    deviceGradNonFinite = true;
-                    break;
-                }
+            String info = checkGpuParamGradsNonFiniteFused(paramMap);
+            if (info != null) {
+                hasOverflow = true;
+                deviceGradNonFinite = true;
             }
         }
         boolean logitsGradNonFinite =
@@ -1190,7 +1233,7 @@ public final class LLMTrainer {
             if (!dynamicLossScaler.step(hasOverflow)) {
                 zeroGradients(logits);
                 clearGpuParamGradsAfterOverflowSkip();
-                zeroGpuGrads(paramMap);
+                zeroGpuGradsMarkingParamGradsClean(paramMap);
                 logGradientOverflowSkipped(dynamicLossScaler.getScale());
                 synchronizeGpuAfterOverflowSkip();
                 return false;
@@ -1198,7 +1241,7 @@ public final class LLMTrainer {
         } else if (hasOverflow) {
             zeroGradients(logits);
             clearGpuParamGradsAfterOverflowSkip();
-            zeroGpuGrads(paramMap);
+            zeroGpuGradsMarkingParamGradsClean(paramMap);
             synchronizeGpuAfterOverflowSkip();
             return false;
         }
@@ -1207,13 +1250,13 @@ public final class LLMTrainer {
         if (lossScaleForUnscale > 1f) {
             DynamicLossScaler.unscaleGpuDeviceGrads(paramMap, lossScaleForUnscale);
             if (logits.hasGrad()) {
-                List<Tensor> logitsOnly = new ArrayList<>(1);
-                logitsOnly.add(logits);
-                dynamicLossScaler.unscaleGradients(logitsOnly);
+                logitsOnlyScratch.clear();
+                logitsOnlyScratch.add(logits);
+                dynamicLossScaler.unscaleGradients(logitsOnlyScratch);
             }
         }
 
-        double sumSq = TensorOpsGPU.sumSquaresGpuDeviceParamGrads(paramMap);
+        double sumSq = sumSquaresGpuParamGrads(paramMap);
         if (logits.hasGrad()) {
             float[] lg = logits.gradBuffer();
             if (lg.length > 0) {
@@ -1248,7 +1291,7 @@ public final class LLMTrainer {
         optimizerStep();
         model.onParametersUpdated();
 
-        zeroGpuGrads(paramMap);
+        zeroGpuGradsMarkingParamGradsClean(paramMap);
         zeroGradients(logits);
         return true;
     }
@@ -1313,13 +1356,8 @@ public final class LLMTrainer {
         }
         if (config.fullGpuTrainStep && model.isGpuResident()) {
             Map<Tensor, GpuTensor> gpuParams = model.gpuTensorByTrainableParameter();
-            for (Map.Entry<Tensor, GpuTensor> e : gpuParams.entrySet()) {
-                GpuTensor gt = e.getValue();
-                if (gt != null
-                        && gt.hasGradBuffer()
-                        && TensorOpsGPU.anyNonFiniteGpuDevice(gt.gradBuffer(), e.getKey().size())) {
-                    return true;
-                }
+            if (checkGpuParamGradsNonFiniteFused(gpuParams) != null) {
+                return true;
             }
         }
         return false;
@@ -1394,9 +1432,12 @@ public final class LLMTrainer {
     }
 
     private void zeroGradients(Tensor logits) {
-        for (Tensor p : parameters) {
-            if (p.hasGrad()) {
-                p.zeroGrad();
+        /* При full GPU step хостовые ∂ параметров не участвуют в backward/Adam — fill избыточен. */
+        if (!config.fullGpuTrainStep || !model.isGpuResident()) {
+            for (Tensor p : parameters) {
+                if (p.hasGrad()) {
+                    p.zeroGrad();
+                }
             }
         }
         model.clearSampledTrainLossGrad();
@@ -1530,8 +1571,7 @@ public final class LLMTrainer {
                 }
             }
         }
-        if (invalid > 0) {
-            // #region agent log
+        if (invalid > 0 && DebugGpuTrain.isEnabled()) {
             agentLogB39372(
                     "H_targets",
                     "LLMTrainer.fillCeTargetsDeviceSanitized",
@@ -1545,7 +1585,6 @@ public final class LLMTrainer {
                             + ",\"vocabSize\":"
                             + vocabSize
                             + "}");
-            // #endregion
         }
     }
 
@@ -1623,6 +1662,15 @@ public final class LLMTrainer {
 
     private int effectiveSampledCandidateCount(int vocabSize) {
         return Math.max(2, Math.min(config.sampledCeCandidates, vocabSize));
+    }
+
+    /** Sampled train: декодер GPU + кандидатный LM-head без полных логитов на VRAM. */
+    private boolean canDeviceSampledTrainForward() {
+        return config.usesSampledTrainLoss()
+                && config.deviceLogitsTrainStep
+                && config.deviceDecoderBackward
+                && model.canFullGpuTrain()
+                && model.isDeviceLogitsEnabled();
     }
 
     private static long mix64(long z) {
@@ -1736,29 +1784,36 @@ public final class LLMTrainer {
         }
         ensureSampledCandidateDeviceBuffers(total);
         sampledCandidateIdsDevice.copyFrom(sampledCandidateIdsHostScratch, 0, total);
+        sampledTrainCandidatesPerRow = candidates;
         return candidates;
     }
 
     private float applySampledTrainLossAndGradDevice(Tensor logits, Tensor target, float gradScale) {
-        if (!config.deviceLogitsTrainStep || !model.hasDeviceLogitsBuffers()) {
-            throw new IllegalStateException("sampled train loss requires device logits buffers");
+        if (!config.deviceLogitsTrainStep || !model.hasDeviceSampledTrainLmHeadActivations()) {
+            throw new IllegalStateException("sampled train loss requires sampled device forward (LM activations without full logits)");
         }
         int[] logitShape = logits.getShape();
         int batch = logitShape[0];
         int seqLen = logitShape[1];
-        int vocabSize = logitShape[2];
         int rows = batch * seqLen;
-        int candidates = prepareSampledCandidateIds(target, rows, vocabSize, effectiveSampledCandidateCount(vocabSize));
-        int totalCandidateElems = rows * candidates;
+        int candidates = sampledTrainCandidatesPerRow;
+        if (candidates <= 0) {
+            throw new IllegalStateException("sampled train loss: candidates not prepared before forward");
+        }
+        Objects.requireNonNull(target, "target");
+        if (sampledCandidateLogitsDevice == null
+                || sampledCandidateGradDevice == null
+                || sampledCandidateIdsDevice == null) {
+            throw new IllegalStateException("sampled train buffers missing");
+        }
+        long need = (long) rows * candidates;
+        if (sampledCandidateLogitsDevice.numFloats() < need
+                || sampledCandidateGradDevice.numFloats() < need
+                || sampledCandidateIdsDevice.numInts() < need) {
+            throw new IllegalStateException("sampled train buffers too small for logits shape");
+        }
         sampledCandidateGradDevice.clear();
         model.clearSampledTrainLossGrad();
-        TensorOpsGPU.gatherLogitsByIdsGpuDevice(
-                model.deviceLogitsBuffer(),
-                sampledCandidateIdsDevice,
-                sampledCandidateLogitsDevice,
-                rows,
-                vocabSize,
-                candidates);
         float loss =
                 TensorOpsGPU.sampledCrossEntropyGradLossGpuDeviceFirstSlot(
                         sampledCandidateLogitsDevice,
@@ -2160,7 +2215,20 @@ public final class LLMTrainer {
      * @return logits and CE loss
      */
     public TestMicrobatchResult testHarnessForwardCeBackward(DataLoader.Batch batch, boolean zeroGrads) {
-        Tensor logits = model.forward(batch.input, true, config.useGpuResident);
+        Tensor logits;
+        if (canDeviceSampledTrainForward()) {
+            int batchSz = batch.input.getShape()[0];
+            int seqLen = batch.input.getShape()[1];
+            int vocabSize = config.vocabSize;
+            int rows = batchSz * seqLen;
+            int candCount = effectiveSampledCandidateCount(vocabSize);
+            prepareSampledCandidateIds(batch.target, rows, vocabSize, candCount);
+            logits =
+                    model.forwardTrainingDeviceSampled(
+                            batch.input, sampledCandidateIdsDevice, sampledCandidateLogitsDevice, candCount);
+        } else {
+            logits = model.forward(batch.input, true, config.useGpuResident);
+        }
         float ceScale = 1f / (float) config.accumulationSteps;
         float loss;
         if (ceAsyncDevice && !config.usesSampledTrainLoss() && config.deviceLogitsTrainStep && model.hasDeviceLogitsBuffers()) {
@@ -2233,7 +2301,7 @@ public final class LLMTrainer {
         }
         String firstNonFiniteGrad = null;
         if (!hasOverflow) {
-            firstNonFiniteGrad = firstNonFiniteGpuParamInfo(paramMap, true);
+            firstNonFiniteGrad = checkGpuParamGradsNonFiniteFused(paramMap);
             if (firstNonFiniteGrad != null) {
                 hasOverflow = true;
             }
@@ -2243,8 +2311,7 @@ public final class LLMTrainer {
             hasOverflow = true;
         }
 
-        // #region agent log
-        if (hasOverflow || globalStep >= 10) {
+        if (DebugGpuTrain.isEnabled() && (hasOverflow || globalStep >= 10)) {
             String primary;
             if (lossNonFinite) {
                 primary = "avgMicroLoss";
@@ -2290,7 +2357,6 @@ public final class LLMTrainer {
                                             : "")
                             + "\"}");
         }
-        // #endregion agent log
 
         if (fp16Matmul && hasOverflow) {
             Fp16Metrics.global().recordOverflow();
@@ -2299,7 +2365,7 @@ public final class LLMTrainer {
             if (!dynamicLossScaler.step(hasOverflow)) {
                 zeroGradients(logits);
                 clearGpuParamGradsAfterOverflowSkip();
-                zeroGpuGrads(paramMap);
+                zeroGpuGradsMarkingParamGradsClean(paramMap);
                 logGradientOverflowSkipped(dynamicLossScaler.getScale());
                 synchronizeGpuAfterOverflowSkip();
                 return false;
@@ -2307,7 +2373,7 @@ public final class LLMTrainer {
         } else if (hasOverflow) {
             zeroGradients(logits);
             clearGpuParamGradsAfterOverflowSkip();
-            zeroGpuGrads(paramMap);
+            zeroGpuGradsMarkingParamGradsClean(paramMap);
             synchronizeGpuAfterOverflowSkip();
             return false;
         }
@@ -2316,13 +2382,13 @@ public final class LLMTrainer {
         if (lossScaleForUnscale > 1f) {
             DynamicLossScaler.unscaleGpuDeviceGrads(paramMap, lossScaleForUnscale);
             if (logits.hasGrad()) {
-                List<Tensor> logitsOnly = new ArrayList<>(1);
-                logitsOnly.add(logits);
-                dynamicLossScaler.unscaleGradients(logitsOnly);
+                logitsOnlyScratch.clear();
+                logitsOnlyScratch.add(logits);
+                dynamicLossScaler.unscaleGradients(logitsOnlyScratch);
             }
         }
 
-        double sumSq = TensorOpsGPU.sumSquaresGpuDeviceParamGrads(paramMap);
+        double sumSq = sumSquaresGpuParamGrads(paramMap);
         if (logits.hasGrad()) {
             float[] lg = logits.gradBuffer();
             if (lg.length > 0) {
@@ -2332,30 +2398,30 @@ public final class LLMTrainer {
         float totalNorm = (float) Math.sqrt(sumSq);
         lastGlobalGradNorm = totalNorm;
         if (!Float.isFinite(totalNorm)) {
-            // #region agent log
-            agentLogB39372(
-                    "H_norm",
-                    "LLMTrainer.clipAndOptimizerStepFullGpu",
-                    "non_finite_total_norm",
-                    "{\"plannedStep\":"
-                            + stepForLr
-                            + ",\"globalStep\":"
-                            + globalStep
-                            + ",\"sumSq\":"
-                            + sumSq
-                            + ",\"totalNorm\":"
-                            + totalNorm
-                            + ",\"lossScale\":"
-                            + (fp16Matmul && dynamicLossScaler != null ? dynamicLossScaler.getScale() : 1f)
-                            + "}");
-            // #endregion agent log
+            if (DebugGpuTrain.isEnabled()) {
+                agentLogB39372(
+                        "H_norm",
+                        "LLMTrainer.clipAndOptimizerStepFullGpu",
+                        "non_finite_total_norm",
+                        "{\"plannedStep\":"
+                                + stepForLr
+                                + ",\"globalStep\":"
+                                + globalStep
+                                + ",\"sumSq\":"
+                                + sumSq
+                                + ",\"totalNorm\":"
+                                + totalNorm
+                                + ",\"lossScale\":"
+                                + (fp16Matmul && dynamicLossScaler != null ? dynamicLossScaler.getScale() : 1f)
+                                + "}");
+            }
             if (fp16Matmul) {
                 Fp16Metrics.global().recordOverflow();
                 dynamicLossScaler.step(true);
             }
             zeroGradients(logits);
             clearGpuParamGradsAfterOverflowSkip();
-            zeroGpuGrads(paramMap);
+            zeroGpuGradsMarkingParamGradsClean(paramMap);
             logGradientOverflowSkipped(fp16Matmul && dynamicLossScaler != null ? dynamicLossScaler.getScale() : 1f);
             synchronizeGpuAfterOverflowSkip();
             return false;
@@ -2381,7 +2447,7 @@ public final class LLMTrainer {
         optimizer.stepAllGpuDevice(paramMap);
         model.onGpuParametersUpdated();
 
-        zeroGpuGrads(paramMap);
+        zeroGpuGradsMarkingParamGradsClean(paramMap);
         zeroGradients(logits);
         return true;
     }
@@ -2402,6 +2468,82 @@ public final class LLMTrainer {
             }
         }
         return null;
+    }
+
+    /**
+     * Фьюзированная проверка NaN/Inf во всех GPU-градиентах параметров: один JNI-вызов и одна
+     * синхронизация стрима в нормальном случае.
+     *
+     * <p>Если overflow не обнаружен — возвращает {@code null} (один быстрый round-trip).
+     * Если обнаружен — вызывает медленный per-param скан {@link #firstNonFiniteGpuParamInfo} только
+     * для получения debug-строки; этот путь редкий (только при реальном overflow/NaN).
+     *
+     * @return {@code null} если все градиенты конечны; иначе строка-описание первого «плохого» параметра
+     */
+    private String checkGpuParamGradsNonFiniteFused(Map<Tensor, GpuTensor> paramMap) {
+        int n = paramMap.size();
+        if (n == 0) {
+            return null;
+        }
+        if (nonFiniteParamBufsScratch.length < n) {
+            nonFiniteParamBufsScratch = new GpuFloatBuffer[n];
+            nonFiniteParamLensScratch = new int[n];
+        }
+        int count = 0;
+        for (Map.Entry<Tensor, GpuTensor> e : paramMap.entrySet()) {
+            GpuTensor gt = e.getValue();
+            if (gt != null && gt.hasGradBuffer()) {
+                nonFiniteParamBufsScratch[count] = gt.gradBuffer();
+                nonFiniteParamLensScratch[count] = e.getKey().size();
+                count++;
+            }
+        }
+        if (count == 0) {
+            return null;
+        }
+        if (!TensorOpsGPU.anyNonFiniteGpuDeviceMulti(nonFiniteParamBufsScratch, nonFiniteParamLensScratch, count)) {
+            return null;
+        }
+        // Overflow detected (редкий путь): per-param скан для debug-строки
+        return firstNonFiniteGpuParamInfo(paramMap, true);
+    }
+
+    /** Хостовый clip/step без {@link #zeroGpuGrads} — ∂ на VRAM могут остаться ненулевыми после backward. */
+    private void markGpuTrainableParamGradsMaybeDirtyAfterHostOptimizerPath() {
+        if (model.isGpuResident()) {
+            gpuTrainableParamGradsKnownClean = false;
+        }
+    }
+
+    /**
+     * Сумма квадратов GPU-градиентов всех параметров в {@code paramMap}: использует
+     * grow-only scratch-массивы {@code sumSqPtrsScratch}/{@code sumSqLensScratch}, без аллокации на шаг.
+     */
+    private double sumSquaresGpuParamGrads(Map<Tensor, GpuTensor> paramMap) {
+        int n = paramMap.size();
+        if (n == 0) return 0.0;
+        if (sumSqPtrsScratch.length < n) {
+            sumSqPtrsScratch = new long[n];
+            sumSqLensScratch = new int[n];
+        }
+        int count = 0;
+        for (Map.Entry<Tensor, GpuTensor> e : paramMap.entrySet()) {
+            GpuTensor gt = e.getValue();
+            if (gt != null && !gt.isClosed() && gt.hasGradBuffer()) {
+                sumSqPtrsScratch[count] = gt.gradBuffer().devicePointer();
+                sumSqLensScratch[count] = e.getKey().size();
+                count++;
+            }
+        }
+        if (count == 0) return 0.0;
+        return TensorOpsGPU.sumSquaresGPUDeviceFused(sumSqPtrsScratch, sumSqLensScratch, count);
+    }
+
+    private void zeroGpuGradsMarkingParamGradsClean(Map<Tensor, GpuTensor> paramMap) {
+        zeroGpuGrads(paramMap);
+        if (model.isGpuResident()) {
+            gpuTrainableParamGradsKnownClean = true;
+        }
     }
 
     private static void zeroGpuGrads(Map<Tensor, GpuTensor> paramMap) {

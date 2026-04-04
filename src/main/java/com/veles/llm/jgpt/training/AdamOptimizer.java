@@ -569,6 +569,11 @@ public final class AdamOptimizer {
     private final Map<Tensor, GpuTensor> gpuM = new IdentityHashMap<>();
     private final Map<Tensor, GpuTensor> gpuV = new IdentityHashMap<>();
 
+    /** Grow-only scratch lists, reused каждый шаг в {@link #stepAllGpuDevice}. */
+    private final List<GpuTensor> stepScratchParams  = new ArrayList<>();
+    private final List<GpuTensor> stepScratchMStates = new ArrayList<>();
+    private final List<GpuTensor> stepScratchVStates = new ArrayList<>();
+
     public void syncMomentBuffersFromGpu() {
         for (Map.Entry<Tensor, GpuTensor> e : gpuM.entrySet()) {
             Tensor cpuParam = e.getKey();
@@ -625,9 +630,9 @@ public final class AdamOptimizer {
         if (step <= 0) {
             throw new IllegalStateException("call beginStep() before stepAllGpuDevice");
         }
-        List<GpuTensor> params = new ArrayList<>();
-        List<GpuTensor> mStates = new ArrayList<>();
-        List<GpuTensor> vStates = new ArrayList<>();
+        stepScratchParams.clear();
+        stepScratchMStates.clear();
+        stepScratchVStates.clear();
         for (Map.Entry<Tensor, GpuTensor> e : paramMap.entrySet()) {
             Tensor cpuParam = e.getKey();
             GpuTensor gt = e.getValue();
@@ -648,12 +653,12 @@ public final class AdamOptimizer {
                         : GpuTensor.fromHostTensor(cpuVT);
                 gpuV.put(cpuParam, vGpu);
             }
-            params.add(gt);
-            mStates.add(mGpu);
-            vStates.add(vGpu);
+            stepScratchParams.add(gt);
+            stepScratchMStates.add(mGpu);
+            stepScratchVStates.add(vGpu);
         }
-        if (!params.isEmpty()) {
-            stepAllGpu(params, mStates, vStates);
+        if (!stepScratchParams.isEmpty()) {
+            stepAllGpu(stepScratchParams, stepScratchMStates, stepScratchVStates);
         }
     }
 }

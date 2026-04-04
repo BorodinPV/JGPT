@@ -5,20 +5,20 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Уход от множественных вызовов jni-gpu">
-      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/training/LLMConfigTrainLossModeEnvTest.java" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/training/SampledTrainLossGpuTest.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/run-training-gpu.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/run-training-gpu.sh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/train-e2e-gpu.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/train-e2e-gpu.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/profile-nsys.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/profile-nsys.sh" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/TensorOpsGPU.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/TensorOpsGPU.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/cuda/GpuPendingGradients.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/cuda/GpuPendingGradients.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/GPTModel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/GPTModel.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/GpuWorkspaceCleanup.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/GpuWorkspaceCleanup.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/TransformerBackward.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/TransformerBackward.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/AdamOptimizer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/AdamOptimizer.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/TrainingConfig.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/TrainingConfig.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/TrainingProfiler.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/TrainingProfiler.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/cuda/CrossEntropyGpuTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/cuda/CrossEntropyGpuTest.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/training/JgptTrainingEnvCatalogTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/training/JgptTrainingEnvCatalogTest.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/training/SampledTrainLossGpuTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/training/SampledTrainLossGpuTest.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/test/resources/jgpt-training-env-keys.txt" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/resources/jgpt-training-env-keys.txt" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -231,7 +231,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775261344404</updated>
     </task>
-    <option name="localTasksCounter" value="20" />
+    <task id="LOCAL-00020" summary="Уход от множественных вызовов jni-gpu">
+      <option name="closed" value="true" />
+      <created>1775261430448</created>
+      <option name="number" value="00020" />
+      <option name="presentableId" value="LOCAL-00020" />
+      <option name="project" value="LOCAL" />
+      <updated>1775261430448</updated>
+    </task>
+    <option name="localTasksCounter" value="21" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">

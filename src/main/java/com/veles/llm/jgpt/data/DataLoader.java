@@ -174,6 +174,31 @@ public final class DataLoader {
         return sb.toString();
     }
 
+    /**
+     * Принимает уже закодированный массив токенов и нарезает его на окна обучения.
+     * Используется при параллельном кодировании в {@code AllBooksTrain}.
+     */
+    public void loadTokens(int[] tokens) {
+        if (tokens.length < maxSeqLen + 1) {
+            log.warn(
+                    "Текст слишком короткий: {} токенов (нужно минимум {})",
+                    tokens.length,
+                    maxSeqLen + 1);
+            return;
+        }
+        int count = 0;
+        for (int i = 0; i + maxSeqLen < tokens.length; i += maxSeqLen) {
+            if (maxSequences > 0 && count >= maxSequences) {
+                log.warn(
+                        "Достигнут лимит maxSequences={}: хвост книги в этот DataLoader не попал.",
+                        maxSequences);
+                break;
+            }
+            sequences.add(Arrays.copyOfRange(tokens, i, i + maxSeqLen + 1));
+            count++;
+        }
+    }
+
     public void loadText(String text) {
         if (tokenizer == null) {
             log.warn("Токенизатор не задан — загрузка текста пропущена.");

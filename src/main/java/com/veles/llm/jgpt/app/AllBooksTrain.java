@@ -16,6 +16,10 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -116,20 +120,45 @@ public final class AllBooksTrain {
         // --- датасет: все книги в один DataLoader ---
         Files.createDirectories(checkpointsDir);
         DataLoader dataLoader = new DataLoader(tokenizer, llm.maxSeqLen, llm.batchSize);
+
+        int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
+        log.info("[DATA] параллельное кодирование: {} потоков", threads);
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+
+        // Запускаем кодирование всех книг параллельно
+        List<Future<int[]>> futures = new ArrayList<>(books.size());
+        for (Path p : books) {
+            futures.add(pool.submit((Callable<int[]>) () -> {
+                String text = readUtf8(p);
+                return tokenizer.encode(text, true);
+            }));
+        }
+        pool.shutdown();
+
         long totalChars = 0;
         int skipped = 0;
-        for (Path p : books) {
-            String text = readUtf8(p);
-            totalChars += text.length();
-            int before = dataLoader.numSequences();
-            dataLoader.loadText(text);
-            int added = dataLoader.numSequences() - before;
-            if (added == 0) {
-                log.warn("[DATA] пропущена (слишком короткая): {}", p.getFileName());
+        int minTokens = llm.maxSeqLen + 1;
+        for (int i = 0; i < books.size(); i++) {
+            Path p = books.get(i);
+            int[] tokens;
+            try {
+                tokens = futures.get(i).get();
+            } catch (Exception e) {
+                log.warn("[DATA] ошибка кодирования {}: {}", p.getFileName(), e.getMessage());
                 skipped++;
-            } else {
-                log.info("[DATA]   {} → +{} окон", p.getFileName(), added);
+                continue;
             }
+            totalChars += p.toFile().length();
+            log.info("[DATA]   {} → {} токенов", p.getFileName(), tokens.length);
+            if (tokens.length < minTokens) {
+                log.warn("[DATA] пропущена (слишком короткая): {} ({} токенов < {})",
+                        p.getFileName(), tokens.length, minTokens);
+                skipped++;
+                continue;
+            }
+            dataLoader.loadTokens(tokens);
+            log.info("[DATA]   {} → +{} окон (итого {})",
+                    p.getFileName(), tokens.length / llm.maxSeqLen, dataLoader.numSequences());
         }
         log.info("[DATA] итого: {} символов, {} книг загружено, {} пропущено",
                 String.format("%,d", totalChars), books.size() - skipped, skipped);

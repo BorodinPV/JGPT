@@ -62,12 +62,20 @@ public final class BPETokenizer {
     private final Pattern wordPattern;
     private final int targetVocabSize;
 
+    /**
+     * Индекс слияния по паре «left\u0000right» → rank (0 = наивысший приоритет).
+     * Позволяет заменить O(M×W) перебор всех слияний на O(W²) поиск минимального ранга.
+     * Перестраивается из {@link #merges} при конструировании и после загрузки.
+     */
+    private Map<String, Integer> mergeRanks;
+
     public BPETokenizer(int vocabSize) {
         this.targetVocabSize = vocabSize;
         this.tokenToIdMap = new HashMap<>();
         this.idToTokenMap = new HashMap<>();
         this.merges = new ArrayList<>();
         this.wordPattern = WORD_PATTERN;
+        this.mergeRanks = new HashMap<>();
 
         addSpecialToken(PAD_TOKEN, 0);
         addSpecialToken(UNK_TOKEN, 1);
@@ -85,6 +93,15 @@ public final class BPETokenizer {
         this.idToTokenMap = new HashMap<>(itos);
         this.merges = new ArrayList<>(merges);
         this.wordPattern = WORD_PATTERN;
+        this.mergeRanks = buildMergeRanks(this.merges);
+    }
+
+    private static Map<String, Integer> buildMergeRanks(List<String[]> merges) {
+        Map<String, Integer> ranks = new HashMap<>(merges.size() * 2);
+        for (int i = 0; i < merges.size(); i++) {
+            ranks.put(merges.get(i)[0] + '\0' + merges.get(i)[1], i);
+        }
+        return ranks;
     }
 
     private void addSpecialToken(String token, int id) {
@@ -191,6 +208,7 @@ public final class BPETokenizer {
             tokenizer.tokenToIdMap.put(merged, newId);
             tokenizer.idToTokenMap.put(newId, merged);
             tokenizer.merges.add(new String[] {a, b});
+            tokenizer.mergeRanks.put(a + '\0' + b, tokenizer.merges.size() - 1);
 
             tokenizer.applyMergeToCorpus(corpus, a, b, merged);
             pairFreqs = tokenizer.getPairFrequencies(corpus);
@@ -273,23 +291,23 @@ public final class BPETokenizer {
 
     /** Применяет merge в том же порядке, что при обучении. */
     private void applyMerges(List<String> wordTokens) {
-        for (String[] merge : merges) {
-            String left = merge[0];
-            String right = merge[1];
-            boolean changed = true;
-            while (changed) {
-                changed = false;
-                for (int i = 0; i < wordTokens.size() - 1; i++) {
-                    if (wordTokens.get(i).equals(left) && wordTokens.get(i + 1).equals(right)) {
-                        wordTokens.set(i, left + right);
-                        wordTokens.remove(i + 1);
-                        changed = true;
-                        if (i > 0) {
-                            i--;
-                        }
-                    }
+        // Быстрый BPE: ищем пару с минимальным рангом слияния и применяем,
+        // пока есть применимые слияния. O(W²) на слово вместо O(M×W).
+        while (wordTokens.size() > 1) {
+            int minRank = Integer.MAX_VALUE;
+            int minIdx = -1;
+            for (int i = 0; i < wordTokens.size() - 1; i++) {
+                Integer rank = mergeRanks.get(wordTokens.get(i) + '\0' + wordTokens.get(i + 1));
+                if (rank != null && rank < minRank) {
+                    minRank = rank;
+                    minIdx = i;
                 }
             }
+            if (minIdx == -1) {
+                break;
+            }
+            wordTokens.set(minIdx, wordTokens.get(minIdx) + wordTokens.get(minIdx + 1));
+            wordTokens.remove(minIdx + 1);
         }
     }
 

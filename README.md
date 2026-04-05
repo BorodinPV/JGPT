@@ -179,9 +179,11 @@ JGPT_FINETUNE=1 JGPT_EPOCHS=20 \
 | Env-переменная | Описание |
 |---|---|
 | `JGPT_EPOCHS` | переопределить число эпох (default: 20) |
-| `JGPT_FINETUNE` | `1` / `true` — сбросить `globalStep`, сохранив веса и Adam |
+| `JGPT_FINETUNE` | `1` / `true` — сбросить `globalStep` и `bestLoss`, сохранив веса и Adam |
 | `JGPT_MAX_SEQ_LEN` | переопределить длину контекста (default: 2048; для RTX 3080 рекомендуется 1024) |
 | `JGPT_INTERACTIVE_EVERY` | `0` — отключить промежуточную генерацию текста во время обучения |
+| `JGPT_EARLY_STOP_EVAL_PATIENCE` | терпение раннего останова (evals без улучшения; `0` = выкл.; default: 3) |
+| `JGPT_EARLY_STOP_OVERFIT` | `0` — отключить останов по признаку train↓ + eval↑; default: `1` |
 
 ---
 

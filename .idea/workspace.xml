@@ -4,15 +4,14 @@
     <option name="autoReloadType" value="NONE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Ускорение до≈33к токенов при обучении">
+    <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Решение проблемы с переобучением">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/run-training-gpu.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/run-training-gpu.sh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/MultiBookTrain.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/MultiBookTrain.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/TrainLLM.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/TrainLLM.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/data/BPETokenizer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/data/BPETokenizer.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/data/DataLoader.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/data/DataLoader.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/test/resources/jgpt-training-env-keys.txt" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/resources/jgpt-training-env-keys.txt" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -255,7 +254,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775272649814</updated>
     </task>
-    <option name="localTasksCounter" value="24" />
+    <task id="LOCAL-00024" summary="Решение проблемы с переобучением">
+      <option name="closed" value="true" />
+      <created>1775288984497</created>
+      <option name="number" value="00024" />
+      <option name="presentableId" value="LOCAL-00024" />
+      <option name="project" value="LOCAL" />
+      <updated>1775288984497</updated>
+    </task>
+    <option name="localTasksCounter" value="25" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -286,6 +293,7 @@
     <MESSAGE value="Ускорение до 22к токенов при обучении" />
     <MESSAGE value="Ускорение до 30к токенов при обучении" />
     <MESSAGE value="Ускорение до≈33к токенов при обучении" />
-    <option name="LAST_COMMIT_MESSAGE" value="Ускорение до≈33к токенов при обучении" />
+    <MESSAGE value="Решение проблемы с переобучением" />
+    <option name="LAST_COMMIT_MESSAGE" value="Решение проблемы с переобучением" />
   </component>
 </project>

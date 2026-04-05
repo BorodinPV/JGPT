@@ -267,6 +267,10 @@ public final class LLMConfig {
      * обучения. {@code 0} или {@code -1} — отключить. По умолчанию 200.
      * <p>Внимание: генерация (инференс) после каждого eval резко снижает FP16 loss scale (÷64),
      * что вызывает overflow на следующем обучающем шаге. При нестабильном FP16 лучше выставить {@code 0}.
+     * <p>Env {@code JGPT_SAMPLE_PROMPT}: пользовательский промпт для промежуточной генерации.
+     * Можно задать несколько промптов через {@code |}, тогда они чередуются по шагам:
+     * {@code JGPT_SAMPLE_PROMPT="он вышел из дома|весна пришла|тихая ночь"}.
+     * Если не задан — используются встроенные русские промпты.
      */
     public static int interactiveEveryFromEnv(int defaultValue) {
         String env = System.getenv("JGPT_INTERACTIVE_EVERY");
@@ -375,6 +379,39 @@ public final class LLMConfig {
             return "1".equals(t) || "true".equalsIgnoreCase(t);
         }
         return false;
+    }
+
+    /**
+     * Переопределяет терпение раннего останова через {@code JGPT_EARLY_STOP_EVAL_PATIENCE}.
+     * {@code 0} — отключить останов по отсутствию улучшения eval loss.
+     * По умолчанию {@code defaultValue}.
+     */
+    public static int earlyStopEvalPatienceFromEnv(int defaultValue) {
+        return readNonNegativeEnvInt("JGPT_EARLY_STOP_EVAL_PATIENCE", defaultValue);
+    }
+
+    /**
+     * Переопределяет проверку переобучения (train↓ + eval↑) через {@code JGPT_EARLY_STOP_OVERFIT}.
+     * {@code 0}/{@code false} — отключить. По умолчанию {@code defaultValue}.
+     */
+    public static boolean earlyStopOverfitFromEnv(boolean defaultValue) {
+        String e = System.getenv("JGPT_EARLY_STOP_OVERFIT");
+        if (e == null || e.isBlank()) return defaultValue;
+        String t = e.trim();
+        if ("0".equals(t) || "false".equalsIgnoreCase(t)) return false;
+        if ("1".equals(t) || "true".equalsIgnoreCase(t)) return true;
+        return defaultValue;
+    }
+
+    private static int readNonNegativeEnvInt(String key, int defaultValue) {
+        String e = System.getenv(key);
+        if (e != null && !e.isBlank()) {
+            try {
+                int v = Integer.parseInt(e.trim());
+                return Math.max(0, v);
+            } catch (NumberFormatException ignored) {}
+        }
+        return defaultValue;
     }
 
     /**
@@ -516,8 +553,8 @@ public final class LLMConfig {
                     checkpointDir,
                     50,
                     interactiveEveryFromEnv(200),
-                    3,
-                    true,
+                    earlyStopEvalPatienceFromEnv(3),
+                    earlyStopOverfitFromEnv(true),
                     1e-8f,
                     8,
                     true,
@@ -565,8 +602,8 @@ public final class LLMConfig {
                 checkpointDir,
                 50,
                 interactiveEveryFromEnv(200),
-                3,
-                true,
+                earlyStopEvalPatienceFromEnv(3),
+                earlyStopOverfitFromEnv(true),
                 1e-8f,
                 8,
                 useGpu,

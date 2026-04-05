@@ -1902,6 +1902,21 @@ public final class LLMTrainer {
         "дети бежали навстречу лету радостно"
     };
 
+    /**
+     * Читает промпт для промежуточной генерации.
+     * Если задан {@code JGPT_SAMPLE_PROMPT} — использует его (можно задать несколько через {@code |},
+     * тогда выбирается по шагу: {@code "промпт1|промпт2|промпт3"}).
+     * Иначе — берёт из {@link #AUTO_PROMPTS_RU}.
+     */
+    private String pickSamplePrompt(int epochOneBased) {
+        String env = System.getenv("JGPT_SAMPLE_PROMPT");
+        if (env != null && !env.isBlank()) {
+            String[] parts = env.split("\\|");
+            return parts[(globalStep + epochOneBased) % parts.length].trim();
+        }
+        return AUTO_PROMPTS_RU[(globalStep + epochOneBased) % AUTO_PROMPTS_RU.length];
+    }
+
     private void maybeAutoSample(int epochOneBased) {
         if (config.interactiveSampleEverySteps <= 0) {
             return;
@@ -1909,7 +1924,7 @@ public final class LLMTrainer {
         if (globalStep % config.interactiveSampleEverySteps != 0) {
             return;
         }
-        String prompt = AUTO_PROMPTS_RU[(globalStep + epochOneBased) % AUTO_PROMPTS_RU.length];
+        String prompt = pickSamplePrompt(epochOneBased);
         log.info(
                 "{} промежуточная генерация: эпоха {}/{}, шаг {}",
                 LogFmt.badge("SAMPLE"),
@@ -2179,13 +2194,14 @@ public final class LLMTrainer {
     }
 
     /**
-     * Сбрасывает {@code globalStep} в 0 и обновляет шаг оптимайзера.
+     * Сбрасывает {@code globalStep} в 0, обновляет шаг оптимайзера и сбрасывает лучший eval loss.
      * Используется при дообучении ({@code JGPT_FINETUNE=1}): веса и Adam-буферы
-     * сохраняются, но косинусный LR-расписание перезапускается с начала.
+     * сохраняются, но косинусный LR-расписание и счётчик раннего останова перезапускаются.
      */
     public void resetGlobalStep() {
         globalStep = 0;
         optimizer.setStep(0);
+        bestLoss = Float.MAX_VALUE;
     }
 
     /**

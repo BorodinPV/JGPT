@@ -4,12 +4,15 @@
 
 | Способ | Команда |
 |--------|---------|
-| Рекомендуемый | `./scripts/jgpt-smart.sh` |
-| Старт с конкретного пресета | `./scripts/jgpt-smart.sh 01-aggressive` |
+| Рекомендуемый (bash, лог в файл + tee) | `./scripts/jgpt-smart.sh` |
+| То же в одном JVM (метрики в Java, без парсинга лога) | `mvn -q exec:java -Dexec.mainClass=com.veles.llm.jgpt.app.SmartTrainingSupervisor` (из корня проекта; опции `--boo`, `--data-dir`, имя пресета — как у AllBooksTrain) |
+| Старт с конкретного пресета | `./scripts/jgpt-smart.sh 01-aggressive` или добавить аргумент пресета к `SmartTrainingSupervisor` |
 | Без авто-переключения пресетов | `./scripts/jgpt-start.sh` (или `… [пресет] [--finetune]`) |
 | Сброс `globalStep` при том же чекпоинте (finetune) | `./scripts/jgpt-start.sh --finetune` или `export JGPT_FINETUNE=1` перед `./scripts/train-e2e-gpu.sh allbooks` |
 
 `jgpt-smart.sh`: лог в консоль и в **`training_allbooks.log`** (`tee -a`); пресеты **сами понижаются** при сбоях и **повышаются** при стабильном прогрессе (см. ниже). Ctrl+C → shutdown hook в Java сохраняет чекпоинт.
+
+**`SmartTrainingSupervisor` (Java):** цепочка пресетов задана в [`PresetConfig.SMART_PRESET_CHAIN`](../../src/main/java/com/veles/llm/jgpt/training/PresetConfig.java). Решения принимает [`PresetDecider`](../../src/main/java/com/veles/llm/jgpt/training/PresetDecider.java) по колбэкам [`TrainingEventCallback`](../../src/main/java/com/veles/llm/jgpt/training/TrainingEventCallback.java) из `LLMTrainer` (eval, шаг оптимизатора, пропуск из‑за overflow). Пороги: плато **15** eval подряд без улучшения best, **30** улучшений для upgrade, **8** пропусков overflow подряд на одном плановом шаге (аналог FP16 stuck), зависание **300** с без шага оптимизатора, OOM/CUDA — downgrade. После смены пресета снова вызывается `AllBooksTrain.runWithPreset` с тем же корпусом и чекпоинтами.
 
 ## Как применяется пресет
 
@@ -28,7 +31,7 @@
 | **00** | Большой batch / seq=1024, максимум скорости; часто первый кандидат на OOM |
 | **01** | Агрессивный режим по умолчанию при первом запуске smart |
 | **02** | Стабильнее FP16 / параметры |
-| **03** | seq=512 и урезанные лимиты — «аварийное» продолжение |
+| **03** | seq=**1024** (как у остальных — совместимость чекпоинта), batch=1, мягкий FP16 и мало кандидатов CE — «аварийное» продолжение |
 
 **Smart-downgrade** (только строки **текущего** запуска, от `LOG_START_LINE` в логе):  
 - OOM в логе (`cudaMalloc failed`, `out of memory`, `OutOfMemoryError`) ≥ `OOM_THRESHOLD` (по умолчанию **1**);  

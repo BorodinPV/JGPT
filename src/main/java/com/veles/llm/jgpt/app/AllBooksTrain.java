@@ -20,8 +20,13 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import com.veles.llm.jgpt.training.DynamicLossScaler;
+import com.veles.llm.jgpt.training.PresetConfig;
+import com.veles.llm.jgpt.training.TrainingEventCallback;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -75,13 +80,11 @@ public final class AllBooksTrain {
         Path dataDir = dataDirArg != null
                 ? Path.of(dataDirArg).toAbsolutePath().normalize()
                 : root.resolve("data").resolve("books");
-        Path checkpointsDir = root.resolve("checkpoints").resolve("all_books");
-        Path tokenizerPath  = root.resolve("checkpoints").resolve("tokenizer_global.bin");
 
         log.info("=".repeat(60));
         log.info("[ALL-BOOKS] обучение на всём корпусе (единый датасет)");
         log.info("[DATA] каталог с текстами: {}", dataDir);
-        log.info("[CKPT] чекпоинты: {}", checkpointsDir);
+        log.info("[CKPT] чекпоинты: {}", root.resolve("checkpoints").resolve("all_books"));
         log.info("=".repeat(60));
 
         List<Path> books = listTxtFilesSorted(dataDir);
@@ -94,6 +97,54 @@ public final class AllBooksTrain {
         LLMConfig llm = LLMConfig.applyEpochsOverrideFromEnv(
                 LLMConfig.applySeqLenOverrideFromEnv(
                         LLMConfig.applyBatchSizeOverrideFromEnv(LLMConfig.smart50M())));
+        runCore(root, dataDir, books, llm, null, TrainingEventCallback.NOOP, null);
+    }
+
+    /**
+     * Полный цикл all-books с пресетом и колбэком (для {@link SmartTrainingSupervisor}).
+     *
+     * @param trainerSlot если не {@code null}, в него кладётся {@link LLMTrainer} до {@link LLMTrainer#train()}
+     */
+    public static void runWithPreset(
+            Path root,
+            Path dataDir,
+            List<Path> books,
+            PresetConfig preset,
+            TrainingEventCallback callback,
+            DynamicLossScaler lossScaler,
+            AtomicReference<LLMTrainer> trainerSlot)
+            throws Exception {
+        LLMConfig base =
+                LLMConfig.applyEpochsOverrideFromEnv(LLMConfig.smart50M());
+        LLMConfig llm = LLMConfig.applyPreset(base, preset);
+        runCore(root, dataDir, books, llm, preset, callback, lossScaler, trainerSlot);
+    }
+
+    private static void runCore(
+            Path root,
+            Path dataDir,
+            List<Path> books,
+            LLMConfig llm,
+            PresetConfig presetOrNull,
+            TrainingEventCallback callback,
+            DynamicLossScaler lossScaler)
+            throws Exception {
+        runCore(root, dataDir, books, llm, presetOrNull, callback, lossScaler, null);
+    }
+
+    private static void runCore(
+            Path root,
+            Path dataDir,
+            List<Path> books,
+            LLMConfig llm,
+            PresetConfig presetOrNull,
+            TrainingEventCallback callback,
+            DynamicLossScaler lossScaler,
+            AtomicReference<LLMTrainer> trainerSlot)
+            throws Exception {
+        Path checkpointsDir = root.resolve("checkpoints").resolve("all_books");
+        Path tokenizerPath = root.resolve("checkpoints").resolve("tokenizer_global.bin");
+
         log.info("[CFG] seq={}, d_model={}, layers={}, heads={}, vocab={}",
                 llm.maxSeqLen, llm.dModel, llm.numLayers, llm.numHeads, llm.vocabSize);
 
@@ -166,9 +217,8 @@ public final class AllBooksTrain {
         log.info("[DATA] всего последовательностей: {} (~{} батчей/эпоха)",
                 nSeq, dataLoader.numBatches());
         if (nSeq == 0) {
-            log.error("[DATA] нет последовательностей — все тексты слишком короткие (нужно >{})",
-                    llm.maxSeqLen);
-            System.exit(1);
+            throw new IllegalStateException(
+                    "Нет последовательностей — все тексты слишком короткие (нужно >" + llm.maxSeqLen + ")");
         }
 
         // --- модель ---
@@ -184,8 +234,17 @@ public final class AllBooksTrain {
 
         // --- тренировка ---
         boolean finetune = isFinetuneMode();
-        TrainingConfig trainConfig = llm.toTrainingConfig(checkpointsDir.toString(), vocabSize);
-        LLMTrainer trainer = new LLMTrainer(model, trainConfig, dataLoader);
+        TrainingConfig trainConfig =
+                presetOrNull != null
+                        ? llm.toTrainingConfigWithPreset(checkpointsDir.toString(), vocabSize, presetOrNull)
+                        : llm.toTrainingConfig(checkpointsDir.toString(), vocabSize);
+        LLMTrainer trainer =
+                presetOrNull != null
+                        ? new LLMTrainer(model, trainConfig, dataLoader, callback, lossScaler)
+                        : new LLMTrainer(model, trainConfig, dataLoader);
+        if (trainerSlot != null) {
+            trainerSlot.set(trainer);
+        }
 
         // Ищем чекпоинт для resume: сначала checkpoint_final.bin, затем последний checkpoint_epoch_N.bin
         Optional<Path> resumeCkpt = findResumeCheckpoint(checkpointsDir);
@@ -219,6 +278,7 @@ public final class AllBooksTrain {
         log.info("[ALL-BOOKS] обучение завершено. Лучший eval loss: {}",
                 String.format("%.4f", trainer.getBestLoss()));
     }
+
 
     /**
      * Ищет чекпоинт для resume в порядке приоритета:
@@ -261,6 +321,11 @@ public final class AllBooksTrain {
 
     private static String readUtf8(Path p) throws IOException {
         return new String(Files.readAllBytes(p), StandardCharsets.UTF_8);
+    }
+
+    /** Для {@link SmartTrainingSupervisor}: отсортированный список {@code .txt} под корпус. */
+    public static List<Path> listTxtFilesSortedPublic(Path dir) throws IOException {
+        return listTxtFilesSorted(dir);
     }
 
     private static List<Path> listTxtFilesSorted(Path dir) throws IOException {

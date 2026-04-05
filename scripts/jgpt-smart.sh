@@ -280,6 +280,12 @@ while true; do
         fi
     done
 
+    # Если мониторинг обнаружил проблему — останавливаем Java ДО wait,
+    # иначе wait заблокирует навсегда (Java ещё жива, а stop_training вызывалась позже)
+    if [[ -n "$STOP_REASON" ]]; then
+        stop_training
+    fi
+
     wait "$TRAIN_PID" 2>/dev/null || true
     EXIT_CODE=$?
     rm -f "$PID_FILE"
@@ -297,7 +303,6 @@ while true; do
         echo ""
         echo "  [SMART] ↑ Upgrade #$UPGRADE_COUNT: ${PRESETS[$CURRENT_IDX]} → ${PRESETS[$NEW_IDX]}"
         echo "           Стабильных улучшений eval_loss: $UPGRADE_STABLE_EVALS (порог: $STABLE_EVALS_FOR_UPGRADE)"
-        stop_training
         CURRENT_IDX=$NEW_IDX
         sleep 3
         continue
@@ -306,7 +311,6 @@ while true; do
     if [[ -n "$STOP_REASON" ]]; then
         echo ""
         echo "  [SMART] ⚠ Проблема обнаружена: $STOP_REASON"
-        stop_training
 
         # Downgrade
         NEW_IDX=$(( CURRENT_IDX + 1 ))
@@ -326,7 +330,6 @@ while true; do
     # Аварийный выход JVM (exit!=0, но без явной причины)
     if [[ "$EXIT_CODE" -ne 0 ]]; then
         echo "  [SMART] ✗ Процесс завершился с кодом $EXIT_CODE"
-        # Смотрим последние строки лога
         echo "  Последние строки лога:"
         tail -5 "$LOG_FILE" 2>/dev/null | sed 's/^/    /'
         NEW_IDX=$(( CURRENT_IDX + 1 ))

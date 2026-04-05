@@ -304,11 +304,36 @@ public final class LLMTrainer {
     /** Глобальная L2-норма градиентов после unscale, до/с клипом (последний успешный шаг). */
     private float lastGlobalGradNorm;
 
+    private final TrainingEventCallback trainingEventCallback;
+    /** Запрос на выход из {@link #train()} для смены пресета супервизором. */
+    private volatile boolean supervisedStopRequested;
+    /** {@code true}, если последний {@link #train()} вышел из‑за {@link #requestSupervisedStop()}. */
+    private volatile boolean exitedDueToSupervisorRequest;
+
     public LLMTrainer(GPTModel model, TrainingConfig config, DataLoader dataLoader) {
+        this(model, config, dataLoader, null, null);
+    }
+
+    /**
+     * @param trainingEventCallback колбэк метрик (может быть {@code null} — эквивалентно {@link
+     *     TrainingEventCallback#NOOP})
+     * @param lossScalerOverride если не {@code null}, используется вместо {@link
+     *     DynamicLossScaler#fromEnvironmentIfFp16()}
+     */
+    public LLMTrainer(
+            GPTModel model,
+            TrainingConfig config,
+            DataLoader dataLoader,
+            TrainingEventCallback trainingEventCallback,
+            DynamicLossScaler lossScalerOverride) {
         TensorOpsGPU.requireCuda("LLMTrainer");
+        this.exitedDueToSupervisorRequest = false;
         this.model = model;
         this.config = config;
         this.dataLoader = dataLoader;
+        this.trainingEventCallback =
+                trainingEventCallback != null ? trainingEventCallback : TrainingEventCallback.NOOP;
+        this.supervisedStopRequested = false;
         this.optimizer = AdamOptimizer.fromConfig(config);
         this.globalStep = 0;
         this.bestLoss = Float.MAX_VALUE;
@@ -324,7 +349,8 @@ public final class LLMTrainer {
             this.warmupSteps = 0;
         }
         this.fp16Matmul = TensorOpsGPU.useFp16Matmul();
-        this.dynamicLossScaler = DynamicLossScaler.fromEnvironmentIfFp16();
+        this.dynamicLossScaler =
+                lossScalerOverride != null ? lossScalerOverride : DynamicLossScaler.fromEnvironmentIfFp16();
         this.fp16DynamicResetEachEpoch = readBooleanEnv("JGPT_FP16_DYNAMIC_RESET_EACH_EPOCH", false);
         boolean ceAsyncEnv = readBooleanEnv("JGPT_CE_ASYNC", false);
         this.ceAsyncDevice = ceAsyncEnv;
@@ -431,6 +457,15 @@ public final class LLMTrainer {
         if (config.deviceDecoderBackward) {
             model.setDeviceDecoderBackward(true);
         }
+    }
+
+    /** Сигнал {@link #train()} завершить цикл и выйти (сохранение — на усмотрение вызывающего). */
+    public void requestSupervisedStop() {
+        this.supervisedStopRequested = true;
+    }
+
+    public boolean exitedDueToSupervisorRequest() {
+        return exitedDueToSupervisorRequest;
     }
 
     private static boolean readBooleanEnv(String key, boolean defaultValue) {
@@ -555,6 +590,8 @@ public final class LLMTrainer {
     }
 
     public void train() throws IOException {
+        exitedDueToSupervisorRequest = false;
+        supervisedStopRequested = false;
         log.info("{} старт обучения", LogFmt.badge("TRAIN"));
         log.info("{} конфигурация: {}", LogFmt.badge("CFG"), config);
         log.info(
@@ -749,6 +786,14 @@ public final class LLMTrainer {
                         epoch + 1);
             }
             while (dataLoader.hasMore()) {
+                if (supervisedStopRequested) {
+                    log.warn(
+                            "{} обучение прервано по запросу супервизора (смена пресета)",
+                            LogFmt.badge("SMART"));
+                    trainingStoppedEarly = true;
+                    exitedDueToSupervisorRequest = true;
+                    break outer;
+                }
                 DataLoader.Batch batch;
                 if (prefetchExecutor != null && prefetchFut != null) {
                     batch = takeNextBatchPrefetched(dataLoader, prefetchFut);
@@ -909,6 +954,7 @@ public final class LLMTrainer {
 
                 epochSuccessfulOptimizerSteps++;
                 globalStep++;
+                trainingEventCallback.onOptimizerStepCompleted(globalStep, epoch + 1);
 
                 if (globalStep == 1 || globalStep % config.logEverySteps == 0) {
                     float lr = learningRateForStep(globalStep);
@@ -954,7 +1000,8 @@ public final class LLMTrainer {
                         profiler.armDetailWindow("eval");
                     }
                     if (Float.isFinite(evalLoss)) {
-                        if (evalLoss < bestLoss) {
+                        boolean improvedBest = evalLoss < bestLoss;
+                        if (improvedBest) {
                             bestLoss = evalLoss;
                             saveCheckpoint("best");
                             evalsWithoutImprovement = 0;
@@ -973,7 +1020,7 @@ public final class LLMTrainer {
                                 && evalLoss > lastEvalLossSnapshot
                                 && avgMicroLoss < lastTrainAtEval) {
                             log.warn(
-                                    "Ранний останов: train loss снизился относительно прошлого eval, eval loss вырос — признак переобучения");
+                                     "Ранний останов: train loss снизился относительно прошлого eval, eval loss вырос — признак переобучения");
                             trainingStoppedEarly = true;
                             break outer;
                         }
@@ -986,6 +1033,8 @@ public final class LLMTrainer {
                                 config.epochs,
                                 String.format(Locale.ROOT, "%.4f", evalLoss),
                                 formatEvalBestLossForLog(bestLoss));
+                        trainingEventCallback.onEvalCompleted(
+                                epoch + 1, evalLoss, bestLoss, improvedBest);
                     }
                     if (TensorOpsGPU.isGpuAvailable()) {
                         TensorOpsGPU.synchronizeStream();
@@ -1335,6 +1384,7 @@ public final class LLMTrainer {
                     overflowSkipRepeatCount,
                     scaleStr);
         }
+        trainingEventCallback.onOverflowStepSkipped(planned, overflowSkipRepeatCount, scaleAfterSkip);
     }
 
     /**

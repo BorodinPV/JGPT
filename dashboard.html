@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JGPT — Дашборд обучения</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:        #0f1117;
+    --surface:   #1a1d27;
+    --border:    #2a2d3e;
+    --text:      #e2e8f0;
+    --muted:     #64748b;
+    --green:     #22c55e;
+    --yellow:    #eab308;
+    --red:       #ef4444;
+    --blue:      #3b82f6;
+    --cyan:      #06b6d4;
+    --purple:    #a855f7;
+    --orange:    #f97316;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+    padding: 24px;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .logo {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--cyan);
+  }
+  .logo span { color: var(--text); }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  #updated {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  #refresh-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: border-color .2s;
+  }
+  #refresh-btn:hover { border-color: var(--cyan); }
+  #auto-refresh {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  #auto-refresh input { cursor: pointer; accent-color: var(--cyan); }
+
+  /* ── Layout ── */
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 20px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  .grid-1 { margin-bottom: 20px; }
+  @media (max-width: 1100px) { .grid-4 { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 900px)  { .grid-3 { grid-template-columns: repeat(2, 1fr); } .grid-2 { grid-template-columns: 1fr; } }
+  @media (max-width: 600px)  { .grid-4 { grid-template-columns: 1fr; } body { padding: 12px; } }
+
+  /* ── Card ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+  }
+  .card-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+
+  /* ── Stat card ── */
+  .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -1px;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .stat-sub {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .green { color: var(--green); }
+  .yellow { color: var(--yellow); }
+  .red { color: var(--red); }
+  .cyan { color: var(--cyan); }
+  .blue { color: var(--blue); }
+  .purple { color: var(--purple); }
+
+  /* ── Progress bar ── */
+  .progress-wrap { margin-top: 14px; }
+  .progress-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .progress-bar-bg {
+    background: var(--border);
+    border-radius: 99px;
+    height: 8px;
+    overflow: hidden;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    border-radius: 99px;
+    background: linear-gradient(90deg, var(--cyan), var(--blue));
+    transition: width .5s ease;
+  }
+
+  /* ── Badge ── */
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .4px;
+  }
+  .badge-green  { background: rgba(34,197,94,.15);  color: var(--green); }
+  .badge-yellow { background: rgba(234,179,8,.15);  color: var(--yellow); }
+  .badge-red    { background: rgba(239,68,68,.15);  color: var(--red); }
+  .badge-cyan   { background: rgba(6,182,212,.15);  color: var(--cyan); }
+  .badge-muted  { background: rgba(100,116,139,.15);color: var(--muted); }
+
+  /* ── Status block ── */
+  .status-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  .status-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+  .status-ok     { background: rgba(34,197,94,.08);  border: 1px solid rgba(34,197,94,.2); }
+  .status-warn   { background: rgba(234,179,8,.08);  border: 1px solid rgba(234,179,8,.2); }
+  .status-error  { background: rgba(239,68,68,.08);  border: 1px solid rgba(239,68,68,.2); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+  .dot-ok    { background: var(--green); }
+  .dot-warn  { background: var(--yellow); }
+  .dot-error { background: var(--red); }
+
+  /* ── Chart ── */
+  .chart-wrap { position: relative; height: 220px; }
+  .chart-wrap-tall { position: relative; height: 280px; }
+
+  /* ── Config table ── */
+  .cfg-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+  .cfg-item { }
+  .cfg-key  { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .cfg-val  { font-size: 14px; font-weight: 600; color: var(--cyan); }
+
+  /* ── Sample text ── */
+  .sample-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-family: monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 120px;
+    overflow-y: auto;
+    margin-bottom: 8px;
+  }
+  .sample-step { font-size: 11px; color: var(--muted); }
+
+  /* ── Divider ── */
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .8px;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">JGPT <span>Training Dashboard</span></div>
+  <div class="header-right">
+    <span id="updated">—</span>
+    <label id="auto-refresh"><input type="checkbox" id="auto-chk" checked> Авто (30с)</label>
+    <button id="refresh-btn" onclick="loadStats()">↻ Обновить</button>
+  </div>
+</header>
+
+<!-- ROW 1: Ключевые метрики -->
+<div class="grid-4" id="row-stats"></div>
+
+<!-- ROW 2: Прогресс + Статус -->
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Прогресс обучения</div>
+    <div id="progress-info" style="display:flex;gap:24px;margin-bottom:8px;">
+      <div><div class="stat-value cyan" id="p-step">—</div><div class="stat-sub">текущий шаг</div></div>
+      <div><div class="stat-value" id="p-epoch">—</div><div class="stat-sub">эпоха</div></div>
+      <div><div class="stat-value" id="p-eta">—</div><div class="stat-sub">ETA</div></div>
+    </div>
+    <div class="progress-wrap">
+      <div class="progress-label"><span id="pb-pct">0%</span><span id="pb-steps">0 / 0</span></div>
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="pb-fill" style="width:0%"></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Статус</div>
+    <ul class="status-list" id="status-list"></ul>
+  </div>
+</div>
+
+<!-- ROW 3: Графики потерь -->
+<div class="section-title">Графики</div>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Eval Loss</div>
+    <div class="chart-wrap-tall"><canvas id="chart-eval"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Перплексия</div>
+    <div class="chart-wrap-tall"><canvas id="chart-perp"></canvas></div>
+  </div>
+</div>
+<div class="grid-1">
+  <div class="card">
+    <div class="card-title">Train Loss (каждые 50 шагов)</div>
+    <div class="chart-wrap"><canvas id="chart-train"></canvas></div>
+  </div>
+</div>
+
+<!-- ROW 4: Стабильность градиентов -->
+<div class="grid-3" id="row-stability"></div>
+
+<!-- ROW 5: Конфиг + Генерация -->
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Текущий конфиг — <span id="cfg-preset" class="cyan">—</span></div>
+    <div id="cfg-desc" style="font-size:12px;color:var(--muted);margin-bottom:14px;"></div>
+    <div class="cfg-grid" id="cfg-grid"></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Последняя генерация</div>
+    <div id="samples-wrap"></div>
+  </div>
+</div>
+
+<script>
+// ─── Chart defaults ───────────────────────────────────────────
+Chart.defaults.color = '#64748b';
+Chart.defaults.borderColor = '#2a2d3e';
+Chart.defaults.font.family = "'Segoe UI', system-ui, sans-serif";
+Chart.defaults.font.size = 11;
+
+const COLORS = {
+  cyan:   '#06b6d4', blue:   '#3b82f6', green:  '#22c55e',
+  yellow: '#eab308', red:    '#ef4444', purple: '#a855f7', orange: '#f97316'
+};
+
+function makeChart(id, labels, datasets, yLabel = '') {
+  const ctx = document.getElementById(id).getContext('2d');
+  return new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 300 },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: datasets.length > 1,
+          position: 'top',
+          labels: { boxWidth: 12, padding: 14, color: '#94a3b8' }
+        },
+        tooltip: {
+          backgroundColor: '#1a1d27',
+          borderColor: '#2a2d3e',
+          borderWidth: 1,
+          titleColor: '#e2e8f0',
+          bodyColor: '#94a3b8',
+          padding: 10,
+          callbacks: {
+            title: items => 'шаг ' + items[0].label
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'category',
+          grid: { color: '#1e2130' },
+          ticks: {
+            maxTicksLimit: 8,
+            color: '#64748b',
+            maxRotation: 0,
+          }
+        },
+        y: {
+          grid: { color: '#1e2130' },
+          ticks: { color: '#64748b' },
+          title: yLabel ? { display: true, text: yLabel, color: '#64748b' } : undefined
+        }
+      }
+    }
+  });
+}
+
+const chartInstances = {};
+
+function updateOrCreate(id, labels, datasets, yLabel) {
+  if (chartInstances[id]) {
+    const ch = chartInstances[id];
+    ch.data.labels = labels;
+    ch.data.datasets = datasets;
+    ch.update('active');
+  } else {
+    chartInstances[id] = makeChart(id, labels, datasets, yLabel);
+  }
+}
+
+// ─── Вспомогалки ─────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+function statCard(title, value, sub, colorClass = '') {
+  return `<div class="card">
+    <div class="card-title">${title}</div>
+    <div class="stat-value ${colorClass}">${value}</div>
+    <div class="stat-sub">${sub}</div>
+  </div>`;
+}
+
+function fmtDuration(secs) {
+  secs = Math.round(secs);
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+  if (h > 0) return `${h}ч ${m}м`;
+  if (m > 0) return `${m}м ${s}с`;
+  return `${s}с`;
+}
+
+function statusItem(cls, dotCls, text) {
+  return `<li class="status-item ${cls}">
+    <div class="status-dot ${dotCls}"></div>
+    <div>${text}</div>
+  </li>`;
+}
+
+// ─── Разрежаем массивы для читаемости графиков ───────────────
+function thin(xs, ys, maxPts = 150) {
+  if (xs.length <= maxPts) return { xs, ys };
+  const step = Math.ceil(xs.length / maxPts);
+  const rx = [], ry = [];
+  for (let i = 0; i < xs.length; i += step) { rx.push(xs[i]); ry.push(ys[i]); }
+  return { xs: rx, ys: ry };
+}
+
+// ─── Основная функция отрисовки ───────────────────────────────
+function render(d) {
+  // ── Дата обновления
+  $('updated').textContent = 'Обновлено: ' + d.updated;
+
+  // ── Ключевые метрики (строка 1)
+  const pct = d.total_steps > 0 ? (d.current_step / d.total_steps * 100).toFixed(1) : 0;
+  const lossColor = d.last_eval_loss <= d.best_loss + 0.02 ? 'green' :
+                    d.last_eval_loss <= d.best_loss + 0.15 ? 'yellow' : 'red';
+  $('row-stats').innerHTML =
+    statCard('Eval Loss', d.last_eval_loss.toFixed(4), `лучший: ${d.best_loss.toFixed(4)}`, lossColor) +
+    statCard('Перплексия', d.last_perplexity.toFixed(2), 'последнее значение', 'cyan') +
+    statCard('Train Loss', d.last_train_loss.toFixed(4), 'последний шаг', 'blue') +
+    statCard('Токенов/с', d.tokens_per_sec.toLocaleString('ru'), `LR: ${d.lr}`, 'purple');
+
+  // ── Прогресс
+  $('p-step').textContent = d.current_step.toLocaleString('ru');
+  $('p-epoch').textContent = d.current_epoch;
+  // ETA грубо: оставшиеся шаги × ~0.93с/шаг (среднее)
+  const stepsLeft = d.total_steps - d.current_step;
+  const avgSecPerStep = 0.93;
+  $('p-eta').textContent = stepsLeft > 0 ? fmtDuration(stepsLeft * avgSecPerStep) : '—';
+  $('pb-pct').textContent = pct + '%';
+  $('pb-steps').textContent = `${d.current_step.toLocaleString('ru')} / ${d.total_steps.toLocaleString('ru')}`;
+  $('pb-fill').style.width = Math.min(pct, 100) + '%';
+
+  // ── Статус
+  const statuses = [];
+  const evals_since = d.eval_steps.length > 0
+    ? (() => {
+        let cnt = 0;
+        for (let i = d.eval_loss.length - 1; i >= 0; i--) {
+          if (d.eval_loss[i] <= d.best_loss + 1e-6) break;
+          cnt++;
+        }
+        return cnt;
+      })()
+    : 0;
+
+  if (d.oom_errors > 0)
+    statuses.push(statusItem('status-error','dot-error', `OOM-ошибок: ${d.oom_errors} — нехватка памяти GPU`));
+  if (d.fp16_stuck > 0)
+    statuses.push(statusItem('status-warn','dot-warn', `FP16 scale завис на 1.0× ${d.fp16_stuck} раз`));
+  if (evals_since >= 10)
+    statuses.push(statusItem('status-warn','dot-warn', `Лучший eval не обновлялся ${evals_since} оценок подряд`));
+  else if (evals_since > 0)
+    statuses.push(statusItem('status-ok','dot-ok', `Лучший eval не обновлялся ${evals_since} оценок (норма)`));
+  else
+    statuses.push(statusItem('status-ok','dot-ok', 'Лучший eval обновился на последней оценке'));
+
+  const overflowPct = d.current_step > 0 ? (d.skipped_steps / d.current_step * 100).toFixed(1) : 0;
+  if (parseFloat(overflowPct) >= 3)
+    statuses.push(statusItem('status-warn','dot-warn', `Переполнений градиентов: ${d.skipped_steps} (${overflowPct}% шагов)`));
+  else
+    statuses.push(statusItem('status-ok','dot-ok', `Переполнений градиентов: ${d.skipped_steps} (${overflowPct}%) — норма`));
+
+  if (statuses.filter(s => s.includes('status-error')).length === 0 &&
+      statuses.filter(s => s.includes('status-warn')).length === 0)
+    statuses.unshift(statusItem('status-ok','dot-ok', '<strong>Всё нормально</strong> — обучение идёт штатно'));
+
+  $('status-list').innerHTML = statuses.join('');
+
+  // ── График: Eval Loss
+  {
+    const { xs, ys } = thin(d.eval_steps, d.eval_loss);
+    const bestLine = ys.map(() => d.best_loss);
+    updateOrCreate('chart-eval',
+      xs.map(String),
+      [
+        {
+          label: 'Eval Loss', data: ys,
+          borderColor: COLORS.cyan, backgroundColor: 'rgba(6,182,212,.08)',
+          borderWidth: 2, pointRadius: 2, pointHoverRadius: 4, tension: 0.3, fill: true,
+        },
+        {
+          label: `Лучший (${d.best_loss.toFixed(4)})`, data: bestLine,
+          borderColor: COLORS.green, borderWidth: 1.5,
+          borderDash: [6,3], pointRadius: 0, tension: 0,
+        }
+      ],
+      'Loss'
+    );
+  }
+
+  // ── График: Перплексия
+  {
+    const { xs, ys } = thin(d.eval_steps, d.perplexity);
+    updateOrCreate('chart-perp',
+      xs.map(String),
+      [
+        {
+          label: 'Перплексия', data: ys,
+          borderColor: COLORS.purple, backgroundColor: 'rgba(168,85,247,.08)',
+          borderWidth: 2, pointRadius: 2, pointHoverRadius: 4, tension: 0.3, fill: true,
+        }
+      ],
+      'Перплексия'
+    );
+  }
+
+  // ── График: Train Loss
+  {
+    const { xs, ys } = thin(d.train_steps, d.train_loss);
+    updateOrCreate('chart-train',
+      xs.map(String),
+      [
+        {
+          label: 'Train Loss', data: ys,
+          borderColor: COLORS.blue, backgroundColor: 'rgba(59,130,246,.06)',
+          borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: true,
+        }
+      ],
+      'Loss'
+    );
+  }
+
+  // ── Стабильность
+  const overflowColor = parseFloat(overflowPct) >= 3 ? 'yellow' : 'green';
+  $('row-stability').innerHTML =
+    statCard('Переполнений градиентов', d.skipped_steps, `${overflowPct}% от всех шагов`, overflowColor) +
+    statCard('Non-finite градиентов', d.non_finite, 'всего за сессию', d.non_finite > 0 ? 'yellow' : 'green') +
+    statCard('OOM-ошибок', d.oom_errors, 'нехватка памяти GPU', d.oom_errors > 0 ? 'red' : 'green');
+
+  // ── Конфиг
+  const c = d.config;
+  $('cfg-preset').textContent = `${d.preset}  (индекс ${d.preset_idx})`;
+  $('cfg-desc').textContent = c.description || '';
+  $('cfg-grid').innerHTML = [
+    ['seq_len',     c.seq_len],
+    ['batch',       c.batch],
+    ['ce_candidates', c.ce_candidates],
+    ['fp16_max',    c.fp16_max],
+    ['fp16_grow_interval', c.fp16_grow_interval],
+    ['early_stop_patience', c.early_stop_patience],
+  ].map(([k, v]) => `<div class="cfg-item"><div class="cfg-key">${k}</div><div class="cfg-val">${v}</div></div>`).join('');
+
+  // ── Генерации
+  const samplesHtml = (d.samples || []).slice().reverse().map((s, i) => {
+    const stepLabel = i === 0 && d.last_sample_step ? `шаг ${d.last_sample_step}` : '';
+    return `<div class="sample-box">${escHtml(s.text)}</div>${stepLabel ? `<div class="sample-step">${stepLabel}</div>` : ''}`;
+  }).join('');
+  $('samples-wrap').innerHTML = samplesHtml || '<div style="color:var(--muted)">Нет данных</div>';
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ─── Загрузка данных ──────────────────────────────────────────
+async function loadStats() {
+  try {
+    const resp = await fetch('state/stats.json?t=' + Date.now());
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    render(data);
+  } catch (e) {
+    $('updated').textContent = 'Ошибка загрузки: ' + e.message;
+    console.error(e);
+  }
+}
+
+// ─── Авто-обновление ─────────────────────────────────────────
+let autoTimer = null;
+function setupAuto() {
+  clearInterval(autoTimer);
+  if ($('auto-chk').checked)
+    autoTimer = setInterval(loadStats, 30000);
+}
+$('auto-chk').addEventListener('change', setupAuto);
+
+loadStats();
+setupAuto();
+</script>
+</body>
+</html>

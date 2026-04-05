@@ -9,7 +9,7 @@
 | Без авто-переключения пресетов | `./scripts/jgpt-start.sh` (или `… [пресет] [--finetune]`) |
 | Сброс `globalStep` при том же чекпоинте (finetune) | `./scripts/jgpt-start.sh --finetune` или `export JGPT_FINETUNE=1` перед `./scripts/train-e2e-gpu.sh allbooks` |
 
-`jgpt-smart.sh`: лог в консоль и в **`training_allbooks.log`** (`tee -a`). Ctrl+C → shutdown hook в Java сохраняет чекпоинт.
+`jgpt-smart.sh`: лог в консоль и в **`training_allbooks.log`** (`tee -a`); пресеты **сами понижаются** при сбоях и **повышаются** при стабильном прогрессе (см. ниже). Ctrl+C → shutdown hook в Java сохраняет чекпоинт.
 
 ## Как применяется пресет
 
@@ -30,7 +30,16 @@
 | **02** | Стабильнее FP16 / параметры |
 | **03** | seq=512 и урезанные лимиты — «аварийное» продолжение |
 
-**Smart-downgrade** (по новому сегменту лога после старта): строки OOM / много `scale=1.000×` при застое FP16 / нет новых `[STEP]` дольше **300 с** → остановка процесса, индекс пресета **+1**, снова `apply_preset` и resume. Пороги: `OOM_THRESHOLD`, `FP16_STUCK_THRESHOLD`, `HANG_SECONDS` в начале `jgpt-smart.sh`.
+**Smart-downgrade** (только строки **текущего** запуска, от `LOG_START_LINE` в логе):  
+- OOM в логе (`cudaMalloc failed`, `out of memory`, `OutOfMemoryError`) ≥ `OOM_THRESHOLD` (по умолчанию **1**);  
+- или много строк с **залипшим** FP16 (`масштаб loss` … `1.000×`) ≥ `FP16_STUCK_THRESHOLD` (**8**);  
+- или нет новых `[STEP]` дольше `HANG_SECONDS` (**300** с), при условии что в логе уже был прогресс (`LOG_START_LINE > 1`).  
+
+→ процесс останавливается, индекс пресета **+1** (медленнее), снова `apply_preset` и **resume**.
+
+**Smart-upgrade**: в том же сегменте лога считаются строки, совпадающие с шаблоном **`лучший сохранённый=[0-9]`** (улучшения eval). Когда их число ≥ **`STABLE_EVALS_FOR_UPGRADE`** (по умолчанию **30**) и текущий индекс **> 0** → остановка, индекс **−1** (быстрее), **resume**. Счётчик улучшений для upgrade **обнуляется в начале каждой** итерации цикла (новый сегмент после смены пресета).
+
+Проверки каждые **`MONITOR_INTERVAL`** секунд (по умолчанию **30**). Все пороги — в начале `scripts/jgpt-smart.sh`. В баннере и в конце работы выводятся счётчики **Downgrade** и **Upgrade**.
 
 **Стартовый пресет**, если не указан аргументом: из `state/current_preset_idx`, иначе из `state/current.env`, иначе **01-aggressive**.
 
@@ -51,7 +60,7 @@
 
 - **`state/last_step.txt`** — обновляется при сохранении чекпоинта (удобно смотреть прогресс).
 - **`state/training.pid`** — PID процесса `train-e2e-gpu.sh` пока крутится smart-цикл.
-- Опционально: **`./scripts/jgpt-monitor.sh`** — подсказки / сигналы для сценариев с downgrade (см. скрипт).
+- Опционально: **`./scripts/jgpt-monitor.sh`** — подсказки / сигналы (см. скрипт). Основная логика downgrade/upgrade в **`jgpt-smart.sh`**.
 
 ## Ручной запуск без smart-обёртки
 

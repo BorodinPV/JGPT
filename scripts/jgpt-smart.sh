@@ -30,6 +30,8 @@ OOM_THRESHOLD=1
 FP16_STUCK_THRESHOLD=8
 # Секунд без нового [STEP] = зависание
 HANG_SECONDS=300
+# Сколько подряд eval без улучшения best_loss = плато → downgrade
+PLATEAU_THRESHOLD=15
 # Интервал проверки монитора (секунды)
 MONITOR_INTERVAL=30
 # ──────────────────────────────────────────────────────────────
@@ -105,6 +107,30 @@ count_pattern_from_line() {
     local file="$1" pattern="$2" start_line="$3"
     awk -v start="$start_line" -v pat="$pattern" \
         'NR >= start && $0 ~ pat { count++ } END { print count+0 }' "$file" 2>/dev/null || echo 0
+}
+
+# Считает максимум подряд идущих eval без улучшения best_loss в сегменте лога начиная с start_line.
+# Строка улучшения: loss=X (лучший сохранённый=X) — оба числа совпадают.
+count_plateau_evals() {
+    local file="$1" start_line="$2"
+    awk -v start="$start_line" '
+        NR < start { next }
+        /\[EVAL\].*: loss=.*/ {
+            n1 = split($0, a, /: loss=/)
+            if (n1 < 2) next
+            cur = a[2]; sub(/ .*/, "", cur)
+            n2 = split($0, b, /лучший сохранённый=/)
+            if (n2 < 2) next
+            best = b[2]; sub(/[^0-9.].*/, "", best)
+            if (cur == best) {
+                consec = 0
+            } else {
+                consec++
+                if (consec > max_c) max_c = consec
+            }
+        }
+        END { print max_c+0 }
+    ' "$file" 2>/dev/null || echo 0
 }
 
 last_step_time() {
@@ -239,7 +265,14 @@ while true; do
             UPGRADE_STABLE_EVALS=$EVAL_IMPROVEMENTS
         fi
 
-        # 4. Upgrade: достаточно стабильных улучшений → пробуем более быстрый пресет
+        # 4. Плато eval_loss: N подряд eval без улучшения → downgrade
+        PLATEAU=$(count_plateau_evals "$LOG_FILE" "$LOG_START_LINE")
+        if [[ "$PLATEAU" -ge "$PLATEAU_THRESHOLD" ]]; then
+            STOP_REASON="Плато eval_loss ($PLATEAU eval подряд без улучшения)"
+            break
+        fi
+
+        # 5. Upgrade: достаточно стабильных улучшений → пробуем более быстрый пресет
         if [[ "$UPGRADE_STABLE_EVALS" -ge "$STABLE_EVALS_FOR_UPGRADE" ]] && \
            [[ "$CURRENT_IDX" -gt 0 ]]; then
             STOP_REASON="UPGRADE"

@@ -47,8 +47,8 @@ while true; do
     fi
 
     # ── Текущие метрики из всего лога ────────────────────────
-    OOM=$(grep -c "cudaMalloc failed\|OutOfMemoryError\|out of memory" "$LOG_FILE" 2>/dev/null || echo 0)
-    FP16_STUCK=$(grep -c "масштаб loss.*1\.000×" "$LOG_FILE" 2>/dev/null || echo 0)
+    OOM=$(grep -c "cudaMalloc failed\|OutOfMemoryError\|out of memory" "$LOG_FILE" 2>/dev/null || true)
+    FP16_STUCK=$(grep -c "масштаб loss.*1\.000×" "$LOG_FILE" 2>/dev/null || true)
     BEST_LOSS=$(grep -oE "лучший сохранённый=[0-9]+\.[0-9]+" "$LOG_FILE" 2>/dev/null \
                 | tail -1 | grep -oE "[0-9]+\.[0-9]+" || echo "-")
     CURRENT_STEP=$(grep -oE "шаг [0-9]+" "$LOG_FILE" 2>/dev/null \
@@ -59,7 +59,7 @@ while true; do
                 | tail -1 | grep -oE "[0-9]+\.[0-9]+" || echo "-")
     TOKENS_S=$(grep "ток/с≈" "$LOG_FILE" 2>/dev/null \
                | tail -1 | grep -oE "ток/с≈[0-9]+" | grep -oE "[0-9]+" || echo "-")
-    SKIPPED=$(grep -c "пропущен: переполнение" "$LOG_FILE" 2>/dev/null || echo 0)
+    SKIPPED=$(grep -c "пропущен: переполнение" "$LOG_FILE" 2>/dev/null || true)
     PRESET=$(basename "$(readlink -f "$STATE_DIR/current.env" 2>/dev/null)" .env 2>/dev/null || echo "?")
 
     # Обновить last_step.txt

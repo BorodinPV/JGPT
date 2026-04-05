@@ -13,7 +13,7 @@
 # Valgrind + CUDA: типично непереносимо; для GPU утечек/гонок смотрите cuda-memcheck /
 # compute-sanitizer. Для чисто JNI на стороне JVM:
 #   valgrind --leak-check=full --errors-for-leak-kinds=all \
-#     env JGPT_CUDA_LIB=... \
+#     env TENSOR_CUDA_LIB=... \
 #     java ... -cp target/test-classes:target/classes:... \
 #     org.junit.platform.console.ConsoleLauncher --select-class=...
 # (медленно; нужны подавления для libjvm/libcuda).
@@ -29,8 +29,8 @@ usage() {
 MODE="${1:-help}"
 case "$MODE" in
   test)
-    "$ROOT/scripts/build_jgpt_cuda.sh"
-    export JGPT_CUDA_LIB="$ROOT/build/libjgpt_cuda.so"
+    "$ROOT/scripts/build_tensor_cuda.sh"
+    export TENSOR_CUDA_LIB="$ROOT/build/libtensor_cuda.so"
     exec mvn -q test -Dtest=MatmulGpuRefactorValidationTest
     ;;
   nsys)
@@ -38,8 +38,8 @@ case "$MODE" in
       echo "nsys не найден (пакет nsight-systems)."
       exit 1
     fi
-    "$ROOT/scripts/build_jgpt_cuda.sh"
-    export JGPT_CUDA_LIB="$ROOT/build/libjgpt_cuda.so"
+    "$ROOT/scripts/build_tensor_cuda.sh"
+    export TENSOR_CUDA_LIB="$ROOT/build/libtensor_cuda.so"
     mkdir -p "$ROOT/target"
     exec nsys profile \
       --trace=cuda,nvtx,osrt \
@@ -47,8 +47,8 @@ case "$MODE" in
       mvn -q test -Dtest=MatmulGpuRefactorValidationTest
     ;;
   jni-check)
-    "$ROOT/scripts/build_jgpt_cuda.sh"
-    export JGPT_CUDA_LIB="$ROOT/build/libjgpt_cuda.so"
+    "$ROOT/scripts/build_tensor_cuda.sh"
+    export TENSOR_CUDA_LIB="$ROOT/build/libtensor_cuda.so"
     exec mvn -q test -Dtest=MatmulGpuRefactorValidationTest -Djvm.check.jni=-Xcheck:jni
     ;;
   help | *)

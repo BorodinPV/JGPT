@@ -2007,6 +2007,15 @@ public final class LLMTrainer {
         Files.createDirectories(dir);
         String path = config.checkpointDir + "/checkpoint_" + name + ".bin";
 
+        // Обновляем state/last_step.txt для внешнего монитора (jgpt-monitor.sh)
+        try {
+            Path stateDir = Path.of("state");
+            Files.createDirectories(stateDir);
+            Files.writeString(stateDir.resolve("last_step.txt"), String.valueOf(globalStep));
+        } catch (IOException ignored) {
+            // Не критично — мониторинг опциональный
+        }
+
         if (config.fullGpuTrainStep && model.isGpuResident()) {
             model.syncWeightsFromGpu(model.gpuTensorByTrainableParameter());
         }

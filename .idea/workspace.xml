@@ -4,13 +4,122 @@
     <option name="autoReloadType" value="NONE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Решение проблемы с переобучением">
+    <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Настройка и оптимизация.">
+      <change beforePath="$PROJECT_DIR$/.github/workflows/maven.yml" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.vscode/launch.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/A.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Bulgakov_BelayaGvardiya.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Bulgakov_Diavoliada.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Bulgakov_Master.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Bulgakov_RokovyeYaytsa.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Bulgakov_TeatralnyjRoman.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Bulgakov_ZapiskiYonogoVracha.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Chekhov_Dama.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Chekhov_Dyadya.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Dostoyevski_Biesy.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Dostoyevski_Idiot.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Dostoyevsky_BednyeLyudi.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Dostoyevsky_Karamazow1.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Dostoyevsky_Karamazow2.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Dostoyevsky_Karamazow3.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Dostoyevsky_Karamazow4.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Dostoyevsky_PrestupleniyeINakazaniye.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Durova_GodZyznijWPeterburge.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Durova_Gudishki.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Durova_IgraSudby.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Durova_Pavilion.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Durova_SernyjKljuch.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Durova_Ugol.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Durova_Yurchak.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gan_Ideal.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gan_SudSveta.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gippius_ChertovayaKukla.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gippius_Roman-Tzarevich.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gogol_Mertvye.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gogol_StarosvyetskiyePomeshchiki.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gogol_Taras.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gogol_Viy.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gorky_ArtamonovBusiness.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gorky_FomaGordeev.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gorky_Mat.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gorky_ZyznKlimaSamgina1.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gorky_ZyznKlimaSamgina2.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gorky_ZyznKlimaSamgina3.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Gorky_ZyznKlimaSamgina4.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Krjukov_NaTichomDonu.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Krjukov_Shkval.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Krjukov_Zyb.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/NKhvoshchinskaya_Bratets.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/NKhvoshchinskaya_Pansionerka.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/NKhvoshchinskaya_PervayaBorba.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/NKhvoshchinskaya_PoslijePotopa.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/NKhvoshchinskaya_Proshaniye.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Ada_1969_Ilin.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Arlekinov_1974_Ilin.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Dar_1938.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Kamera_1933.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Kazn_1936.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Korol_1928.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Lolita_1955_Nabokov.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Mashenka_1926.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Nait_1941_Ilin.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Otchayanie_1934.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Pnin_1957_Barabtarlo.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Pnin_1957_Ilin.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Pnin_1957_Nosik.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Podvig_1932.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Veschi_1972_Ilin.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Zashchita_1930.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Nabokov_Znakom_1947_Ilin.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Panaeva_Domashny.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Panaeva_Paseka.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Panaeva_Steppe.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Panaeva_Talnikov.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Pushkin_ArapPetraVelikogo.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Pushkin_CapitanskaaDochka.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Pushkin_Dubrovsky.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Pushkin_Pikovaya.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Pushkin_PovestiPokoynogoIvanaPetrovichaBelkina.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/SKhvoshchinskaya_GorodskieIDerevenskie.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Sholokhov_PodnyatayaTselina.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Sholokhov_TikhiiDon.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Sologub_KapliKrovi.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Sologub_KorolevaOrtruda.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Sologub_MelkijBes.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Sologub_TjazolyjeSny.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Tolstoi_AnnaKarenina.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Tolstoi_SemeynoyeSchastiye.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Tolstoi_Voskreseniye.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Tolstoi_VoynaIMir1.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Tolstoi_VoynaIMir2.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Tolstoi_VoynaIMir3.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Tolstoi_VoynaIMir4.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Tolstoi_VoynaIMir_ver1.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Tur_ShalonskiFamily.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Tur_Starushka.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Turgenev_DvoryanskoyeGnezdo.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Turgenev_Dym.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Turgenev_Nakanune.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Turgenev_Nov.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Turgenev_OttsyIDeti.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Turgenev_Rudin.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Turgenev_VeshniyeVody.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Volkonskaya_Olga2-6.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Vovchok_Chelovek.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Vovchok_ChervonnyjKorol.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Vovchok_PuteshestvieVoVnutrStrany.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Vovchok_Toy.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Vovchok_TulevayaBaba.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Vovchok_Zapiski prichyotnika.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Vovchok_ZapiskiPrichyotnika.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Vovchok_Zateinik.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Zhukova_BaronReichman.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Zhukova_Dacha.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/books/Zinovieva-Annibal_TridtsatTriUgoda.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pom.xml" beforeDir="false" afterPath="$PROJECT_DIR$/pom.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/profile-matmul-refactor.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/profile-matmul-refactor.sh" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/data/BPETokenizer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/data/BPETokenizer.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/data/DataLoader.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/data/DataLoader.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -43,10 +152,10 @@
     "Maven.jgpt [test].executor": "Run",
     "ModuleVcsDetector.initialDetectionPerformed": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager": "true",
     "RunOnceActivity.cidr.known.project.marker": "true",
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.readMode.enableVisualFormatting": "true",
+    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "cf.first.check.clang-format": "false",
     "cidr.known.project.marker": "true",
     "dart.analysis.tool.window.visible": "false",
@@ -206,63 +315,7 @@
       <option name="project" value="LOCAL" />
       <updated>1775255607588</updated>
     </task>
-    <task id="LOCAL-00018" summary="Начало.">
-      <option name="closed" value="true" />
-      <created>1775258621921</created>
-      <option name="number" value="00018" />
-      <option name="presentableId" value="LOCAL-00018" />
-      <option name="project" value="LOCAL" />
-      <updated>1775258621921</updated>
-    </task>
-    <task id="LOCAL-00019" summary="Уход от множественных вызовов jni-gpu">
-      <option name="closed" value="true" />
-      <created>1775261344404</created>
-      <option name="number" value="00019" />
-      <option name="presentableId" value="LOCAL-00019" />
-      <option name="project" value="LOCAL" />
-      <updated>1775261344404</updated>
-    </task>
-    <task id="LOCAL-00020" summary="Уход от множественных вызовов jni-gpu">
-      <option name="closed" value="true" />
-      <created>1775261430448</created>
-      <option name="number" value="00020" />
-      <option name="presentableId" value="LOCAL-00020" />
-      <option name="project" value="LOCAL" />
-      <updated>1775261430448</updated>
-    </task>
-    <task id="LOCAL-00021" summary="Ускорение до 22к токенов при обучении">
-      <option name="closed" value="true" />
-      <created>1775269247971</created>
-      <option name="number" value="00021" />
-      <option name="presentableId" value="LOCAL-00021" />
-      <option name="project" value="LOCAL" />
-      <updated>1775269247971</updated>
-    </task>
-    <task id="LOCAL-00022" summary="Ускорение до 30к токенов при обучении">
-      <option name="closed" value="true" />
-      <created>1775270408822</created>
-      <option name="number" value="00022" />
-      <option name="presentableId" value="LOCAL-00022" />
-      <option name="project" value="LOCAL" />
-      <updated>1775270408822</updated>
-    </task>
-    <task id="LOCAL-00023" summary="Ускорение до≈33к токенов при обучении">
-      <option name="closed" value="true" />
-      <created>1775272649814</created>
-      <option name="number" value="00023" />
-      <option name="presentableId" value="LOCAL-00023" />
-      <option name="project" value="LOCAL" />
-      <updated>1775272649814</updated>
-    </task>
-    <task id="LOCAL-00024" summary="Решение проблемы с переобучением">
-      <option name="closed" value="true" />
-      <created>1775288984497</created>
-      <option name="number" value="00024" />
-      <option name="presentableId" value="LOCAL-00024" />
-      <option name="project" value="LOCAL" />
-      <updated>1775288984497</updated>
-    </task>
-    <option name="localTasksCounter" value="25" />
+    <option name="localTasksCounter" value="18" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -288,12 +341,6 @@
     <MESSAGE value="Пробелма со скаляром" />
     <MESSAGE value="Оптимизация" />
     <MESSAGE value="Настройка и оптимизация." />
-    <MESSAGE value="Начало." />
-    <MESSAGE value="Уход от множественных вызовов jni-gpu" />
-    <MESSAGE value="Ускорение до 22к токенов при обучении" />
-    <MESSAGE value="Ускорение до 30к токенов при обучении" />
-    <MESSAGE value="Ускорение до≈33к токенов при обучении" />
-    <MESSAGE value="Решение проблемы с переобучением" />
-    <option name="LAST_COMMIT_MESSAGE" value="Решение проблемы с переобучением" />
+    <option name="LAST_COMMIT_MESSAGE" value="Настройка и оптимизация." />
   </component>
 </project>

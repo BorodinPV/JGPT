@@ -201,6 +201,17 @@ public final class AllBooksTrain {
             log.info("[CKPT] JGPT_FINETUNE=1 — чекпоинт не найден, обучение с нуля");
         }
 
+        // Graceful shutdown: при Ctrl+C сохранить финальный checkpoint
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            log.info("[SHUTDOWN] Получен сигнал остановки — сохраняем checkpoint...");
+            try {
+                trainer.saveCheckpoint("final");
+                log.info("[SHUTDOWN] checkpoint сохранён. Возобновление: ./scripts/jgpt-start.sh");
+            } catch (Exception e) {
+                log.warn("[SHUTDOWN] Не удалось сохранить checkpoint: {}", e.getMessage());
+            }
+        }, "shutdown-ckpt"));
+
         log.info("=".repeat(60));
         trainer.train();
 

@@ -226,6 +226,31 @@ public final class LLMTrainer {
     private final AdamOptimizer optimizer;
     private int globalStep;
     private float bestLoss;
+    /**
+     * После {@link #loadCheckpoint}: с какого индекса эпохи (0-based) начинать внешний цикл в {@link #train()}.
+     * В чекпоинт пишется {@link #pendingCheckpointEpochIndex} — номер эпохи для следующего запуска после
+     * полного завершения эпохи {@code epoch} это {@code epoch + 1}; внутри незавершённой эпохи — {@code epoch}.
+     */
+    private int loadedResumeEpochIndex = 0;
+
+    /** Значение, сериализуемое в следующий {@link #saveCheckpoint(String)} (см. {@link #loadedResumeEpochIndex}). */
+    private int pendingCheckpointEpochIndex = 0;
+
+    /**
+     * Индекс первой последовательности текущего батча в {@link DataLoader} ({@link DataLoader#getCurrentIndex()}),
+     * сериализуется в v4-чекпоинт.
+     */
+    private int pendingCheckpointDataLoaderIndex = 0;
+
+    /** После {@link #loadCheckpoint} (v3/v4): смещение внутри эпохи для первого прохода {@link #train()}. */
+    private int loadedResumeDataLoaderIndex = 0;
+
+    /**
+     * После загрузки v3/v4: на первой итерации внешнего цикла повторить {@link DataLoader#shuffle()} столько раз,
+     * как при полном прогоне от начала до старта сохранённой эпохи (детерминированный {@code Random(42)}).
+     */
+    private boolean resumeReplayCheckpointShuffles = false;
+
     private final List<Tensor> parameters;
     /** Всего шагов оптимизатора за всё обучение: {@code epochs × ceil(numBatches / accumulationSteps)}. */
     private final int totalTrainingSteps;
@@ -305,6 +330,8 @@ public final class LLMTrainer {
     private float lastGlobalGradNorm;
 
     private final TrainingEventCallback trainingEventCallback;
+    /** {@code state/stats.json} для {@code dashboard.html}; {@code null} при {@code JGPT_STATS_JSON=0}. */
+    private final TrainingStatsWriter trainingStatsWriter;
     /** Запрос на выход из {@link #train()} для смены пресета супервизором. */
     private volatile boolean supervisedStopRequested;
     /** {@code true}, если последний {@link #train()} вышел из‑за {@link #requestSupervisedStop()}. */
@@ -342,6 +369,17 @@ public final class LLMTrainer {
         int acc = config.accumulationSteps;
         int optimizerStepsPerEpoch = (batchesPerEpoch + acc - 1) / acc;
         this.totalTrainingSteps = Math.max(1, config.epochs * optimizerStepsPerEpoch);
+        this.trainingStatsWriter =
+                readBooleanEnv("JGPT_STATS_JSON", true)
+                        ? new TrainingStatsWriter(Path.of("state"))
+                        : null;
+        if (trainingStatsWriter != null) {
+            trainingStatsWriter.setConfig(
+                    config,
+                    totalTrainingSteps,
+                    envTrimOrDefault("JGPT_STATS_PRESET", "-"),
+                    envTrimOrDefault("JGPT_STATS_PRESET_IDX", "-"));
+        }
         float wr = config.warmupRatio;
         if (wr > 0f) {
             this.warmupSteps = Math.max(1, (int) (totalTrainingSteps * wr));
@@ -485,6 +523,11 @@ public final class LLMTrainer {
         return defaultValue;
     }
 
+    private static String envTrimOrDefault(String key, String defaultValue) {
+        String v = System.getenv(key);
+        return (v != null && !v.isBlank()) ? v.trim() : defaultValue;
+    }
+
     /** Масштаб для CE и градиента по логитам (текущий шаг оптимизатора / накопление). */
     private float lossScaleForForward() {
         if (!fp16Matmul) {
@@ -549,9 +592,10 @@ public final class LLMTrainer {
                 envCudaLibSummary());
         if (TensorOpsGPU.isGpuAvailable()) {
             log.info(
-                    "  TensorOpsGPU (при загрузке класса): FP16_MATMUL={} CE_мин_элементов={}",
+                    "  TensorOpsGPU (при загрузке класса): FP16_MATMUL={} CE_мин_элементов={} FlashAttention={}",
                     TensorOpsGPU.useFp16Matmul(),
-                    TensorOpsGPU.ceGpuMinElements());
+                    TensorOpsGPU.ceGpuMinElements(),
+                    TensorOpsGPU.FLASH_ATTENTION);
         }
         {
             String tensorJavaMem = System.getenv("JGPT_JAVA_MEM");
@@ -741,8 +785,26 @@ public final class LLMTrainer {
         boolean trainingStoppedEarly = false;
         boolean forceScalerResetNextEpoch = false;
 
+        int startEpoch = Math.max(0, Math.min(loadedResumeEpochIndex, config.epochs));
+        int resumeSeqCopy = loadedResumeDataLoaderIndex;
+        boolean replayCkpt = resumeReplayCheckpointShuffles;
+        loadedResumeEpochIndex = 0;
+        loadedResumeDataLoaderIndex = 0;
+        resumeReplayCheckpointShuffles = false;
+
+        if (startEpoch > 0 || resumeSeqCopy > 0) {
+            log.info(
+                    "{} продолжение: эпоха {}/{}, индекс последовательности в эпохе {} (повтор shuffle={})",
+                    LogFmt.badge("CKPT"),
+                    startEpoch + 1,
+                    config.epochs,
+                    resumeSeqCopy,
+                    replayCkpt);
+        }
+
         outer:
-        for (int epoch = 0; epoch < config.epochs; epoch++) {
+        for (int epoch = startEpoch; epoch < config.epochs; epoch++) {
+            pendingCheckpointEpochIndex = epoch;
             long epochStartNs = System.nanoTime();
             log.info(
                     "{} эпоха {}/{}: батчей в эпохе {}",
@@ -750,7 +812,23 @@ public final class LLMTrainer {
                     epoch + 1,
                     config.epochs,
                     dataLoader.numBatches());
-            dataLoader.shuffle();
+            if (replayCkpt && epoch == startEpoch) {
+                /* Повтор shuffle имитирует прошлые эпохи для согласованности RNG/порядка; лог — один раз. */
+                for (int k = 0; k < epoch + 1; k++) {
+                    dataLoader.shuffle(k == epoch);
+                }
+                int clamped = clampResumeSequenceIndex(resumeSeqCopy);
+                dataLoader.setCurrentIndex(clamped);
+                if (resumeSeqCopy != clamped) {
+                    log.warn(
+                            "{} индекс последовательности из чекпоинта {} приведён к {} (границы эпохи/батча)",
+                            LogFmt.badge("CKPT"),
+                            resumeSeqCopy,
+                            clamped);
+                }
+            } else {
+                dataLoader.shuffle();
+            }
             if (fp16Matmul
                     && dynamicLossScaler != null
                     && (fp16DynamicResetEachEpoch || forceScalerResetNextEpoch)) {
@@ -935,6 +1013,11 @@ public final class LLMTrainer {
                     }
                 }
 
+                long snapFwdNs = accFwdNs;
+                long snapLossCeNs = accLossCeNs;
+                long snapBwdNs = accBwdNs;
+                long snapAccTokens = accTokens;
+                long snapOptNs = t6 - t5;
                 if (profiler != null) {
                     profiler.recordStep(
                             accFwdNs,
@@ -955,6 +1038,23 @@ public final class LLMTrainer {
                 epochSuccessfulOptimizerSteps++;
                 globalStep++;
                 trainingEventCallback.onOptimizerStepCompleted(globalStep, epoch + 1);
+                if (trainingStatsWriter != null) {
+                    long totalNs = snapFwdNs + snapLossCeNs + snapBwdNs + snapOptNs;
+                    int tps =
+                            totalNs > 0L
+                                    ? (int)
+                                            Math.min(
+                                                    (long) Integer.MAX_VALUE,
+                                                    snapAccTokens * 1_000_000_000L / totalNs)
+                                    : 0;
+                    trainingStatsWriter.onStep(
+                            globalStep,
+                            epoch + 1,
+                            config.epochs,
+                            avgMicroLoss,
+                            learningRateForStep(globalStep),
+                            tps);
+                }
 
                 if (globalStep == 1 || globalStep % config.logEverySteps == 0) {
                     float lr = learningRateForStep(globalStep);
@@ -1035,6 +1135,13 @@ public final class LLMTrainer {
                                 formatEvalBestLossForLog(bestLoss));
                         trainingEventCallback.onEvalCompleted(
                                 epoch + 1, evalLoss, bestLoss, improvedBest);
+                        if (trainingStatsWriter != null) {
+                            trainingStatsWriter.onEval(
+                                    globalStep,
+                                    evalLoss,
+                                    (float) Math.exp((double) evalLoss),
+                                    bestLoss);
+                        }
                     }
                     if (TensorOpsGPU.isGpuAvailable()) {
                         TensorOpsGPU.synchronizeStream();
@@ -1106,6 +1213,8 @@ public final class LLMTrainer {
                     LogFmt.success(durationStr),
                     epochTail);
 
+            pendingCheckpointEpochIndex = epoch + 1;
+            pendingCheckpointDataLoaderIndex = 0;
             saveCheckpoint("epoch_" + (epoch + 1));
             dataLoader.reset();
         }
@@ -1216,6 +1325,9 @@ public final class LLMTrainer {
             Fp16Metrics.global().recordOverflow();
         }
 
+        /* Захватить scale ДО step(): step(false) может удвоить scale на границе growthInterval,
+         * и анскейл должен использовать тот же множитель, что был применён в forward/backward. */
+        float scaleUsedInForward = fp16Matmul && dynamicLossScaler != null ? dynamicLossScaler.getScale() : 1f;
         if (fp16Matmul) {
             if (!dynamicLossScaler.step(hasOverflow)) {
                 zeroGradients(logits);
@@ -1235,7 +1347,7 @@ public final class LLMTrainer {
 
         List<Tensor> gradsToUnscale = collectGradTensorsWithLossScale(logits);
         if (fp16Matmul) {
-            dynamicLossScaler.unscaleGradients(gradsToUnscale);
+            DynamicLossScaler.unscaleGradients(gradsToUnscale, scaleUsedInForward);
         }
 
         float gradNorm = 0f;
@@ -1293,6 +1405,9 @@ public final class LLMTrainer {
         if (fp16Matmul && hasOverflow) {
             Fp16Metrics.global().recordOverflow();
         }
+        /* Захватить scale ДО step(): step(false) может удвоить scale на границе growthInterval,
+         * и анскейл должен использовать тот же множитель, что был применён в forward/backward. */
+        float scaleUsedInForward = fp16Matmul && dynamicLossScaler != null ? dynamicLossScaler.getScale() : 1f;
         if (fp16Matmul) {
             if (!dynamicLossScaler.step(hasOverflow)) {
                 zeroGradients(logits);
@@ -1310,13 +1425,13 @@ public final class LLMTrainer {
             return false;
         }
 
-        float lossScaleForUnscale = fp16Matmul ? dynamicLossScaler.getScale() : 1f;
+        float lossScaleForUnscale = scaleUsedInForward;
         if (lossScaleForUnscale > 1f) {
             DynamicLossScaler.unscaleGpuDeviceGrads(paramMap, lossScaleForUnscale);
             if (logits.hasGrad()) {
                 logitsOnlyScratch.clear();
                 logitsOnlyScratch.add(logits);
-                dynamicLossScaler.unscaleGradients(logitsOnlyScratch);
+                DynamicLossScaler.unscaleGradients(logitsOnlyScratch, lossScaleForUnscale);
             }
         }
 
@@ -1385,6 +1500,9 @@ public final class LLMTrainer {
                     scaleStr);
         }
         trainingEventCallback.onOverflowStepSkipped(planned, overflowSkipRepeatCount, scaleAfterSkip);
+        if (trainingStatsWriter != null) {
+            trainingStatsWriter.onOverflow(planned);
+        }
     }
 
     /**
@@ -1405,8 +1523,6 @@ public final class LLMTrainer {
     }
 
     private boolean checkGradientOverflow(Tensor logits, float avgMicroLoss) {
-        int plannedStep = globalStep + 1;
-        float ls = fp16Matmul && dynamicLossScaler != null ? dynamicLossScaler.getScale() : 1f;
         if (!Float.isFinite(avgMicroLoss)) {
             return true;
         }
@@ -1993,6 +2109,9 @@ public final class LLMTrainer {
                             SAMPLE_TEMP,
                             SAMPLE_TOP_K);
             log.info("{} сгенерировано: {}", LogFmt.badge("SAMPLE"), out);
+            if (trainingStatsWriter != null) {
+                trainingStatsWriter.onSample(globalStep, out);
+            }
         } catch (Exception e) {
             log.warn("{} генерация не удалась: {}", LogFmt.badge("SAMPLE"), e.getMessage());
         } finally {
@@ -2051,6 +2170,10 @@ public final class LLMTrainer {
     }
 
     private static final String CHECKPOINT_FORMAT_V2 = "veles.ckpt.v2";
+    /** Как v2, плюс {@code int resumeEpochIndex} (0-based старт внешнего цикла при следующем {@link #train()}). */
+    private static final String CHECKPOINT_FORMAT_V3 = "veles.ckpt.v3";
+    /** Как v3, плюс {@code int resumeSequenceIndex} ({@link DataLoader#getCurrentIndex()} внутри эпохи). */
+    private static final String CHECKPOINT_FORMAT_V4 = "veles.ckpt.v4";
 
     public void saveCheckpoint(String name) throws IOException {
         Path dir = Path.of(config.checkpointDir);
@@ -2070,16 +2193,31 @@ public final class LLMTrainer {
             model.syncWeightsFromGpu(model.gpuTensorByTrainableParameter());
         }
 
+        if (!name.startsWith("epoch_")) {
+            pendingCheckpointDataLoaderIndex = dataLoader.getCurrentIndex();
+        }
+
         try (DataOutputStream out =
                 new DataOutputStream(
                         new BufferedOutputStream(new FileOutputStream(path)))) {
-            out.writeUTF(CHECKPOINT_FORMAT_V2);
+            out.writeUTF(CHECKPOINT_FORMAT_V4);
             out.writeInt(globalStep);
             out.writeFloat(bestLoss);
+            int ep = Math.max(0, Math.min(pendingCheckpointEpochIndex, config.epochs));
+            out.writeInt(ep);
+            int nSeq = dataLoader.numSequences();
+            int seqIdx = Math.max(0, Math.min(pendingCheckpointDataLoaderIndex, nSeq));
+            out.writeInt(seqIdx);
             optimizer.setStep(globalStep);
             optimizer.writeMomentBuffers(out, parameters);
         }
-        log.info("{} checkpoint(v2+Adam): {}", LogFmt.badge("CKPT"), path);
+        log.info(
+                "{} checkpoint(v4+Adam+epoch+pos): {} (resumeEpochIndex={}/{}, seqIndex={})",
+                LogFmt.badge("CKPT"),
+                path,
+                Math.max(0, Math.min(pendingCheckpointEpochIndex, config.epochs)),
+                config.epochs,
+                Math.max(0, Math.min(pendingCheckpointDataLoaderIndex, dataLoader.numSequences())));
 
         if (checkpointAsyncIo && checkpointIoExecutor != null) {
             List<Tensor> params = model.getParameters();
@@ -2198,6 +2336,53 @@ public final class LLMTrainer {
                 loadLegacyCheckpoint(path);
                 return;
             }
+            if (CHECKPOINT_FORMAT_V4.equals(tag)) {
+                globalStep = dis.readInt();
+                bestLoss = dis.readFloat();
+                if (bestLoss == 0f) {
+                    log.warn(
+                            "Чекпоинт: в файле bestLoss=0 (часто артефакт eval без батчей в старых прогонах) — сброс к «ещё не зафиксирован»");
+                    bestLoss = Float.MAX_VALUE;
+                }
+                int ep = dis.readInt();
+                loadedResumeEpochIndex = Math.max(0, Math.min(ep, config.epochs));
+                loadedResumeDataLoaderIndex = Math.max(0, dis.readInt());
+                resumeReplayCheckpointShuffles = true;
+                optimizer.setStep(globalStep);
+                optimizer.readMomentBuffers(dis, parameters);
+                log.info(
+                        "Чекпоинт загружен (v4 + Adam + эпоха + позиция): {} (шаг {}, resumeEpochIndex={}/{}, seqIndex={}, лучший оценочный loss {})",
+                        path,
+                        globalStep,
+                        loadedResumeEpochIndex,
+                        config.epochs,
+                        loadedResumeDataLoaderIndex,
+                        formatEvalBestLossForLog(bestLoss));
+                return;
+            }
+            if (CHECKPOINT_FORMAT_V3.equals(tag)) {
+                globalStep = dis.readInt();
+                bestLoss = dis.readFloat();
+                if (bestLoss == 0f) {
+                    log.warn(
+                            "Чекпоинт: в файле bestLoss=0 (часто артефакт eval без батчей в старых прогонах) — сброс к «ещё не зафиксирован»");
+                    bestLoss = Float.MAX_VALUE;
+                }
+                int ep = dis.readInt();
+                loadedResumeEpochIndex = Math.max(0, Math.min(ep, config.epochs));
+                loadedResumeDataLoaderIndex = 0;
+                resumeReplayCheckpointShuffles = true;
+                optimizer.setStep(globalStep);
+                optimizer.readMomentBuffers(dis, parameters);
+                log.info(
+                        "Чекпоинт загружен (v3 + Adam + эпоха): {} (шаг {}, resumeEpochIndex={}/{}, позиция в эпохе не хранилась — 0; лучший оценочный loss {})",
+                        path,
+                        globalStep,
+                        loadedResumeEpochIndex,
+                        config.epochs,
+                        formatEvalBestLossForLog(bestLoss));
+                return;
+            }
             if (CHECKPOINT_FORMAT_V2.equals(tag)) {
                 globalStep = dis.readInt();
                 bestLoss = dis.readFloat();
@@ -2206,10 +2391,13 @@ public final class LLMTrainer {
                             "Чекпоинт: в файле bestLoss=0 (часто артефакт eval без батчей в старых прогонах) — сброс к «ещё не зафиксирован»");
                     bestLoss = Float.MAX_VALUE;
                 }
+                loadedResumeEpochIndex = 0;
+                loadedResumeDataLoaderIndex = 0;
+                resumeReplayCheckpointShuffles = false;
                 optimizer.setStep(globalStep);
                 optimizer.readMomentBuffers(dis, parameters);
                 log.info(
-                        "Чекпоинт загружен (v2 + Adam): {} (шаг {}, лучший оценочный loss {})",
+                        "Чекпоинт загружен (v2 + Adam): {} (шаг {}, лучший оценочный loss {}; эпоха в файле не хранилась — старт с 1-й)",
                         path,
                         globalStep,
                         formatEvalBestLossForLog(bestLoss));
@@ -2229,6 +2417,9 @@ public final class LLMTrainer {
                         "Чекпоинт (legacy): bestLoss=0 — сброс к «ещё не зафиксирован»");
                 bestLoss = Float.MAX_VALUE;
             }
+            loadedResumeEpochIndex = 0;
+            loadedResumeDataLoaderIndex = 0;
+            resumeReplayCheckpointShuffles = false;
             optimizer.setStep(globalStep);
             log.info(
                     "Чекпоинт загружен (старый формат, без буферов Adam m/v): {} (шаг {}, лучший loss {})",
@@ -2261,6 +2452,35 @@ public final class LLMTrainer {
         globalStep = 0;
         optimizer.setStep(0);
         bestLoss = Float.MAX_VALUE;
+        loadedResumeEpochIndex = 0;
+        loadedResumeDataLoaderIndex = 0;
+        pendingCheckpointEpochIndex = 0;
+        pendingCheckpointDataLoaderIndex = 0;
+        resumeReplayCheckpointShuffles = false;
+    }
+
+    /**
+     * Приводит сырой индекс из чекпоинта к допустимому старту полного батча (кратно {@code batchSize}, не больше
+     * последнего старта с {@link DataLoader#hasMore()}).
+     */
+    private int clampResumeSequenceIndex(int raw) {
+        int n = dataLoader.numSequences();
+        if (n <= 0) {
+            return 0;
+        }
+        int bs = config.batchSize;
+        int maxStart = n >= bs ? n - bs : 0;
+        int idx = raw;
+        if (idx < 0) {
+            idx = 0;
+        }
+        if (idx > n) {
+            idx = n;
+        }
+        if (bs > 1) {
+            idx = (idx / bs) * bs;
+        }
+        return Math.min(idx, maxStart);
     }
 
     /**
@@ -2460,17 +2680,16 @@ public final class LLMTrainer {
 
         if (fp16Matmul && hasOverflow) {
             Fp16Metrics.global().recordOverflow();
+            /* step(true) всегда означает «не обновлять веса»; уменьшает scale (или recovery на min). */
+            dynamicLossScaler.step(true);
+            zeroGradients(logits);
+            clearGpuParamGradsAfterOverflowSkip();
+            zeroGpuGradsMarkingParamGradsClean(paramMap);
+            logGradientOverflowSkipped(dynamicLossScaler.getScale());
+            synchronizeGpuAfterOverflowSkip();
+            return false;
         }
-        if (fp16Matmul) {
-            if (!dynamicLossScaler.step(hasOverflow)) {
-                zeroGradients(logits);
-                clearGpuParamGradsAfterOverflowSkip();
-                zeroGpuGradsMarkingParamGradsClean(paramMap);
-                logGradientOverflowSkipped(dynamicLossScaler.getScale());
-                synchronizeGpuAfterOverflowSkip();
-                return false;
-            }
-        } else if (hasOverflow) {
+        if (!fp16Matmul && hasOverflow) {
             zeroGradients(logits);
             clearGpuParamGradsAfterOverflowSkip();
             zeroGpuGradsMarkingParamGradsClean(paramMap);
@@ -2541,6 +2760,13 @@ public final class LLMTrainer {
                     TensorOpsGPU.scaleInPlaceGPU(lg, lg.length, clipCoeff);
                 }
             }
+        }
+        /*
+         * Учёт «успешного» шага для роста loss scale — только после unscale и конечной глобальной нормы.
+         * Иначе step(false) до unscale + step(true) при non-finite totalNorm давали ложный рост счётчика стабильности.
+         */
+        if (fp16Matmul) {
+            dynamicLossScaler.step(false);
         }
         optimizer.setLearningRate(learningRateForStep(stepForLr));
         optimizer.beginStep();

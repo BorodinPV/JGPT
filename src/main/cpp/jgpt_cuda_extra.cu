@@ -1593,6 +1593,7 @@ static bool batched_sgemm_row_major_transA(
     return true;
 }
 
+/* Non-graph attention forward scratch (mask slot included). May be reallocated by non-graph ops. */
 static thread_local void* tl_attn_fwd_aux = nullptr;
 static thread_local size_t tl_attn_fwd_aux_total = 0;
 
@@ -1632,6 +1633,21 @@ static bool attn_fwd_aux_ensure(
     return true;
 }
 
+/*
+ * Отдельный буфер только для CUDA-graph пути (scaledDotProductAttentionForwardGPUDeviceResident
+ * и jgpt_cuda_graph_prewarm_sdpa_aux_and_cublas).
+ *
+ * КРИТИЧЕСКИ ВАЖНО: этот буфер НЕ должен совпадать с tl_attn_fwd_aux.
+ * При захвате CUDA graph GPU-адреса d_scores/d_probs фиксируются в графе.
+ * Если tl_attn_fwd_aux перевыделяется другими операциями (например, генерацией текста через
+ * scaledDotProductAttentionForwardGPUDevice с маской), GPU-адреса в графе устаревают →
+ * cudaGraphLaunch падает с "illegal memory access".
+ * Использование отдельного буфера tl_attn_fwd_graph_aux гарантирует, что
+ * нe-graph операции не могут изменить указатели, захваченные в графе.
+ */
+static thread_local void* tl_attn_fwd_graph_aux = nullptr;
+static thread_local size_t tl_attn_fwd_graph_aux_total = 0;
+
 /** Workspace без слота под mask: mask передаётся отдельным device-указателем (для CUDA graph / без H2D probs). */
 static bool attn_fwd_aux_ensure_qk_probs_only(
         size_t bytesQK,
@@ -1639,16 +1655,16 @@ static bool attn_fwd_aux_ensure_qk_probs_only(
         float** d_scores,
         float** d_probs) {
     size_t total = bytesProb * 2U;
-    if (total > tl_attn_fwd_aux_total) {
-        cudaFree(tl_attn_fwd_aux);
-        tl_attn_fwd_aux = nullptr;
-        tl_attn_fwd_aux_total = 0;
-        if (cudaMalloc(&tl_attn_fwd_aux, total) != cudaSuccess) {
+    if (total > tl_attn_fwd_graph_aux_total) {
+        cudaFree(tl_attn_fwd_graph_aux);
+        tl_attn_fwd_graph_aux = nullptr;
+        tl_attn_fwd_graph_aux_total = 0;
+        if (cudaMalloc(&tl_attn_fwd_graph_aux, total) != cudaSuccess) {
             return false;
         }
-        tl_attn_fwd_aux_total = total;
+        tl_attn_fwd_graph_aux_total = total;
     }
-    unsigned char* base = static_cast<unsigned char*>(tl_attn_fwd_aux);
+    unsigned char* base = static_cast<unsigned char*>(tl_attn_fwd_graph_aux);
     size_t off = 0;
     *d_scores = reinterpret_cast<float*>(base + off);
     off += bytesProb;
@@ -1688,6 +1704,557 @@ static bool attn_fwd_run_core(
         return false;
     }
     return true;
+}
+
+// ============================================================
+//  FlashAttention-2 (causal, forward + backward)
+//  Layout: Q/K/V/O  = [BH, S, Dh]  (BH = batch * numHeads)
+//          LSE      = [BH, S]       log-sum-exp per query row
+//          D        = [BH, S]       dot(dO, O) per query row (bwd scratch)
+//  Tile sizes: Br = Bc = kFaBr.  Head dim: kFaDh (compile-time).
+// ============================================================
+
+static constexpr int kFaDh = 16;    // d_head
+static constexpr int kFaBr = 64;    // query tile rows  (= block size for fwd / dQ)
+static constexpr int kFaBc = 64;    // KV tile rows     (= block size for dKdV)
+
+/* Thread-local scratch for LSE and D vectors (small: BH*S floats). */
+static thread_local float* tl_fa_lse  = nullptr;
+static thread_local size_t tl_fa_lse_bytes = 0;
+static thread_local float* tl_fa_D    = nullptr;
+static thread_local size_t tl_fa_D_bytes   = 0;
+
+static bool fa_ensure_lse(size_t bytes) {
+    if (bytes <= tl_fa_lse_bytes) return true;
+    cudaFree(tl_fa_lse);
+    tl_fa_lse = nullptr;
+    tl_fa_lse_bytes = 0;
+    if (cudaMalloc(&tl_fa_lse, bytes) != cudaSuccess) {
+        fprintf(stderr, "fa_ensure_lse: cudaMalloc(%zu) failed\n", bytes);
+        return false;
+    }
+    tl_fa_lse_bytes = bytes;
+    return true;
+}
+
+static bool fa_ensure_D(size_t bytes) {
+    if (bytes <= tl_fa_D_bytes) return true;
+    cudaFree(tl_fa_D);
+    tl_fa_D = nullptr;
+    tl_fa_D_bytes = 0;
+    if (cudaMalloc(&tl_fa_D, bytes) != cudaSuccess) {
+        fprintf(stderr, "fa_ensure_D: cudaMalloc(%zu) failed\n", bytes);
+        return false;
+    }
+    tl_fa_D_bytes = bytes;
+    return true;
+}
+
+// ----------------------------------------------------------------
+//  Forward kernel
+//  One block per (bh, q_tile).  Block: kFaBr threads.
+//  Shared memory layout (floats):
+//    q_smem [kFaBr][kFaDh]   — query tile, loaded once
+//    k_smem [kFaBc][kFaDh]   — key tile, per KV step
+//    v_smem [kFaBc][kFaDh]   — value tile, per KV step
+//    s_smem [kFaBc][kFaBr]   — S_ij transposed: s_smem[j][i] = S[i][j]
+//                               (transposed layout avoids bank conflicts when
+//                                all threads read their own s column)
+// ----------------------------------------------------------------
+__global__ void __launch_bounds__(kFaBr)
+flash_attn_fwd_kernel(
+    const float* __restrict__ Q,    // [BH, S, Dh]
+    const float* __restrict__ K,    // [BH, S, Dh]
+    const float* __restrict__ V,    // [BH, S, Dh]
+    float* __restrict__ O,          // [BH, S, Dh]
+    float* __restrict__ LSE,        // [BH, S]
+    int BH, int S, float scale)
+{
+    const int num_q_tiles = (S + kFaBr - 1) / kFaBr;
+    const int bh     = blockIdx.x / num_q_tiles;
+    const int q_tile = blockIdx.x % num_q_tiles;
+    if (bh >= BH) return;
+
+    const int tid = threadIdx.x;
+    const int qi  = q_tile * kFaBr + tid;
+
+    const ptrdiff_t bh_off = (ptrdiff_t)bh * S * kFaDh;
+    const float* Qp   = Q   + bh_off;
+    const float* Kp   = K   + bh_off;
+    const float* Vp   = V   + bh_off;
+    float*       Op   = O   + bh_off;
+    float*       LSEp = LSE + (ptrdiff_t)bh * S;
+
+    // Smem
+    extern __shared__ float smem[];
+    float* q_smem = smem;                                         // [kFaBr][kFaDh]
+    float* k_smem = q_smem + kFaBr * kFaDh;                      // [kFaBc][kFaDh]
+    float* v_smem = k_smem + kFaBc * kFaDh;                      // [kFaBc][kFaDh]
+    float* s_smem = v_smem + kFaBc * kFaDh;                      // [kFaBc][kFaBr] transposed
+
+    // Load Q tile once (one row per thread)
+    if (qi < S) {
+        #pragma unroll
+        for (int d = 0; d < kFaDh; d++)
+            q_smem[tid * kFaDh + d] = Qp[qi * kFaDh + d];
+    } else {
+        #pragma unroll
+        for (int d = 0; d < kFaDh; d++)
+            q_smem[tid * kFaDh + d] = 0.f;
+    }
+    __syncthreads();
+
+    // Per-thread accumulators
+    float o_reg[kFaDh];
+    #pragma unroll
+    for (int d = 0; d < kFaDh; d++) o_reg[d] = 0.f;
+    float mi = -INFINITY;
+    float li = 0.f;
+
+    const int num_kv_tiles = (S + kFaBc - 1) / kFaBc;
+
+    for (int kv_t = 0; kv_t < num_kv_tiles; kv_t++) {
+        const int kv_start = kv_t * kFaBc;
+        // Causal: skip tiles where ALL keys are beyond this query tile's last row
+        if (kv_start > q_tile * kFaBr + kFaBr - 1) break;
+
+        // Collaborative load of K and V tiles (kFaBr threads load kFaBc rows)
+        for (int row = tid; row < kFaBc; row += kFaBr) {
+            const int kj = kv_start + row;
+            if (kj < S) {
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++) {
+                    k_smem[row * kFaDh + d] = Kp[kj * kFaDh + d];
+                    v_smem[row * kFaDh + d] = Vp[kj * kFaDh + d];
+                }
+            } else {
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++) {
+                    k_smem[row * kFaDh + d] = 0.f;
+                    v_smem[row * kFaDh + d] = 0.f;
+                }
+            }
+        }
+        __syncthreads();
+
+        if (qi >= S) { __syncthreads(); continue; }
+
+        // Compute S_ij for this thread's query row, store transposed: s_smem[j][tid]
+        #pragma unroll
+        for (int j = 0; j < kFaBc; j++) {
+            float dot = 0.f;
+            #pragma unroll
+            for (int d = 0; d < kFaDh; d++)
+                dot = __fmaf_rn(q_smem[tid * kFaDh + d], k_smem[j * kFaDh + d], dot);
+            const int kj = kv_start + j;
+            float s = dot * scale;
+            if (qi < kj || kj >= S) s = -INFINITY;  // causal + boundary
+            s_smem[j * kFaBr + tid] = s;             // transposed: [j][tid]
+        }
+
+        // Online softmax
+        float mij = -INFINITY;
+        #pragma unroll
+        for (int j = 0; j < kFaBc; j++)
+            mij = fmaxf(mij, s_smem[j * kFaBr + tid]);
+
+        float lij = 0.f;
+        #pragma unroll
+        for (int j = 0; j < kFaBc; j++) {
+            float p = __expf(s_smem[j * kFaBr + tid] - mij);
+            s_smem[j * kFaBr + tid] = p;
+            lij += p;
+        }
+
+        const float mi_new = fmaxf(mi, mij);
+        const float alpha  = __expf(mi  - mi_new);
+        const float beta   = __expf(mij - mi_new);
+        const float li_new = alpha * li + beta * lij;
+
+        // O update: O_new = alpha*O_old + beta * sum_j(p_j * V_j)
+        #pragma unroll
+        for (int d = 0; d < kFaDh; d++) {
+            float vacc = 0.f;
+            #pragma unroll
+            for (int j = 0; j < kFaBc; j++)
+                vacc = __fmaf_rn(s_smem[j * kFaBr + tid], v_smem[j * kFaDh + d], vacc);
+            o_reg[d] = alpha * o_reg[d] + beta * vacc;
+        }
+
+        mi = mi_new;
+        li = li_new;
+        __syncthreads();
+    }
+
+    if (qi < S) {
+        const float inv_l = (li > 0.f) ? __frcp_rn(li) : 0.f;
+        #pragma unroll
+        for (int d = 0; d < kFaDh; d++)
+            Op[qi * kFaDh + d] = o_reg[d] * inv_l;
+        LSEp[qi] = mi + __logf(fmaxf(li, 1e-12f));
+    }
+}
+
+// ----------------------------------------------------------------
+//  D precompute kernel: D[bh][qi] = dot(dO[bh,qi], O[bh,qi])
+//  Grid: ceil(BH*S / 64),  Block: 64.
+// ----------------------------------------------------------------
+__global__ void flash_attn_compute_D_kernel(
+    const float* __restrict__ dO,  // [BH, S, kFaDh]
+    const float* __restrict__ O,   // [BH, S, kFaDh]
+    float* __restrict__ D,         // [BH, S]
+    int BH, int S)
+{
+    const int idx = blockIdx.x * 64 + threadIdx.x;
+    const int bh  = idx / S;
+    const int qi  = idx % S;
+    if (bh >= BH || qi >= S) return;
+
+    const ptrdiff_t base = (ptrdiff_t)bh * S * kFaDh + (ptrdiff_t)qi * kFaDh;
+    float acc = 0.f;
+    #pragma unroll
+    for (int d = 0; d < kFaDh; d++)
+        acc += dO[base + d] * O[base + d];
+    D[(ptrdiff_t)bh * S + qi] = acc;
+}
+
+// ----------------------------------------------------------------
+//  Backward: dK and dV
+//  One block per (bh, kv_tile).  Block: kFaBc threads.
+//  Each block iterates over all Q tiles, accumulates dK/dV in registers.
+//  Shared memory:
+//    k_smem [kFaBc][kFaDh]   — key tile for this block (fixed)
+//    v_smem [kFaBc][kFaDh]   — value tile (fixed)
+//    q_smem [kFaBr][kFaDh]   — query tile (per Q step)
+//    do_smem[kFaBr][kFaDh]   — dO tile (per Q step)
+//    s_smem [kFaBr][kFaBc]   — S_ij, then dS_ij (per Q step)
+//                               layout [i][j] (NOT transposed here)
+// ----------------------------------------------------------------
+__global__ void __launch_bounds__(kFaBc)
+flash_attn_bwd_dkdv_kernel(
+    const float* __restrict__ Q,    // [BH, S, Dh]
+    const float* __restrict__ K,    // [BH, S, Dh]
+    const float* __restrict__ V,    // [BH, S, Dh]
+    const float* __restrict__ dO,   // [BH, S, Dh]
+    const float* __restrict__ LSE,  // [BH, S]
+    const float* __restrict__ D,    // [BH, S]
+    float* __restrict__ dK,         // [BH, S, Dh]
+    float* __restrict__ dV,         // [BH, S, Dh]
+    int BH, int S, float scale)
+{
+    const int num_kv_tiles = (S + kFaBc - 1) / kFaBc;
+    const int bh      = blockIdx.x / num_kv_tiles;
+    const int kv_tile = blockIdx.x % num_kv_tiles;
+    if (bh >= BH) return;
+
+    const int tid = threadIdx.x;
+    const int kj  = kv_tile * kFaBc + tid;
+
+    const ptrdiff_t bh_off = (ptrdiff_t)bh * S * kFaDh;
+    const float* Qp   = Q   + bh_off;
+    const float* Kp   = K   + bh_off;
+    const float* Vp   = V   + bh_off;
+    const float* dOp  = dO  + bh_off;
+    const float* LSEp = LSE + (ptrdiff_t)bh * S;
+    const float* Dp   = D   + (ptrdiff_t)bh * S;
+    float*       dKp  = dK  + bh_off;
+    float*       dVp  = dV  + bh_off;
+
+    extern __shared__ float smem[];
+    float* k_smem  = smem;                                          // [kFaBc][kFaDh]
+    float* v_smem  = k_smem  + kFaBc * kFaDh;                     // [kFaBc][kFaDh]
+    float* q_smem  = v_smem  + kFaBc * kFaDh;                     // [kFaBr][kFaDh]
+    float* do_smem = q_smem  + kFaBr * kFaDh;                     // [kFaBr][kFaDh]
+    float* s_smem  = do_smem + kFaBr * kFaDh;                     // [kFaBr][kFaBc]
+
+    // Load K/V tile once for this block
+    if (kj < S) {
+        #pragma unroll
+        for (int d = 0; d < kFaDh; d++) {
+            k_smem[tid * kFaDh + d] = Kp[kj * kFaDh + d];
+            v_smem[tid * kFaDh + d] = Vp[kj * kFaDh + d];
+        }
+    } else {
+        #pragma unroll
+        for (int d = 0; d < kFaDh; d++) {
+            k_smem[tid * kFaDh + d] = 0.f;
+            v_smem[tid * kFaDh + d] = 0.f;
+        }
+    }
+    __syncthreads();
+
+    // dK/dV accumulators in registers
+    float dk_reg[kFaDh], dv_reg[kFaDh];
+    #pragma unroll
+    for (int d = 0; d < kFaDh; d++) { dk_reg[d] = 0.f; dv_reg[d] = 0.f; }
+
+    // For causal: only Q tiles where qi_start <= kj (= kv_tile*kFaBc + kFaBc-1 at most)
+    // So q_tile_start = kv_tile * kFaBc / kFaBr (integer division — first q_tile with any valid qi)
+    const int num_q_tiles = (S + kFaBr - 1) / kFaBr;
+    const int q_tile_start = (kv_tile * kFaBc) / kFaBr;
+
+    for (int q_tile = q_tile_start; q_tile < num_q_tiles; q_tile++) {
+        const int qi_base = q_tile * kFaBr;
+
+        // Load Q and dO tiles (kFaBc threads load kFaBr rows, strided)
+        for (int row = tid; row < kFaBr; row += kFaBc) {
+            const int qi = qi_base + row;
+            if (qi < S) {
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++) {
+                    q_smem [row * kFaDh + d] = Qp [qi * kFaDh + d];
+                    do_smem[row * kFaDh + d] = dOp[qi * kFaDh + d];
+                }
+            } else {
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++) {
+                    q_smem [row * kFaDh + d] = 0.f;
+                    do_smem[row * kFaDh + d] = 0.f;
+                }
+            }
+        }
+        __syncthreads();
+
+        // For kFaBc=kFaBr=64: each thread computes its KV column (tid) across all Br query rows.
+        // Compute P_ij and dS_ij, accumulate dK[tid] and dV[tid].
+        if (kj < S) {
+            #pragma unroll
+            for (int i = 0; i < kFaBr; i++) {
+                const int qi = qi_base + i;
+                if (qi >= S) break;
+
+                // S_ij = dot(Q[qi], K[kj]) * scale
+                float dot = 0.f;
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++)
+                    dot = __fmaf_rn(q_smem[i * kFaDh + d], k_smem[tid * kFaDh + d], dot);
+                float s = dot * scale;
+                if (qi < kj) s = -INFINITY;  // causal
+
+                // P_ij = exp(S_ij - LSE[qi])
+                float lse_qi = LSEp[qi];
+                float p = (s == -INFINITY) ? 0.f : __expf(s - lse_qi);
+
+                // dV[kj] += P_ij * dO[qi]  → accumulate in dv_reg
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++)
+                    dv_reg[d] = __fmaf_rn(p, do_smem[i * kFaDh + d], dv_reg[d]);
+
+                // dP_ij = dot(dO[qi], V[kj])
+                float dp = 0.f;
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++)
+                    dp = __fmaf_rn(do_smem[i * kFaDh + d], v_smem[tid * kFaDh + d], dp);
+
+                // dS_ij = P_ij * (dP_ij - D[qi]) * scale
+                float ds = p * (dp - Dp[qi]) * scale;
+
+                // dK[kj] += dS_ij * Q[qi]
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++)
+                    dk_reg[d] = __fmaf_rn(ds, q_smem[i * kFaDh + d], dk_reg[d]);
+            }
+        }
+        __syncthreads();
+    }
+
+    // Write dK, dV
+    if (kj < S) {
+        #pragma unroll
+        for (int d = 0; d < kFaDh; d++) {
+            dKp[kj * kFaDh + d] = dk_reg[d];
+            dVp[kj * kFaDh + d] = dv_reg[d];
+        }
+    }
+}
+
+// ----------------------------------------------------------------
+//  Backward: dQ
+//  One block per (bh, q_tile).  Block: kFaBr threads.
+//  Each block iterates over KV tiles (causal: only kv_t with kv_start <= qi).
+//  Shared memory:
+//    q_smem [kFaBr][kFaDh]   — query tile (fixed)
+//    do_smem[kFaBr][kFaDh]   — dO tile (fixed)
+//    k_smem [kFaBc][kFaDh]   — key tile (per KV step)
+//    s_smem [kFaBc][kFaBr]   — transposed S/dS, s_smem[j][i]
+// ----------------------------------------------------------------
+__global__ void __launch_bounds__(kFaBr)
+flash_attn_bwd_dq_kernel(
+    const float* __restrict__ Q,    // [BH, S, Dh]
+    const float* __restrict__ K,    // [BH, S, Dh]
+    const float* __restrict__ V,    // [BH, S, Dh]
+    const float* __restrict__ dO,   // [BH, S, Dh]
+    const float* __restrict__ LSE,  // [BH, S]
+    const float* __restrict__ D,    // [BH, S]
+    float* __restrict__ dQ,         // [BH, S, Dh]
+    int BH, int S, float scale)
+{
+    const int num_q_tiles = (S + kFaBr - 1) / kFaBr;
+    const int bh     = blockIdx.x / num_q_tiles;
+    const int q_tile = blockIdx.x % num_q_tiles;
+    if (bh >= BH) return;
+
+    const int tid = threadIdx.x;
+    const int qi  = q_tile * kFaBr + tid;
+
+    const ptrdiff_t bh_off = (ptrdiff_t)bh * S * kFaDh;
+    const float* Qp   = Q   + bh_off;
+    const float* Kp   = K   + bh_off;
+    const float* Vp   = V   + bh_off;
+    const float* dOp  = dO  + bh_off;
+    const float* LSEp = LSE + (ptrdiff_t)bh * S;
+    const float* Dp   = D   + (ptrdiff_t)bh * S;
+    float*       dQp  = dQ  + bh_off;
+
+    extern __shared__ float smem[];
+    float* q_smem  = smem;                                          // [kFaBr][kFaDh]
+    float* do_smem = q_smem  + kFaBr * kFaDh;                     // [kFaBr][kFaDh]
+    float* k_smem  = do_smem + kFaBr * kFaDh;                     // [kFaBc][kFaDh]
+    float* v_smem  = k_smem  + kFaBc * kFaDh;                     // [kFaBc][kFaDh]
+    float* s_smem  = v_smem  + kFaBc * kFaDh;                     // [kFaBc][kFaBr] transposed
+
+    // Load Q and dO tiles once
+    if (qi < S) {
+        #pragma unroll
+        for (int d = 0; d < kFaDh; d++) {
+            q_smem [tid * kFaDh + d] = Qp [qi * kFaDh + d];
+            do_smem[tid * kFaDh + d] = dOp[qi * kFaDh + d];
+        }
+    } else {
+        #pragma unroll
+        for (int d = 0; d < kFaDh; d++) {
+            q_smem [tid * kFaDh + d] = 0.f;
+            do_smem[tid * kFaDh + d] = 0.f;
+        }
+    }
+    __syncthreads();
+
+    float dq_reg[kFaDh];
+    #pragma unroll
+    for (int d = 0; d < kFaDh; d++) dq_reg[d] = 0.f;
+
+    float mi  = (qi < S) ? LSEp[qi] : 0.f;
+    float di  = (qi < S) ? Dp  [qi] : 0.f;
+
+    const int num_kv_tiles = (S + kFaBc - 1) / kFaBc;
+
+    for (int kv_t = 0; kv_t < num_kv_tiles; kv_t++) {
+        const int kv_start = kv_t * kFaBc;
+        if (kv_start > q_tile * kFaBr + kFaBr - 1) break;  // causal: no more valid KV tiles
+
+        // Load K and V tiles
+        for (int row = tid; row < kFaBc; row += kFaBr) {
+            const int kj = kv_start + row;
+            if (kj < S) {
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++) {
+                    k_smem[row * kFaDh + d] = Kp[kj * kFaDh + d];
+                    v_smem[row * kFaDh + d] = Vp[kj * kFaDh + d];
+                }
+            } else {
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++) {
+                    k_smem[row * kFaDh + d] = 0.f;
+                    v_smem[row * kFaDh + d] = 0.f;
+                }
+            }
+        }
+        __syncthreads();
+
+        if (qi < S) {
+            // Each thread computes its query row across all Bc KV positions
+            #pragma unroll
+            for (int j = 0; j < kFaBc; j++) {
+                const int kj = kv_start + j;
+                if (kj >= S) break;
+
+                // S_ij = dot(Q[qi], K[kj]) * scale
+                float dot = 0.f;
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++)
+                    dot = __fmaf_rn(q_smem[tid * kFaDh + d], k_smem[j * kFaDh + d], dot);
+                float s = dot * scale;
+                if (qi < kj) s = -INFINITY;
+
+                float p = (s == -INFINITY) ? 0.f : __expf(s - mi);
+
+                // dP_ij = dot(dO[qi], V[kj])
+                float dp = 0.f;
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++)
+                    dp = __fmaf_rn(do_smem[tid * kFaDh + d], v_smem[j * kFaDh + d], dp);
+
+                float ds = p * (dp - di) * scale;
+
+                // dQ[qi] += dS_ij * K[kj]
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++)
+                    dq_reg[d] = __fmaf_rn(ds, k_smem[j * kFaDh + d], dq_reg[d]);
+            }
+        }
+        __syncthreads();
+    }
+
+    if (qi < S) {
+        #pragma unroll
+        for (int d = 0; d < kFaDh; d++)
+            dQp[qi * kFaDh + d] = dq_reg[d];
+    }
+}
+
+// ----------------------------------------------------------------
+//  Host-side launchers
+// ----------------------------------------------------------------
+static bool flash_attn_fwd_run(
+        const float* d_q, const float* d_k, const float* d_v,
+        float* d_o, float* d_lse,
+        int BH, int S, float scale)
+{
+    const int num_q_tiles = (S + kFaBr - 1) / kFaBr;
+    const int grid = BH * num_q_tiles;
+    constexpr size_t smem =
+        (kFaBr + 2 * kFaBc) * kFaDh * sizeof(float)   // q + k + v tiles
+        + kFaBc * kFaBr * sizeof(float);               // s_smem [kFaBc][kFaBr]
+    flash_attn_fwd_kernel<<<grid, kFaBr, smem, kTensorCudaStream>>>(
+            d_q, d_k, d_v, d_o, d_lse, BH, S, scale);
+    return cudaPeekAtLastError() == cudaSuccess;
+}
+
+static bool flash_attn_bwd_run(
+        const float* d_q, const float* d_k, const float* d_v,
+        const float* d_o, const float* d_do,
+        const float* d_lse,
+        float* d_dq, float* d_dk, float* d_dv,
+        int BH, int S, float scale)
+{
+    // 1. Compute D[bh][qi] = dot(dO[qi], O[qi])
+    const int total_rows = BH * S;
+    const int d_grid = (total_rows + 63) / 64;
+    flash_attn_compute_D_kernel<<<d_grid, 64, 0, kTensorCudaStream>>>(
+            d_do, d_o, tl_fa_D, BH, S);
+    if (cudaPeekAtLastError() != cudaSuccess) return false;
+
+    // 2. dK, dV kernel (one block per kv_tile)
+    constexpr size_t smem_dkdv =
+        2 * kFaBc * kFaDh * sizeof(float)                                // k + v fixed
+        + 2 * kFaBr * kFaDh * sizeof(float)                              // q + do per q_tile
+        + kFaBr * kFaBc * sizeof(float);                                 // s_smem [Br][Bc]
+    const int num_kv_tiles = (S + kFaBc - 1) / kFaBc;
+    flash_attn_bwd_dkdv_kernel<<<BH * num_kv_tiles, kFaBc, smem_dkdv, kTensorCudaStream>>>(
+            d_q, d_k, d_v, d_do, d_lse, tl_fa_D,
+            d_dk, d_dv, BH, S, scale);
+    if (cudaPeekAtLastError() != cudaSuccess) return false;
+
+    // 3. dQ kernel (one block per q_tile)
+    constexpr size_t smem_dq =
+        2 * kFaBr * kFaDh * sizeof(float)                                // q + do fixed
+        + 2 * kFaBc * kFaDh * sizeof(float)                              // k + v per kv_tile
+        + kFaBc * kFaBr * sizeof(float);                                 // s_smem [Bc][Br] transposed
+    const int num_q_tiles = (S + kFaBr - 1) / kFaBr;
+    flash_attn_bwd_dq_kernel<<<BH * num_q_tiles, kFaBr, smem_dq, kTensorCudaStream>>>(
+            d_q, d_k, d_v, d_do, d_lse, tl_fa_D,
+            d_dq, BH, S, scale);
+    return cudaPeekAtLastError() == cudaSuccess;
 }
 
 // ========== JNI ==========
@@ -5145,11 +5712,83 @@ void jgpt_cuda_extra_cleanup(void) {
         tl_graph_sdpa_warmup = nullptr;
         tl_graph_sdpa_warmup_bytes = 0;
     }
+    if (tl_attn_fwd_aux != nullptr) {
+        cudaFree(tl_attn_fwd_aux);
+        tl_attn_fwd_aux = nullptr;
+        tl_attn_fwd_aux_total = 0;
+    }
+    if (tl_attn_fwd_graph_aux != nullptr) {
+        cudaFree(tl_attn_fwd_graph_aux);
+        tl_attn_fwd_graph_aux = nullptr;
+        tl_attn_fwd_graph_aux_total = 0;
+    }
     ce_free_cached();
     softmax_pair_free_cached();
     adamw_pool_free_cached();
     attn_bwd_host_free_cached();
     attn_bwd_aux_free_cached();
+    if (tl_fa_lse != nullptr) { cudaFree(tl_fa_lse); tl_fa_lse = nullptr; tl_fa_lse_bytes = 0; }
+    if (tl_fa_D   != nullptr) { cudaFree(tl_fa_D);   tl_fa_D   = nullptr; tl_fa_D_bytes   = 0; }
+}
+
+// ----------------------------------------------------------------
+//  JNI: Flash Attention Forward (GPU-resident, causal)
+//  Q/K/V/O = [BH, S, Dh=kFaDh].  dLSEPtr = device float[BH*S].
+//  S must be divisible by kFaBr (= 64); for padding caller truncates.
+// ----------------------------------------------------------------
+JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionForwardGPUDeviceResident(
+    JNIEnv* env, jclass clazz,
+    jlong dQPtr, jlong dKPtr, jlong dVPtr, jlong dOutPtr, jlong dLSEPtr,
+    jint BH, jint S, jfloat scale)
+{
+    (void) env; (void) clazz;
+    if (!dQPtr || !dKPtr || !dVPtr || !dOutPtr || !dLSEPtr || BH <= 0 || S <= 0) return;
+
+    size_t lse_bytes = (size_t)BH * S * sizeof(float);
+    /* dLSEPtr points to the caller's pre-allocated device buffer. */
+    jgpt_cuda_ensure_stream();
+    flash_attn_fwd_run(
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dQPtr)),
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dKPtr)),
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dVPtr)),
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dOutPtr)),
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dLSEPtr)),
+        BH, S, scale);
+}
+
+// ----------------------------------------------------------------
+//  JNI: Flash Attention Backward (GPU-resident, causal)
+//  dO  = upstream gradient of O  [BH, S, Dh]
+//  O   = forward output           [BH, S, Dh]  (cached, for D computation)
+//  LSE = log-sum-exp from fwd     [BH, S]
+//  Outputs: dQ, dK, dV           [BH, S, Dh]
+// ----------------------------------------------------------------
+JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionBackwardGPUDeviceResident(
+    JNIEnv* env, jclass clazz,
+    jlong dQPtr, jlong dKPtr, jlong dVPtr,
+    jlong dOPtr, jlong dOGradPtr, jlong dLSEPtr,
+    jlong dGradQPtr, jlong dGradKPtr, jlong dGradVPtr,
+    jint BH, jint S, jfloat scale)
+{
+    (void) env; (void) clazz;
+    if (!dQPtr || !dKPtr || !dVPtr || !dOPtr || !dOGradPtr || !dLSEPtr
+            || !dGradQPtr || !dGradKPtr || !dGradVPtr || BH <= 0 || S <= 0) return;
+
+    size_t D_bytes = (size_t)BH * S * sizeof(float);
+    if (!fa_ensure_D(D_bytes)) return;
+
+    jgpt_cuda_ensure_stream();
+    flash_attn_bwd_run(
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dQPtr)),
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dKPtr)),
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dVPtr)),
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dOPtr)),
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dOGradPtr)),
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dLSEPtr)),
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dGradQPtr)),
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dGradKPtr)),
+        reinterpret_cast<float*>(static_cast<uintptr_t>(dGradVPtr)),
+        BH, S, scale);
 }
 
 #ifdef __cplusplus

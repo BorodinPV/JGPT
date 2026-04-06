@@ -8,20 +8,26 @@
 #   - делает resume после каждого переключения
 #
 # Иерархия пресетов (от быстрого к безопасному):
-#   00-max-throughput → 01-aggressive → 02-stable → 03-recovery
+#   00-max-throughput → 01-aggressive → 02-stable → 03-recovery → 04-minimal
 #
 # Использование:
 #   ./scripts/jgpt-smart.sh                    # с текущего пресета
 #   ./scripts/jgpt-smart.sh 01-aggressive      # явный стартовый пресет
 #   Ctrl+C — остановить (checkpoint сохраняется через shutdown hook)
+#
+# Запуск Java: тот же модуль, что train-e2e-gpu.sh (scripts/jgpt-gpu-train-lib.sh) — без цепочки
+# jgpt-smart → train-e2e-gpu → run-training.
 # =============================================================
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=scripts/jgpt-gpu-train-lib.sh
+source "$ROOT/scripts/jgpt-gpu-train-lib.sh"
+
 # ─── Конфигурация ─────────────────────────────────────────────
-PRESETS=("00-max-throughput" "01-aggressive" "02-stable" "03-recovery")
+PRESETS=("00-max-throughput" "01-aggressive" "02-stable" "03-recovery" "04-minimal")
 # Сколько eval без улучшения eval_loss чтобы считать "стабильным прогрессом"
 STABLE_EVALS_FOR_UPGRADE=30
 # Сколько OOM-строк в новом сегменте лога = сигнал к downgrade
@@ -199,18 +205,25 @@ banner() {
 while true; do
     apply_preset "$CURRENT_IDX"
     PRESET_NAME="$APPLIED_PRESET_NAME"
+    # Имя/индекс пресета в state/stats.json для dashboard.html (перекрывает значение из .env при необходимости).
+    export JGPT_STATS_PRESET="${PRESETS[$CURRENT_IDX]}"
+    export JGPT_STATS_PRESET_IDX="$CURRENT_IDX"
     UPGRADE_STABLE_EVALS=0
     banner
 
-    # Запуск обучения: stdout+stderr → tee (консоль И файл)
+    # Запуск обучения: stdout+stderr → tee (консоль И файл).
     # Трюк: subshell пишет свой PID до exec — тот же PID сохраняется после exec.
-    # Все JGPT_* уже в env текущего shell (apply_preset сделал set -a; source),
-    # поэтому subshell наследует их автоматически.
+    # JGPT_* из пресета наследуются в subshell; cmake + e2e-дефолты — внутри (jgpt-gpu-train-lib.sh).
     LOG_START_LINE=$(( $(wc -l < "$LOG_FILE" 2>/dev/null || echo 0) + 1 ))
     rm -f "$PID_FILE"
     (
         echo $BASHPID > "$PID_FILE"
-        exec "$ROOT/scripts/train-e2e-gpu.sh" allbooks
+        jgpt__maven_opts
+        jgpt__export_train_env
+        jgpt_e2e_train_overrides
+        jgpt_cmake_build_cuda
+        jgpt_resolve_mvn_command e2e allbooks
+        exec "${JGPT_EXEC_CMD[@]}"
     ) 2>&1 | tee -a "$LOG_FILE" &
 
     # Ждём пока subshell запишет PID (обычно < 0.5s)
@@ -286,9 +299,18 @@ while true; do
         stop_training
     fi
 
-    wait "$TRAIN_PID" 2>/dev/null || true
-    EXIT_CODE=$?
+    EXIT_CODE=0
+    wait "$TRAIN_PID" 2>/dev/null || EXIT_CODE=$?
     rm -f "$PID_FILE"
+
+    # Post-mortem: мгновенный OOM (процесс упал раньше чем монитор проснулся)
+    if [[ -z "$STOP_REASON" ]]; then
+        OOM_COUNT=$(count_pattern_from_line "$LOG_FILE" \
+            "cudaMalloc failed|out of memory|OutOfMemoryError" "$LOG_START_LINE")
+        if [[ "$OOM_COUNT" -ge "$OOM_THRESHOLD" ]]; then
+            STOP_REASON="OOM (мгновенный крэш, $OOM_COUNT раз)"
+        fi
+    fi
 
     # ── Решение после завершения ────────────────────────────────
     if [[ -z "$STOP_REASON" ]] && [[ "$EXIT_CODE" -eq 0 ]]; then

@@ -14,7 +14,7 @@ import java.util.Locale;
 public final class TrainingTimings {
 
     /** Одна строка для основного лога + необязательный многострочный блок (сбрасывает окно один раз). */
-    public record WindowLog(String inline, String detailMultiline) {
+    public record WindowLog(String inline, String detailMultiline, double tokensPerSec) {
         public boolean isEmpty() {
             return (inline == null || inline.isEmpty()) && (detailMultiline == null || detailMultiline.isEmpty());
         }
@@ -73,7 +73,7 @@ public final class TrainingTimings {
      */
     public WindowLog formatForLogAndReset() {
         if (!enabled || winOptimizerSteps <= 0) {
-            return new WindowLog("", "");
+            return new WindowLog("", "", 0.0);
         }
         double ms = 1e-6;
         int steps = winOptimizerSteps;
@@ -111,6 +111,6 @@ public final class TrainingTimings {
                                 + "   токенов/с: %.0f",
                         LogFmt.badge("PERF"),
                         f, l, b, o, t, tokPerSec);
-        return new WindowLog(inline, detail);
+        return new WindowLog(inline, detail, tokPerSec);
     }
 }

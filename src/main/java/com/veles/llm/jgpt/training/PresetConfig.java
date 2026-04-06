@@ -26,7 +26,8 @@ public record PresetConfig(
                     new PresetConfig("00-max-throughput", 1024, 4, 512, 65536f, 65536f, 50, 20, 0),
                     new PresetConfig("01-aggressive", 1024, 1, 512, 65536f, 65536f, 50, 20, 500),
                     new PresetConfig("02-stable", 1024, 1, 256, 16384f, 65536f, 60, 30, 500),
-                    new PresetConfig("03-recovery", 1024, 1, 64, 4096f, 16384f, 100, 50, 0));
+                    new PresetConfig("03-recovery", 1024, 1, 64, 4096f, 16384f, 100, 50, 0),
+                    new PresetConfig("04-minimal", 1024, 1, 32, 2048f, 8192f, 120, 80, 0));
 
     /** Создаёт {@link DynamicLossScaler} для FP16 matmul согласно полям пресета. */
     public DynamicLossScaler createLossScaler() {

@@ -61,11 +61,14 @@
 | Меньше launch’ов в attention: Q/K/V после первой RMSNorm — один `cublasSgemmStridedBatched` (упаковка `Wq|Wk|Wv`, `stride=0` для общего `X`) через `TensorOpsGPU.matmulGpuDeviceQkvProjections` вместо трёх `matmulGpuDeviceEx` на resident-пути | **Сделано** |
 | Меньше launch’ов в SwiGLU FFN: `W1` и `W3` после второй RMSNorm — один `cublasSgemmStridedBatched` (`matmulGpuDeviceFfnW1W3Projections`) вместо двух `matmulGpuDeviceEx` | **Сделано** |
 | Один **CUDA graph** на полный декодер-слой (MHA+FFN) на `kTensorCudaStream`: env `JGPT_DECODER_LAYER_CUDA_GRAPH=1` / `-Djgpt.decoder.layer.cudaGraph=true` (см. `TensorOpsGPU.cudaStreamBeginCapture`, `GPTModel#runDecoderStackLayers`); при ошибке захвата — откат на обычные launch’ы | **Сделано** (graph; не single-kernel) |
+| **Фикс CUDA graph: `tl_attn_fwd_aux` → `tl_attn_fwd_graph_aux`** — `attn_fwd_aux_ensure_qk_probs_only` (graph-путь) и `attn_fwd_aux_ensure` (non-graph, с mask-слотом) использовали один и тот же thread-local буфер. Генерация текста вызывала `scaledDotProductAttentionForwardGPUDevice` с маской → буфер перевыделялся → GPU-адреса в захваченном графе устаревали → `cudaGraphLaunch failed: illegal memory access`. Исправлено разделением на два независимых буфера в `jgpt_cuda_extra.cu`. | **Сделано** |
 | Resident SDPA без `cudaStreamSynchronize` на probs: device-маска + D2H probs убраны с горячего пути (`scaledDotProductAttentionForwardGpuDeviceResident`) | **Сделано** |
 | Fusion RMS→GEMM до `W1+W3`: env `JGPT_FUSED_FFN_RMS_W1W3=1` (`rmsNormMatmulFfnW1W3GpuDevice`, один JNI vs RMS + `matmulGpuDeviceFfnW1W3Projections`) | **Сделано** |
 | Дальше: **single mega-kernel** / FlashAttention | План |
 | Единый контракт **скаляра CE** + fused по direct/pinned: `TensorOpsGPU.crossEntropySoftmaxGradLossGpuDirectEx` (JNI `crossEntropySoftmaxGradLossGPUDirect`); device CE: `uploadTokenIdsFromFloatDirectToGpuInt` / `copyHostFloatBufferToGpuIntTokenIds` без цикла `float[]`→`int[]` на direct target | **Сделано** |
 | Resident `clipAndOptimizerStep` при `allDirtyTargetsHaveGpuTensor`: merge-first, finite на VRAM, `unscaleGpuDeviceGrads`, clip на device, один D2H перед Adam; иначе `flushAllToHost`; full-GPU шаг без `accumulateAddGpuFromHost` | **Сделано** |
+| **`TrainingStatsWriter`**: атомарная запись `state/stats.json` (tmp→rename) после каждого шага, eval, сэмпла, overflow; читается `dashboard.html` (Chart.js, автообновление 30 с) | **Сделано** |
+| **`SmartTrainingSupervisor`** + **`PresetDecider`** + **`TrainingEventCallback`**: вся адаптивная логика переключения пресетов перенесена из bash в Java; один JVM на всё обучение; `jgpt-smart.sh` стал тонкой (~60 строк) обёрткой | **Сделано** |
 
 ---
 

@@ -235,10 +235,22 @@ public final class DataLoader {
         log.info("Собрано обучающих окон (последовательностей): {}", count);
     }
 
+    /** Как {@link #shuffle(boolean)} с одной строкой в лог. */
     public void shuffle() {
+        shuffle(true);
+    }
+
+    /**
+     * Перемешать последовательности и сбросить указатель батча.
+     *
+     * @param logInfo если {@code false} — без INFO (для серии shuffle при resume чекпоинта, см. {@code LLMTrainer}).
+     */
+    public void shuffle(boolean logInfo) {
         Collections.shuffle(sequences, random);
         currentIndex = 0;
-        log.info("Данные перемешаны (новый порядок батчей на эпоху).");
+        if (logInfo) {
+            log.info("Данные перемешаны (новый порядок батчей на эпоху).");
+        }
     }
 
     public boolean hasMore() {

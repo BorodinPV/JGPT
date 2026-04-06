@@ -233,10 +233,15 @@
   <div class="logo">JGPT <span>Training Dashboard</span></div>
   <div class="header-right">
     <span id="updated">—</span>
-    <label id="auto-refresh"><input type="checkbox" id="auto-chk" checked> Авто (30с)</label>
+    <label id="auto-refresh"><input type="checkbox" id="auto-chk" checked> <span id="auto-refresh-label"></span></label>
     <button id="refresh-btn" onclick="loadStats()">↻ Обновить</button>
   </div>
 </header>
+<p id="file-protocol-hint" style="display:none;color:var(--yellow);font-size:12px;margin:-12px 0 16px;">
+  Открыт как file:// — браузер часто блокирует загрузку <code>state/stats.json</code>.
+  Запустите из корня репозитория: <code>python3 -m http.server 8765</code> →
+  <code>http://localhost:8765/dashboard.html</code>
+</p>
 
 <!-- ROW 1: Ключевые метрики -->
 <div class="grid-4" id="row-stats"></div>
@@ -297,6 +302,23 @@
 </div>
 
 <script>
+const STATS_URL = (() => {
+  const q = new URLSearchParams(location.search).get('stats');
+  return (q && q.trim()) ? q.trim() : 'state/stats.json';
+})();
+const AUTO_REFRESH_MS = (() => {
+  const q = new URLSearchParams(location.search).get('refresh');
+  const n = q != null ? parseInt(q, 10) : NaN;
+  return Number.isFinite(n) && n >= 2 ? n * 1000 : 5000;
+})();
+if (location.protocol === 'file:') {
+  const h = document.getElementById('file-protocol-hint');
+  if (h) h.style.display = 'block';
+}
+{
+  const el = document.getElementById('auto-refresh-label');
+  if (el) el.textContent = 'Авто (' + Math.round(AUTO_REFRESH_MS / 1000) + 'с)';
+}
 // ─── Chart defaults ───────────────────────────────────────────
 Chart.defaults.color = '#64748b';
 Chart.defaults.borderColor = '#2a2d3e';
@@ -555,7 +577,8 @@ function escHtml(s) {
 // ─── Загрузка данных ──────────────────────────────────────────
 async function loadStats() {
   try {
-    const resp = await fetch('state/stats.json?t=' + Date.now());
+    const url = STATS_URL + (STATS_URL.includes('?') ? '&' : '?') + 't=' + Date.now();
+    const resp = await fetch(url, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
     render(data);
@@ -570,7 +593,7 @@ let autoTimer = null;
 function setupAuto() {
   clearInterval(autoTimer);
   if ($('auto-chk').checked)
-    autoTimer = setInterval(loadStats, 30000);
+    autoTimer = setInterval(loadStats, AUTO_REFRESH_MS);
 }
 $('auto-chk').addEventListener('change', setupAuto);
 

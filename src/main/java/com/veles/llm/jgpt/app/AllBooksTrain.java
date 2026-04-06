@@ -260,12 +260,31 @@ public final class AllBooksTrain {
             log.info("[CKPT] JGPT_FINETUNE=1 — чекпоинт не найден, обучение с нуля");
         }
 
-        // Graceful shutdown: при Ctrl+C сохранить финальный checkpoint
+        // Фиксируем шаг на момент старта — нужен shutdown-hook'у для определения прогресса
+        final int stepAtTrainStart = trainer.getGlobalStep();
+
+        if (TensorOpsGPU.isGpuAvailable()) {
+            long usedMb = TensorOpsGPU.getGpuMemoryAllocated() / (1024 * 1024);
+            long totalMb = TensorOpsGPU.getGpuMemoryReserved() / (1024 * 1024);
+            log.info("[VRAM] до старта обучения: занято {} МиБ / {} МиБ (свободно {} МиБ)",
+                    usedMb, totalMb, totalMb - usedMb);
+        }
+
+        // Graceful shutdown: при Ctrl+C сохранить финальный checkpoint.
+        // ВАЖНО: если прогресса нет (OOM при первом шаге), НЕ перезаписываем checkpoint_final.bin
+        // чтобы не затереть эпоху из предыдущего запуска.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("[SHUTDOWN] Получен сигнал остановки — сохраняем checkpoint...");
             try {
-                trainer.saveCheckpoint("final");
-                log.info("[SHUTDOWN] checkpoint сохранён. Возобновление: ./scripts/jgpt-start.sh");
+                if (trainer.getGlobalStep() > stepAtTrainStart) {
+                    trainer.saveCheckpoint("final");
+                    log.info("[SHUTDOWN] checkpoint сохранён. Возобновление: ./scripts/jgpt-start.sh");
+                } else {
+                    trainer.saveCheckpoint("emergency");
+                    log.warn("[SHUTDOWN] Нет прогресса (шаг {} = старт) — checkpoint_final.bin НЕ перезаписан. "
+                            + "Аварийный: checkpoint_emergency.bin",
+                            stepAtTrainStart);
+                }
             } catch (Exception e) {
                 log.warn("[SHUTDOWN] Не удалось сохранить checkpoint: {}", e.getMessage());
             }

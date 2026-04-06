@@ -277,6 +277,14 @@ public final class GPTModel {
 
     private GpuFloatBuffer decoderChainPong;
 
+    /**
+     * Strided-batched QKV/FFN pack на VRAM при {@link #decoderLayerCudaGraphWanted}: фиксированные указатели для
+     * {@link TensorOpsGPU#setStridedBatchedPackOverride} на время {@link #runDecoderStackLayers} (инвариант CUDA graph).
+     */
+    private GpuFloatBuffer decoderGraphStridedPackW;
+
+    private GpuFloatBuffer decoderGraphStridedPackC;
+
     /** RMSNorm перед LM head на VRAM ({@link #forwardGpuLmHeadFromDevice}). */
     private GpuFloatBuffer lmHeadNormScratchGpu;
 
@@ -548,7 +556,7 @@ public final class GPTModel {
         destroyDecoderLayerCudaGraphs();
         decoderLayerGraphCaptureKey = Integer.MIN_VALUE;
         if (decoderLayerCudaGraphWanted) {
-            log.warn("JGPT_DECODER_LAYER_CUDA_GRAPH: отключён (" + reason + "), используется обычный launch-путь.");
+            log.warn("JGPT_DECODER_LAYER_CUDA_GRAPH: отключён ({}).", reason);
         }
     }
 
@@ -559,7 +567,39 @@ public final class GPTModel {
         if (trainingStep && blockCachesDevice != null && blockCachesDevice.length > 0 && blockCachesDevice[0] != null) {
             cacheFp16 = blockCachesDevice[0].isFp16ActivationStorage() ? 1 : 0;
         }
-        return Objects.hash(batch, seqLen, dModel, numHeads, maskId, fp16Mm, cacheFp16);
+        /*
+         * Обязательно различать training vs infer в ключе: при cacheFp16==0 (нет FP16-хранения в кэше) и одинаковых
+         * batch/seq/mask ключ совпадал бы с {@link #forwardGpuDecoderInfer} (layerCache=null), и следующий train-step
+         * мог бы replay графа без записи активаций в {@link BlockActivationCacheDevice} → битый backward / non-finite.
+         */
+        int trainMode = trainingStep ? 1 : 0;
+        return Objects.hash(batch, seqLen, dModel, numHeads, maskId, fp16Mm, cacheFp16, trainMode);
+    }
+
+    /**
+     * Гарантирует pack-буферы под decoder CUDA graph; при росте — сбрасывает exec (новые указатели).
+     */
+    private void ensureDecoderGraphStridedPacks(long rows) {
+        long[] need = TensorOpsGPU.stridedBatchedPackNeed(rows, dModel, dIntermediate);
+        long wNeed = need[0];
+        long cNeed = need[1];
+        boolean needGrow =
+                decoderGraphStridedPackW == null
+                        || decoderGraphStridedPackW.isClosed()
+                        || decoderGraphStridedPackW.numFloats() < wNeed
+                        || decoderGraphStridedPackC == null
+                        || decoderGraphStridedPackC.isClosed()
+                        || decoderGraphStridedPackC.numFloats() < cNeed;
+        if (!needGrow) {
+            return;
+        }
+        destroyDecoderLayerCudaGraphs();
+        /* Не сбрасывать decoderLayerGraphCaptureKey: он уже совпадает с текущим nk из runDecoderStackLayers;
+         * иначе на следующем forward сработает ложное «ключ изменился» и графы пересоздадутся дважды подряд. */
+        decoderGraphStridedPackW = closeGpuBuffer(decoderGraphStridedPackW);
+        decoderGraphStridedPackC = closeGpuBuffer(decoderGraphStridedPackC);
+        decoderGraphStridedPackW = GpuFloatBuffer.allocate(wNeed);
+        decoderGraphStridedPackC = GpuFloatBuffer.allocate(cNeed);
     }
 
     private boolean runDecoderLayerResidentEager(
@@ -623,67 +663,111 @@ public final class GPTModel {
             }
         }
 
-        GpuFloatBuffer cur = xDevice;
-        for (int i = 0; i < numLayers; i++) {
-            GpuFloatBuffer attnOut = decoderScratchOther(cur, decoderChainPing, decoderChainPong);
-            GpuFloatBuffer blockOut = decoderScratchOther(attnOut, decoderChainPing, decoderChainPong);
-            BlockActivationCacheDevice layerCache = cachesPerLayer != null ? cachesPerLayer[i] : null;
+        boolean stridedPackOverride = false;
+        if (wantGraph) {
+            ensureDecoderGraphStridedPacks((long) batch * seqLen);
+            TensorOpsGPU.setStridedBatchedPackOverride(
+                    decoderGraphStridedPackW.devicePointer(),
+                    decoderGraphStridedPackC.devicePointer(),
+                    decoderGraphStridedPackW.numFloats(),
+                    decoderGraphStridedPackC.numFloats());
+            stridedPackOverride = true;
+        }
+        try {
+            GpuFloatBuffer cur = xDevice;
+            if (wantGraph && mask != null) {
+                /*
+                 * Один H2D маски на весь decoder-stack: при replay граф не содержит upload; при capture skip H2D
+                 * внутри графа полагается на уже заполненный maskDev (см. TensorOps).
+                 */
+                TensorOps.primeDecoderGraphAttentionMaskDevice(mask, seqLen);
+            }
+            for (int i = 0; i < numLayers; i++) {
+                GpuFloatBuffer attnOut = decoderScratchOther(cur, decoderChainPing, decoderChainPong);
+                GpuFloatBuffer blockOut = decoderScratchOther(attnOut, decoderChainPing, decoderChainPong);
+                BlockActivationCacheDevice layerCache = cachesPerLayer != null ? cachesPerLayer[i] : null;
 
-            boolean executed = false;
-            if (wantGraph && !decoderLayerGraphRuntimeDisabled) {
-                long ex = decoderLayerGraphExec[i];
-                if (ex != 0L) {
-                    TensorOpsGPU.cudaGraphExecLaunch(ex);
-                    executed = true;
-                } else {
-                    TensorOps.primeDecoderGraphAttentionMaskDevice(mask, seqLen);
-                    TensorOpsGPU.ensureStridedBatchedPackScratch(
-                            (long) batch * seqLen, dModel, dIntermediate);
-                    TensorOps.primeDecoderGraphLayerWorkspaces(
-                            batch, seqLen, dModel, numHeads, dIntermediate, mask, layerCache);
-                    TensorOpsGPU.synchronizeStream();
-                    if (!TensorOpsGPU.cudaStreamBeginCapture()) {
-                        disableDecoderLayerCudaGraph("cudaStreamBeginCapture failed");
+                boolean executed = false;
+                if (wantGraph && !decoderLayerGraphRuntimeDisabled) {
+                    long ex = decoderLayerGraphExec[i];
+                    if (ex != 0L) {
+                        if (TensorOpsGPU.cudaGraphExecLaunch(ex)) {
+                            executed = true;
+                        } else {
+                            disableDecoderLayerCudaGraph("cudaGraphLaunch failed");
+                            /*
+                             * После ошибки запуска графа (часто illegal memory) дальнейшие kernel'ы в этом процессе
+                             * ненадёжны; eager-fallback лишь множит ошибки (cuBLAS 14, FFN и т.д.). Требуется новый JVM.
+                             */
+                            throw new IllegalStateException(
+                                    "cudaGraphLaunch не удался — контекст CUDA считается недействительным. "
+                                            + "Перезапустите JVM. Чтобы не использовать decoder CUDA graph: не задавайте "
+                                            + "JGPT_DECODER_LAYER_CUDA_GRAPH=1 (графы включаются только явно).");
+                        }
                     } else {
-                        TensorOps.setDecoderGraphCaptureSkipAttentionMaskHostUpload(true);
-                        boolean captureStillActive = true;
-                        try {
-                            boolean ok =
-                                    runDecoderLayerResidentEager(
-                                            i, cur, attnOut, blockOut, mask, batch, seqLen, layerCache);
-                            long nexec = TensorOpsGPU.cudaStreamEndCaptureAndInstantiate();
-                            captureStillActive = false;
-                            if (!ok) {
-                                disableDecoderLayerCudaGraph("layer forward failed during capture");
-                                TensorOpsGPU.synchronizeStream();
-                                throw new IllegalStateException(
-                                        "decoder layer " + i + " during CUDA graph capture");
-                            }
-                            if (nexec == 0L) {
-                                disableDecoderLayerCudaGraph("cudaStreamEndCapture/instantiate failed");
-                                TensorOpsGPU.synchronizeStream();
-                                executed = true;
-                            } else {
-                                decoderLayerGraphExec[i] = nexec;
-                                executed = true;
-                            }
-                        } finally {
-                            TensorOps.setDecoderGraphCaptureSkipAttentionMaskHostUpload(false);
-                            if (captureStillActive) {
-                                TensorOpsGPU.abortCudaStreamCaptureIfActive();
+                        TensorOpsGPU.ensureStridedBatchedPackScratch(
+                                (long) batch * seqLen, dModel, dIntermediate);
+                        TensorOps.primeDecoderGraphLayerWorkspaces(
+                                batch, seqLen, dModel, numHeads, dIntermediate, mask, layerCache);
+                        TensorOpsGPU.synchronizeStream();
+                        if (!TensorOpsGPU.cudaStreamBeginCapture()) {
+                            disableDecoderLayerCudaGraph("cudaStreamBeginCapture failed");
+                        } else {
+                            TensorOps.setDecoderGraphCaptureSkipAttentionMaskHostUpload(true);
+                            boolean captureStillActive = true;
+                            try {
+                                boolean ok =
+                                        runDecoderLayerResidentEager(
+                                                i, cur, attnOut, blockOut, mask, batch, seqLen, layerCache);
+                                long nexec = TensorOpsGPU.cudaStreamEndCaptureAndInstantiate();
+                                captureStillActive = false;
+                                if (!ok) {
+                                    disableDecoderLayerCudaGraph("layer forward failed during capture");
+                                    TensorOpsGPU.synchronizeStream();
+                                    throw new IllegalStateException(
+                                            "decoder layer " + i + " during CUDA graph capture");
+                                }
+                                if (nexec == 0L) {
+                                    disableDecoderLayerCudaGraph("cudaStreamEndCapture/instantiate failed");
+                                    TensorOpsGPU.synchronizeStream();
+                                    /* граф не создан — захват не исполнял слой; нужен eager */
+                                    executed = false;
+                                } else {
+                                    decoderLayerGraphExec[i] = nexec;
+                                    /* Захват только записывает ядра, не исполняет их.
+                                     * Немедленно запускаем только что захваченный граф,
+                                     * чтобы blockOut был заполнен реальными данными. */
+                                    if (TensorOpsGPU.cudaGraphExecLaunch(nexec)) {
+                                        executed = true;
+                                    } else {
+                                        TensorOpsGPU.cudaGraphExecDestroy(nexec);
+                                        decoderLayerGraphExec[i] = 0L;
+                                        disableDecoderLayerCudaGraph("cudaGraphLaunch failed on capture step");
+                                        executed = false;
+                                    }
+                                }
+                            } finally {
+                                TensorOps.setDecoderGraphCaptureSkipAttentionMaskHostUpload(false);
+                                if (captureStillActive) {
+                                    TensorOpsGPU.abortCudaStreamCaptureIfActive();
+                                }
                             }
                         }
                     }
                 }
-            }
-            if (!executed) {
-                if (!runDecoderLayerResidentEager(i, cur, attnOut, blockOut, mask, batch, seqLen, layerCache)) {
-                    throw new IllegalStateException("decoder layer " + i + " (eager path)");
+                if (!executed) {
+                    if (!runDecoderLayerResidentEager(i, cur, attnOut, blockOut, mask, batch, seqLen, layerCache)) {
+                        throw new IllegalStateException("decoder layer " + i + " (eager path)");
+                    }
                 }
+                cur = blockOut;
             }
-            cur = blockOut;
+            return cur;
+        } finally {
+            if (stridedPackOverride) {
+                TensorOpsGPU.clearStridedBatchedPackOverride();
+            }
         }
-        return cur;
     }
 
     /**
@@ -736,6 +820,9 @@ public final class GPTModel {
     private void closeTrainingGpuBuffers() {
         destroyDecoderLayerCudaGraphs();
         decoderLayerGraphCaptureKey = Integer.MIN_VALUE;
+        TensorOpsGPU.clearStridedBatchedPackOverride();
+        decoderGraphStridedPackW = closeGpuBuffer(decoderGraphStridedPackW);
+        decoderGraphStridedPackC = closeGpuBuffer(decoderGraphStridedPackC);
         lastHiddenGpu = closeGpuBuffer(lastHiddenGpu);
         xBeforeFinalNormGpu = closeGpuBuffer(xBeforeFinalNormGpu);
         lastLogitsGpu = closeGpuBuffer(lastLogitsGpu);

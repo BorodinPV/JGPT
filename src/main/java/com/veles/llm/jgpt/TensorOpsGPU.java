@@ -188,6 +188,13 @@ public final class TensorOpsGPU {
     /** Устар.: раньше ограничивал CE на GPU; {@link #shouldUseGpuCrossEntropy} больше не использует порог. */
     private static final int CE_GPU_MIN_ELEMENTS;
 
+    /**
+     * FlashAttention-2 forward/backward вместо классического O(S²) softmax.
+     * Включается: {@code JGPT_FLASH_ATTENTION=1}.
+     * Требует d_head == 16 (kFaDh в CUDA).  При несоответствии автоматически отключается.
+     */
+    public static final boolean FLASH_ATTENTION;
+
     static {
         boolean available = false;
         String name = "Unknown";
@@ -244,6 +251,18 @@ public final class TensorOpsGPU {
         RMSNORM_EPS = resolveRmsNormEps(FP16_MATMUL);
 
         CE_GPU_MIN_ELEMENTS = resolveCeGpuMinElements();
+
+        boolean flashAttn = false;
+        try {
+            String v = System.getenv("JGPT_FLASH_ATTENTION");
+            if (v != null && ("1".equals(v.trim()) || "true".equalsIgnoreCase(v.trim()))) {
+                flashAttn = true;
+            }
+        } catch (Exception ignored) { }
+        FLASH_ATTENTION = flashAttn && available;
+        if (FLASH_ATTENTION) {
+            System.out.println("[TensorOpsGPU] FlashAttention-2: включён (d_head=16 обязателен)");
+        }
 
         if (!available && !allowNoGpuOverride()) {
             throw new ExceptionInInitializerError(
@@ -1260,7 +1279,54 @@ public final class TensorOpsGPU {
             float scale,
             boolean useFp16Softmax);
 
+    /** FlashAttention-2 forward (causal). Q/K/V/O=[BH,S,16], LSE=[BH,S]. BH=batch*numHeads. */
+    private static native void flashAttentionForwardGPUDeviceResident(
+            long dQPtr, long dKPtr, long dVPtr, long dOutPtr, long dLSEPtr,
+            int BH, int S, float scale);
+
+    /** FlashAttention-2 backward (causal). Q/K/V/O/dO/LSE → dQ/dK/dV. */
+    private static native void flashAttentionBackwardGPUDeviceResident(
+            long dQPtr, long dKPtr, long dVPtr,
+            long dOPtr, long dOGradPtr, long dLSEPtr,
+            long dGradQPtr, long dGradKPtr, long dGradVPtr,
+            int BH, int S, float scale);
+
+    /** Вызов FlashAttention-2 forward. BH = batch*numHeads, d_head должен быть 16. */
+    public static void flashAttentionForwardGpuDeviceResident(
+            GpuFloatBuffer dQ, GpuFloatBuffer dK, GpuFloatBuffer dV,
+            GpuFloatBuffer dOut, GpuFloatBuffer dLSE,
+            int BH, int S, float scale) {
+        requireCuda("TensorOpsGPU.flashAttentionForwardGpuDeviceResident");
+        flashAttentionForwardGPUDeviceResident(
+                dQ.devicePointer(), dK.devicePointer(), dV.devicePointer(),
+                dOut.devicePointer(), dLSE.devicePointer(),
+                BH, S, scale);
+    }
+
+    /** Вызов FlashAttention-2 backward. */
+    public static void flashAttentionBackwardGpuDeviceResident(
+            GpuFloatBuffer dQ, GpuFloatBuffer dK, GpuFloatBuffer dV,
+            GpuFloatBuffer dO, GpuFloatBuffer dOGrad, GpuFloatBuffer dLSE,
+            GpuFloatBuffer dGradQ, GpuFloatBuffer dGradK, GpuFloatBuffer dGradV,
+            int BH, int S, float scale) {
+        requireCuda("TensorOpsGPU.flashAttentionBackwardGpuDeviceResident");
+        flashAttentionBackwardGPUDeviceResident(
+                dQ.devicePointer(), dK.devicePointer(), dV.devicePointer(),
+                dO.devicePointer(), dOGrad.devicePointer(), dLSE.devicePointer(),
+                dGradQ.devicePointer(), dGradK.devicePointer(), dGradV.devicePointer(),
+                BH, S, scale);
+    }
+
     private static native boolean ensureStridedBatchedPackScratch0(long rows, int dModel, int dIntermediate);
+
+    /**
+     * Привязать QKV/FFN strided-batched pack к внешним device-буферам (время жизни ≥ decoder CUDA graph).
+     * Снимать {@link #clearStridedBatchedPackOverride()} в {@code finally}.
+     */
+    private static native void setStridedBatchedPackOverride0(
+            long wDevicePtr, long cDevicePtr, long capWElems, long capCElems);
+
+    private static native void clearStridedBatchedPackOverride0();
 
     private static native void decoderGraphPrewarmDeviceOps0(
             int batch, int seqLen, int dModel, int numHeads, int dIntermediate);
@@ -1271,7 +1337,8 @@ public final class TensorOpsGPU {
 
     private static native void abortCudaStreamCaptureIfActive0();
 
-    private static native void cudaGraphExecLaunch0(long execPtr);
+    /** @return {@code false} если {@code cudaGraphLaunch} вернул ошибку (граф не исполнялся). */
+    private static native boolean cudaGraphExecLaunch0(long execPtr);
 
     private static native void cudaGraphExecDestroy0(long execPtr);
 
@@ -2480,6 +2547,45 @@ public final class TensorOpsGPU {
     }
 
     /**
+     * Число float в W- и C-pack для {@link #ensureStridedBatchedPackScratch(long, int, int)} (как в нативе).
+     *
+     * @return {@code [wNeed, cNeed]}
+     */
+    public static long[] stridedBatchedPackNeed(long rows, int dModel, int dIntermediate) {
+        if (rows <= 0 || dModel <= 0 || dIntermediate <= 0) {
+            throw new IllegalArgumentException("rows, dModel, dIntermediate must be positive");
+        }
+        long knQkv = Math.multiplyExact((long) dModel, dModel);
+        long mnQkv = Math.multiplyExact(rows, dModel);
+        long knFfn = Math.multiplyExact((long) dModel, dIntermediate);
+        long mnFfn = Math.multiplyExact(rows, dIntermediate);
+        long lim = (long) Integer.MAX_VALUE / 4L;
+        if (knQkv > lim || mnQkv > lim || knFfn > lim || mnFfn > lim) {
+            throw new IllegalArgumentException("stridedBatchedPackNeed: size overflow");
+        }
+        long wNeed = Math.max(Math.multiplyExact(3L, knQkv), Math.multiplyExact(2L, knFfn));
+        long cNeed = Math.max(Math.multiplyExact(3L, mnQkv), Math.multiplyExact(2L, mnFfn));
+        return new long[] {wNeed, cNeed};
+    }
+
+    public static void setStridedBatchedPackOverride(
+            long wDevicePtr, long cDevicePtr, long capWElems, long capCElems) {
+        requireCuda("TensorOpsGPU.setStridedBatchedPackOverride");
+        if (wDevicePtr == 0L || cDevicePtr == 0L || capWElems <= 0L || capCElems <= 0L) {
+            throw new IllegalArgumentException("setStridedBatchedPackOverride: invalid pointer or capacity");
+        }
+        setStridedBatchedPackOverride0(wDevicePtr, cDevicePtr, capWElems, capCElems);
+    }
+
+    /** Снять {@link #setStridedBatchedPackOverride}; безопасно при неактивном override. */
+    public static void clearStridedBatchedPackOverride() {
+        if (!isGpuAvailable()) {
+            return;
+        }
+        clearStridedBatchedPackOverride0();
+    }
+
+    /**
      * Перед {@link #cudaStreamBeginCapture}: предвыделить SDPA aux на device, прогреть strided-batched QKV/FFN и
      * batched GEMM attention на том же stream/handle, что forward — без {@code cudaMalloc} и ленивого workspace
      * cuBLAS внутри графа.
@@ -2519,10 +2625,17 @@ public final class TensorOpsGPU {
         abortCudaStreamCaptureIfActive0();
     }
 
-    public static void cudaGraphExecLaunch(long execPtr) {
-        if (execPtr != 0L) {
-            cudaGraphExecLaunch0(execPtr);
+    /**
+     * Запуск захваченного графа на {@code kTensorCudaStream}.
+     *
+     * @return {@code false} при ошибке драйвера (в т.ч. illegal memory access) — вызывающий должен отключить graph
+     *     и выполнить eager-путь.
+     */
+    public static boolean cudaGraphExecLaunch(long execPtr) {
+        if (execPtr == 0L) {
+            return true;
         }
+        return cudaGraphExecLaunch0(execPtr);
     }
 
     public static void cudaGraphExecDestroy(long execPtr) {

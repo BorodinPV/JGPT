@@ -23,6 +23,8 @@ public final class PresetDecider {
     private int consecutiveEvalWithoutImprovement;
     private int cumulativeEvalImprovements;
     private long lastOptimizerStepWallMs;
+    /** Пока false — не считаем «зависание» (долгая подготовка данных до первого GPU-шага). */
+    private boolean sawFirstOptimizerStep;
     private boolean oomOrCudaFatal;
 
     public PresetDecider() {
@@ -47,12 +49,14 @@ public final class PresetDecider {
             consecutiveEvalWithoutImprovement = 0;
             cumulativeEvalImprovements = 0;
             lastOptimizerStepWallMs = System.currentTimeMillis();
+            sawFirstOptimizerStep = false;
             oomOrCudaFatal = false;
         }
     }
 
     public void onOptimizerStepCompleted() {
         synchronized (lock) {
+            sawFirstOptimizerStep = true;
             lastOptimizerStepWallMs = System.currentTimeMillis();
         }
     }
@@ -90,9 +94,11 @@ public final class PresetDecider {
             if (oomOrCudaFatal) {
                 return Action.DOWNGRADE;
             }
-            long idle = System.currentTimeMillis() - lastOptimizerStepWallMs;
-            if (idle > hangMillis) {
-                return Action.DOWNGRADE;
+            if (sawFirstOptimizerStep) {
+                long idle = System.currentTimeMillis() - lastOptimizerStepWallMs;
+                if (idle > hangMillis) {
+                    return Action.DOWNGRADE;
+                }
             }
             if (consecutiveEvalWithoutImprovement >= plateauThreshold) {
                 return Action.DOWNGRADE;

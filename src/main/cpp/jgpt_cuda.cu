@@ -91,9 +91,30 @@ static thread_local float* tl_qkv_c_pack_d = nullptr;
 static thread_local long long tl_qkv_cap_w_elems = 0;
 static thread_local long long tl_qkv_cap_c_elems = 0;
 
+/* Внешние pack-буферы (Java GpuFloatBuffer в GPTModel): cudaGraphExec держит указатели — без cudaFree tl_qkv. */
+static thread_local bool tl_qkv_pack_override_active = false;
+static thread_local float* tl_qkv_pack_override_w = nullptr;
+static thread_local float* tl_qkv_pack_override_c = nullptr;
+static thread_local long long tl_qkv_pack_override_cap_w = 0;
+static thread_local long long tl_qkv_pack_override_cap_c = 0;
+
+static inline float* jgpt_qkv_w_pack_ptr(void) {
+    return tl_qkv_pack_override_active ? tl_qkv_pack_override_w : tl_qkv_w_pack_d;
+}
+
+static inline float* jgpt_qkv_c_pack_ptr(void) {
+    return tl_qkv_pack_override_active ? tl_qkv_pack_override_c : tl_qkv_c_pack_d;
+}
+
 static bool shared_x_strided_batched_packs_ensure(long long wElems, long long cElems) {
     if (wElems <= 0 || cElems <= 0) {
         return false;
+    }
+    if (tl_qkv_pack_override_active) {
+        if (wElems > tl_qkv_pack_override_cap_w || cElems > tl_qkv_pack_override_cap_c) {
+            return false;
+        }
+        return tl_qkv_pack_override_w != nullptr && tl_qkv_pack_override_c != nullptr;
     }
     if (wElems > tl_qkv_cap_w_elems) {
         if (tl_qkv_w_pack_d != nullptr) {
@@ -146,7 +167,7 @@ extern "C" void jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo(int M, int dModel
         return;
     }
 
-    float* xNC = tl_qkv_c_pack_d;
+    float* xNC = jgpt_qkv_c_pack_ptr();
     const float alpha = 1.0f;
     const float beta = 0.0f;
     cublasHandle_t handle = get_cublas_handle();
@@ -159,14 +180,14 @@ extern "C" void jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo(int M, int dModel
             M,
             dModel,
             &alpha,
-            tl_qkv_w_pack_d,
+            jgpt_qkv_w_pack_ptr(),
             dModel,
             kn_qkv,
             xNC,
             dModel,
             0LL,
             &beta,
-            tl_qkv_c_pack_d,
+            jgpt_qkv_c_pack_ptr(),
             dModel,
             mn_qkv,
             3);
@@ -186,14 +207,14 @@ extern "C" void jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo(int M, int dModel
             M,
             dModel,
             &alpha,
-            tl_qkv_w_pack_d,
+            jgpt_qkv_w_pack_ptr(),
             dInt,
             kn_ffn,
             xNC,
             dModel,
             0LL,
             &beta,
-            tl_qkv_c_pack_d,
+            jgpt_qkv_c_pack_ptr(),
             dInt,
             mn_ffn,
             2);
@@ -213,12 +234,12 @@ extern "C" void jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo(int M, int dModel
             M,
             dModel,
             &alpha,
-            tl_qkv_w_pack_d,
+            jgpt_qkv_w_pack_ptr(),
             dModel,
             xNC,
             dModel,
             &beta,
-            tl_qkv_c_pack_d,
+            jgpt_qkv_c_pack_ptr(),
             dModel);
     if (st != CUBLAS_STATUS_SUCCESS) {
         fprintf(stderr, "jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo: Wo Sgemm status %d\n", (int) st);
@@ -1377,6 +1398,32 @@ JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_ensureStridedBat
     return JNI_TRUE;
 }
 
+JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_setStridedBatchedPackOverride0(
+    JNIEnv* env, jclass clazz, jlong wPtr, jlong cPtr, jlong capWElems, jlong capCElems) {
+    (void) env;
+    (void) clazz;
+    if (wPtr == 0 || cPtr == 0 || capWElems <= 0 || capCElems <= 0) {
+        fprintf(stderr, "setStridedBatchedPackOverride0: invalid args\n");
+        return;
+    }
+    tl_qkv_pack_override_w = reinterpret_cast<float*>(static_cast<uintptr_t>(wPtr));
+    tl_qkv_pack_override_c = reinterpret_cast<float*>(static_cast<uintptr_t>(cPtr));
+    tl_qkv_pack_override_cap_w = capWElems;
+    tl_qkv_pack_override_cap_c = capCElems;
+    tl_qkv_pack_override_active = true;
+}
+
+JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_clearStridedBatchedPackOverride0(
+    JNIEnv* env, jclass clazz) {
+    (void) env;
+    (void) clazz;
+    tl_qkv_pack_override_active = false;
+    tl_qkv_pack_override_w = nullptr;
+    tl_qkv_pack_override_c = nullptr;
+    tl_qkv_pack_override_cap_w = 0;
+    tl_qkv_pack_override_cap_c = 0;
+}
+
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_decoderGraphPrewarmDeviceOps0(
     JNIEnv* env,
     jclass clazz,
@@ -1441,16 +1488,18 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGpuDeviceQkvPr
         return;
     }
 
+    float* wPack = jgpt_qkv_w_pack_ptr();
+    float* cPack = jgpt_qkv_c_pack_ptr();
     CUDA_CHECK_VOID(cudaMemcpyAsync(
-            tl_qkv_w_pack_d, wq, static_cast<size_t>(kn) * sizeof(float), cudaMemcpyDeviceToDevice, kTensorCudaStream));
+            wPack, wq, static_cast<size_t>(kn) * sizeof(float), cudaMemcpyDeviceToDevice, kTensorCudaStream));
     CUDA_CHECK_VOID(cudaMemcpyAsync(
-            tl_qkv_w_pack_d + kn,
+            wPack + kn,
             wk,
             static_cast<size_t>(kn) * sizeof(float),
             cudaMemcpyDeviceToDevice,
             kTensorCudaStream));
     CUDA_CHECK_VOID(cudaMemcpyAsync(
-            tl_qkv_w_pack_d + 2LL * kn,
+            wPack + 2LL * kn,
             wv,
             static_cast<size_t>(kn) * sizeof(float),
             cudaMemcpyDeviceToDevice,
@@ -1468,14 +1517,14 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGpuDeviceQkvPr
             M,
             K,
             &alpha,
-            tl_qkv_w_pack_d,
+            wPack,
             N,
             kn,
             xNC,
             K,
             0LL,
             &beta,
-            tl_qkv_c_pack_d,
+            cPack,
             N,
             mn,
             3);
@@ -1484,16 +1533,16 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGpuDeviceQkvPr
         return;
     }
 
-    CUDA_CHECK_VOID(cudaMemcpyAsync(q, tl_qkv_c_pack_d, static_cast<size_t>(mn) * sizeof(float), cudaMemcpyDeviceToDevice, kTensorCudaStream));
+    CUDA_CHECK_VOID(cudaMemcpyAsync(q, cPack, static_cast<size_t>(mn) * sizeof(float), cudaMemcpyDeviceToDevice, kTensorCudaStream));
     CUDA_CHECK_VOID(cudaMemcpyAsync(
             kout,
-            tl_qkv_c_pack_d + mn,
+            cPack + mn,
             static_cast<size_t>(mn) * sizeof(float),
             cudaMemcpyDeviceToDevice,
             kTensorCudaStream));
     CUDA_CHECK_VOID(cudaMemcpyAsync(
             v,
-            tl_qkv_c_pack_d + 2LL * mn,
+            cPack + 2LL * mn,
             static_cast<size_t>(mn) * sizeof(float),
             cudaMemcpyDeviceToDevice,
             kTensorCudaStream));
@@ -1532,8 +1581,10 @@ extern "C" int jgpt_cuda_ffn_w1w3_strided_batched_device(
         fprintf(stderr, "jgpt_cuda_ffn_w1w3_strided_batched_device: %s\n", cudaGetErrorString(e));
         return false;
     };
+    float* wPack = jgpt_qkv_w_pack_ptr();
+    float* cPack = jgpt_qkv_c_pack_ptr();
     if (!memcpy_ok(cudaMemcpyAsync(
-                tl_qkv_w_pack_d,
+                wPack,
                 w1,
                 static_cast<size_t>(kn) * sizeof(float),
                 cudaMemcpyDeviceToDevice,
@@ -1541,7 +1592,7 @@ extern "C" int jgpt_cuda_ffn_w1w3_strided_batched_device(
         return 0;
     }
     if (!memcpy_ok(cudaMemcpyAsync(
-                tl_qkv_w_pack_d + kn,
+                wPack + kn,
                 w3,
                 static_cast<size_t>(kn) * sizeof(float),
                 cudaMemcpyDeviceToDevice,
@@ -1560,14 +1611,14 @@ extern "C" int jgpt_cuda_ffn_w1w3_strided_batched_device(
             M,
             K,
             &alpha,
-            tl_qkv_w_pack_d,
+            wPack,
             N,
             kn,
             xnorm,
             K,
             0LL,
             &beta,
-            tl_qkv_c_pack_d,
+            cPack,
             N,
             mn,
             2);
@@ -1578,7 +1629,7 @@ extern "C" int jgpt_cuda_ffn_w1w3_strided_batched_device(
 
     if (!memcpy_ok(cudaMemcpyAsync(
                 h1,
-                tl_qkv_c_pack_d,
+                cPack,
                 static_cast<size_t>(mn) * sizeof(float),
                 cudaMemcpyDeviceToDevice,
                 kTensorCudaStream))) {
@@ -1586,7 +1637,7 @@ extern "C" int jgpt_cuda_ffn_w1w3_strided_batched_device(
     }
     if (!memcpy_ok(cudaMemcpyAsync(
                 gate,
-                tl_qkv_c_pack_d + mn,
+                cPack + mn,
                 static_cast<size_t>(mn) * sizeof(float),
                 cudaMemcpyDeviceToDevice,
                 kTensorCudaStream))) {
@@ -2355,19 +2406,21 @@ JNIEXPORT jlong JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_cudaStreamEndCaptur
     return static_cast<jlong>(reinterpret_cast<uintptr_t>(exec));
 }
 
-JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_cudaGraphExecLaunch0(
+JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_cudaGraphExecLaunch0(
     JNIEnv* env, jclass clazz, jlong execPtr) {
     (void) env;
     (void) clazz;
     if (execPtr == 0) {
-        return;
+        return JNI_TRUE;
     }
     jgpt_cuda_ensure_stream();
     cudaGraphExec_t exec = reinterpret_cast<cudaGraphExec_t>(static_cast<uintptr_t>(execPtr));
     cudaError_t e = cudaGraphLaunch(exec, kTensorCudaStream);
     if (e != cudaSuccess) {
         fprintf(stderr, "cudaGraphLaunch failed: %s\n", cudaGetErrorString(e));
+        return JNI_FALSE;
     }
+    return JNI_TRUE;
 }
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_cudaGraphExecDestroy0(

@@ -154,6 +154,20 @@ public final class SmartTrainingSupervisor {
                 } catch (ExecutionException ee) {
                     Throwable c = ee.getCause() != null ? ee.getCause() : ee;
                     log.warn("Сессия пресета завершилась с ошибкой: {}", c.getMessage());
+                    if (isCudaContextLikelyCorrupted(c)) {
+                        log.error(
+                                "[SMART] Фатальная CUDA-ошибка — GPU-контекст повреждён, перезапустите JVM.");
+                        log.error(
+                                "[SMART] Продолжение в том же процессе небезопасно. Возобновление: "
+                                        + "снова запустите SmartTrainingSupervisor (или ./scripts/jgpt-smart.sh).");
+                        System.exit(2);
+                    }
+                    if (isCheckpointShapeMismatch(c)) {
+                        log.error(
+                                "[SMART] Несовпадение формы чекпоинта и модели — смена пресета не поможет. "
+                                        + "Проверьте JGPT_MAX_SEQ_LEN / архитектуру и чекпоинт в checkpoints/all_books.");
+                        System.exit(3);
+                    }
                     if (idx + 1 >= chain.size()) {
                         log.error("Достигнут последний пресет — нужна ручная диагностика.");
                         System.exit(1);
@@ -198,6 +212,41 @@ public final class SmartTrainingSupervisor {
                 idx);
     }
 
+    /**
+     * После illegal access / асинхронных ошибок драйвера дальнейшие вызовы CUDA в этом процессе ненадёжны
+     * (в отличие от отдельного JVM на каждый запуск в bash-обёртке).
+     */
+    private static boolean isCudaContextLikelyCorrupted(Throwable t) {
+        for (Throwable x = t; x != null; x = x.getCause()) {
+            if (x instanceof OutOfMemoryError) {
+                return false;
+            }
+            String m = x.getMessage();
+            if (m == null) {
+                continue;
+            }
+            String u = m.toLowerCase();
+            if (u.contains("illegal memory access")
+                    || u.contains("code 700")
+                    || u.contains("cuda error")
+                    || u.contains("cudagraphlaunch")
+                    || (u.contains("cublas") && u.contains("error"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isCheckpointShapeMismatch(Throwable t) {
+        for (Throwable x = t; x != null; x = x.getCause()) {
+            String m = x.getMessage();
+            if (m != null && m.contains("shape mismatch")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean isLikelyCudaOrNativeFatal(Throwable t) {
         if (t == null) {
             return false;
@@ -205,12 +254,18 @@ public final class SmartTrainingSupervisor {
         if (t instanceof OutOfMemoryError) {
             return true;
         }
-        String m = t.getMessage();
-        if (m != null) {
-            String u = m.toLowerCase();
-            return u.contains("cudamalloc")
-                    || u.contains("out of memory")
-                    || u.contains("outofmemoryerror");
+        for (Throwable x = t; x != null; x = x.getCause()) {
+            String m = x.getMessage();
+            if (m != null) {
+                String u = m.toLowerCase();
+                if (u.contains("cudamalloc")
+                        || u.contains("out of memory")
+                        || u.contains("outofmemoryerror")
+                        || u.contains("illegal memory access")
+                        || u.contains("code 700")) {
+                    return true;
+                }
+            }
         }
         return false;
     }

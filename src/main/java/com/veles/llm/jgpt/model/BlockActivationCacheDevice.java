@@ -43,7 +43,11 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         ATTN_K_HEADS,
         ATTN_V_HEADS,
         ATTN_PROBS,
-        ATTN_CONCAT
+        ATTN_CONCAT,
+        /** FlashAttention: log-sum-exp per query row [BH, S]. */
+        ATTN_LSE,
+        /** FlashAttention: head-wise attention output O [BH, S, Dh], needed for backward D computation. */
+        ATTN_OUT_HEADS
     }
 
     private GpuFloatBuffer xIn;
@@ -60,6 +64,10 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
     private GpuFloatBuffer attnVHeads;
     private GpuFloatBuffer attnProbs;
     private GpuFloatBuffer attnConcat;
+    /** FlashAttention: LSE [BH*S] — float only (no fp16 variant needed, tiny buffer). */
+    private GpuFloatBuffer attnLse;
+    /** FlashAttention: O_heads [BH*S*Dh] — head-wise attention output before concatHeads. */
+    private GpuFloatBuffer attnOutHeads;
 
     private GpuHalfBuffer hxIn;
     private GpuHalfBuffer hxNorm1;
@@ -98,13 +106,18 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         return storageFp16;
     }
 
+    /** Returns true for slots that are always stored as float32 regardless of storageFp16. */
+    private static boolean isAlwaysFloat32(SlotId id) {
+        return id == SlotId.ATTN_LSE || id == SlotId.ATTN_OUT_HEADS;
+    }
+
     public void copySlotFromDeviceFloat(SlotId id, GpuFloatBuffer src, int n) {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(src, "src");
         if (n <= 0) {
             return;
         }
-        if (storageFp16) {
+        if (storageFp16 && !isAlwaysFloat32(id)) {
             TensorOpsGPU.convertFloatDeviceToHalfDevice(src.devicePointer(), requireHalf(id).devicePointer(), n);
         } else {
             dstFloat(id).copyFromDevice(src, n);
@@ -117,7 +130,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         if (n <= 0) {
             return;
         }
-        if (storageFp16) {
+        if (storageFp16 && !isAlwaysFloat32(id)) {
             TensorOpsGPU.convertHalfDeviceToFloatDevice(requireHalf(id).devicePointer(), dst.devicePointer(), n);
         } else {
             dst.copyFromDevice(dstFloat(id), n);
@@ -130,9 +143,9 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         if (n <= 0) {
             return;
         }
-        ensureFloatStage(n);
-        floatStage.copyFrom(src, srcOff, n);
-        if (storageFp16) {
+        if (storageFp16 && !isAlwaysFloat32(id)) {
+            ensureFloatStage(n);
+            floatStage.copyFrom(src, srcOff, n);
             TensorOpsGPU.convertFloatDeviceToHalfDevice(floatStage.devicePointer(), requireHalf(id).devicePointer(), n);
         } else {
             dstFloat(id).copyFrom(src, srcOff, n);
@@ -187,7 +200,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         if (n <= 0) {
             return;
         }
-        if (storageFp16) {
+        if (storageFp16 && !isAlwaysFloat32(id)) {
             ensureFloatStage(n);
             TensorOpsGPU.convertHalfDeviceToFloatDevice(requireHalf(id).devicePointer(), floatStage.devicePointer(), n);
             floatStage.copyTo(dst, dstOff, n);
@@ -223,6 +236,8 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             case ATTN_V_HEADS -> requireBuf(attnVHeads, "attnVHeads");
             case ATTN_PROBS -> requireBuf(attnProbs, "attnProbs");
             case ATTN_CONCAT -> requireBuf(attnConcat, "attnConcat");
+            case ATTN_LSE -> requireBuf(attnLse, "attnLse");
+            case ATTN_OUT_HEADS -> requireBuf(attnOutHeads, "attnOutHeads");
         };
     }
 
@@ -243,6 +258,9 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
                     case ATTN_V_HEADS -> hAttnVHeads;
                     case ATTN_PROBS -> hAttnProbs;
                     case ATTN_CONCAT -> hAttnConcat;
+                    // LSE and OUT_HEADS are always float — no fp16 variant
+                    case ATTN_LSE, ATTN_OUT_HEADS -> throw new IllegalStateException(
+                            id + " is always stored as float32, use dstFloat path");
                 };
         if (b == null || b.isClosed()) {
             throw new IllegalStateException("Call ensure() before accessing " + id);
@@ -273,16 +291,22 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         int dHead = dModel / numHeads;
         long batchHeads = mulExact("batch*numHeads", (long) batch, (long) numHeads);
         long headFlat = mulExact("batchHeads*seqLen*dHead", mulExact("batchHeads*seqLen", batchHeads, (long) seqLen), (long) dHead);
-        long probs =
+        // In flash attention mode attnProbs (S²) is replaced by LSE + O_heads (both tiny/moderate).
+        boolean flash = TensorOpsGPU.FLASH_ATTENTION;
+        long probs = flash ? 0L :
                 mulExact("batchHeads*seqLen*seqLen", mulExact("batchHeads*seqLen", batchHeads, (long) seqLen), (long) seqLen);
+        long lseFlat = flash ? mulExact("batchHeads*seqLen", batchHeads, (long) seqLen) : 0L;
         long ffnMid = mulExact("batch*seqLen*dIntermediate", rows, (long) dIntermediate);
 
+        // lseFlat and headFlat (for attnOutHeads) are float32-only; add them to size estimate
         long totalFloats =
                 Math.addExact(
                         Math.addExact(
-                                Math.addExact(Math.multiplyExact(8L, plane), Math.multiplyExact(2L, ffnMid)),
-                                Math.multiplyExact(3L, headFlat)),
-                        probs);
+                                Math.addExact(
+                                        Math.addExact(Math.multiplyExact(8L, plane), Math.multiplyExact(2L, ffnMid)),
+                                        Math.multiplyExact(3L, headFlat)),
+                                probs),
+                        flash ? Math.addExact(lseFlat, headFlat) : 0L);
         long maxBytes = blockActivationCacheMaxBytesFromEnv();
         if (maxBytes > 0L) {
             int bpe = blockActivationCacheBytesPerElement();
@@ -321,10 +345,12 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
                 && dIntermediate == cachedDInt
                 && plane <= slotCapacityPlane(wantFp16)
                 && headFlat <= slotCapacityHeadFlat(wantFp16)
-                && probs <= slotCapacityProbs(wantFp16)
+                && (flash || probs <= slotCapacityProbs(wantFp16))
                 && ffnMid <= slotCapacityFfnMid(wantFp16)) {
             cachedBatch = batch;
             cachedSeqLen = seqLen;
+            // Flash attention buffers may need (re)allocation if grow-only reused a pool object
+            ensureFlashBuffers(flash, lseFlat, headFlat);
             return;
         }
 
@@ -339,6 +365,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             cachedNumHeads = numHeads;
             cachedDInt = dIntermediate;
             storageFp16 = wantFp16;
+            ensureFlashBuffers(flash, lseFlat, headFlat);
             return;
         }
 
@@ -357,7 +384,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             hAttnQHeads = GpuHalfBuffer.allocate(headFlat);
             hAttnKHeads = GpuHalfBuffer.allocate(headFlat);
             hAttnVHeads = GpuHalfBuffer.allocate(headFlat);
-            hAttnProbs = GpuHalfBuffer.allocate(probs);
+            if (!flash) hAttnProbs = GpuHalfBuffer.allocate(probs);
             hAttnConcat = GpuHalfBuffer.allocate(plane);
         } else {
             clearFp16Slots();
@@ -373,15 +400,42 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             attnQHeads = GpuFloatBuffer.allocate(headFlat);
             attnKHeads = GpuFloatBuffer.allocate(headFlat);
             attnVHeads = GpuFloatBuffer.allocate(headFlat);
-            attnProbs = GpuFloatBuffer.allocate(probs);
+            if (!flash) attnProbs = GpuFloatBuffer.allocate(probs);
             attnConcat = GpuFloatBuffer.allocate(plane);
         }
+        ensureFlashBuffers(flash, lseFlat, headFlat);
 
         cachedBatch = batch;
         cachedSeqLen = seqLen;
         cachedDModel = dModel;
         cachedNumHeads = numHeads;
         cachedDInt = dIntermediate;
+    }
+
+    /**
+     * Allocates/resizes flash-attention-only buffers (LSE and O_heads).
+     * Called from ensure() after the main pool/alloc path.  No-op when flash=false.
+     */
+    private void ensureFlashBuffers(boolean flash, long lseFlat, long headFlat) {
+        if (!flash) return;
+        if (attnLse == null || attnLse.isClosed() || attnLse.numFloats() < lseFlat) {
+            if (attnLse != null && !attnLse.isClosed()) attnLse.close();
+            attnLse = GpuFloatBuffer.allocate(lseFlat);
+        }
+        if (attnOutHeads == null || attnOutHeads.isClosed() || attnOutHeads.numFloats() < headFlat) {
+            if (attnOutHeads != null && !attnOutHeads.isClosed()) attnOutHeads.close();
+            attnOutHeads = GpuFloatBuffer.allocate(headFlat);
+        }
+    }
+
+    /** FlashAttention: device buffer for LSE [BH*S]. Valid only when FLASH_ATTENTION=true. */
+    public GpuFloatBuffer attnLseBuffer() {
+        return requireBuf(attnLse, "attnLse");
+    }
+
+    /** FlashAttention: device buffer for O_heads [BH*S*Dh]. Valid only when FLASH_ATTENTION=true. */
+    public GpuFloatBuffer attnOutHeadsBuffer() {
+        return requireBuf(attnOutHeads, "attnOutHeads");
     }
 
     private boolean isAllocatedForMode(boolean fp16) {
@@ -638,6 +692,9 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         private GpuHalfBuffer hAttnProbs;
         private GpuHalfBuffer hAttnConcat;
 
+        private GpuFloatBuffer attnLse;
+        private GpuFloatBuffer attnOutHeads;
+
         private boolean fp16;
 
         boolean covers(long plane, long headFlat, long probs, long ffnMid) {
@@ -657,7 +714,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
                         && hAttnQHeads.numHalfs() >= headFlat
                         && hAttnKHeads.numHalfs() >= headFlat
                         && hAttnVHeads.numHalfs() >= headFlat
-                        && hAttnProbs.numHalfs() >= probs;
+                        && (probs == 0 || (hAttnProbs != null && hAttnProbs.numHalfs() >= probs));
             }
             return xIn != null
                     && !xIn.isClosed()
@@ -674,7 +731,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
                     && attnQHeads.numFloats() >= headFlat
                     && attnKHeads.numFloats() >= headFlat
                     && attnVHeads.numFloats() >= headFlat
-                    && attnProbs.numFloats() >= probs;
+                    && (probs == 0 || (attnProbs != null && attnProbs.numFloats() >= probs));
         }
 
         void moveInto(BlockActivationCacheDevice c) {
@@ -706,6 +763,8 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             c.hAttnVHeads = hAttnVHeads;
             c.hAttnProbs = hAttnProbs;
             c.hAttnConcat = hAttnConcat;
+            c.attnLse = attnLse;
+            c.attnOutHeads = attnOutHeads;
             c.storageFp16 = fp16;
             xIn = null;
             xNorm1 = null;
@@ -735,6 +794,8 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             hAttnVHeads = null;
             hAttnProbs = null;
             hAttnConcat = null;
+            attnLse = null;
+            attnOutHeads = null;
         }
 
         static PooledBuffers stealFrom(BlockActivationCacheDevice c) {
@@ -768,6 +829,8 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             p.hAttnVHeads = c.hAttnVHeads;
             p.hAttnProbs = c.hAttnProbs;
             p.hAttnConcat = c.hAttnConcat;
+            p.attnLse = c.attnLse;
+            p.attnOutHeads = c.attnOutHeads;
             c.clearAllSlotRefs();
             c.cachedBatch = -1;
             c.cachedSeqLen = -1;
@@ -807,6 +870,8 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             hAttnVHeads = closeBufH(hAttnVHeads);
             hAttnProbs = closeBufH(hAttnProbs);
             hAttnConcat = closeBufH(hAttnConcat);
+            attnLse = closeBufF(attnLse);
+            attnOutHeads = closeBufF(attnOutHeads);
         }
 
         private static GpuFloatBuffer closeBufF(GpuFloatBuffer b) {
@@ -864,6 +929,8 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         attnVHeads = null;
         attnProbs = null;
         attnConcat = null;
+        attnLse = null;
+        attnOutHeads = null;
         hxIn = null;
         hxNorm1 = null;
         hAttnOut = null;
@@ -895,6 +962,8 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         attnVHeads = closeBuf(attnVHeads);
         attnProbs = closeBuf(attnProbs);
         attnConcat = closeBuf(attnConcat);
+        attnLse = closeBuf(attnLse);
+        attnOutHeads = closeBuf(attnOutHeads);
     }
 
     private void clearFp16Slots() {

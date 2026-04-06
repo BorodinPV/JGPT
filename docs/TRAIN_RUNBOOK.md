@@ -14,31 +14,44 @@
 
 ## Как работает авто-адаптация
 
-```
-jgpt-smart.sh
-    │
-    ├── запускает обучение (train-e2e-gpu.sh allbooks) в фоне
-    ├── каждые 30 секунд проверяет лог на проблемы
-    │
-    ├── OOM обнаружен?           → TERM → resume с 03-recovery
-    ├── FP16 stuck=1.0× ≥8 раз? → TERM → resume с 02-stable
-    ├── Зависание 5 минут?       → TERM → resume с 02-stable
-    │
-    └── Обучение завершилось штатно → конец
-```
+`jgpt-smart.sh` — тонкая bash-обёртка (~60 строк). Она:
+1. Собирает нативную библиотеку (`cmake` + `cmake --build`)
+2. Выставляет базовые `JGPT_*` env-переменные
+3. Запускает **один JVM-процесс** `SmartTrainingSupervisor` через Maven
 
-При каждом переключении обучение **останавливается через shutdown hook** (checkpoint сохраняется) и **автоматически возобновляется** с новым пресетом.
+Вся логика адаптации — внутри `SmartTrainingSupervisor.java`:
+
+```
+SmartTrainingSupervisor
+    │
+    ├── запускает AllBooksTrain.runWithPreset(preset) в отдельном треде
+    ├── получает события от LLMTrainer через TrainingEventCallback
+    │   (каждый шаг, каждый eval, каждый overflow-скип, OOM)
+    │
+    ├── PresetDecider принимает решение:
+    │   ├── DOWNGRADE: плато eval (15 eval без улучшения)
+    │   │             или много overflow-скипов (≥8 уникальных шагов)
+    │   │             или зависание (>300 с без шага)
+    │   │             или OOM/CUDA-фатал
+    │   ├── UPGRADE:   30 улучшений eval подряд → попытка ускорить
+    │   └── NONE:      продолжаем
+    │
+    ├── при решении: requestSupervisedStop() → ждём завершения шага
+    │   → меняем пресет → снова runWithPreset() (тот же JVM, тот же чекпоинт)
+    │
+    └── при фатальной CUDA-ошибке: System.exit(2) — JVM нельзя переиспользовать
+```
 
 ### Иерархия пресетов
 
-| Пресет | Пакет/токены/с | Когда |
-|--------|---------------|-------|
-| `00-max-throughput` | batch=2, ~14k т/с | Первая попытка — максимум |
-| `01-aggressive` | batch=1, ~7k т/с | Стабильная работа (по умолчанию) |
-| `02-stable` | candidates=256, ~5k т/с | При FP16 overflow |
-| `03-recovery` | seq=512, ~4k т/с | При OOM |
+| Пресет | Идея | Когда |
+|--------|------|-------|
+| `00-max-throughput` | batch=2, максимальный throughput | Первая попытка |
+| `01-aggressive` | batch=1, агрессивный FP16 | Старт по умолчанию |
+| `02-stable` | Мягче FP16, меньше кандидатов CE | При overflow-проблемах |
+| `03-recovery` | batch=1, самый осторожный | При OOM |
 
-Направление: `00 → 01 → 02 → 03` (авто при проблемах).
+Направление авто-понижения: `00 → 01 → 02 → 03`. Авто-повышение в обратную сторону.
 
 ---
 
@@ -46,30 +59,27 @@ jgpt-smart.sh
 
 ### Авто-адаптивный (рекомендуется)
 ```bash
-# Стандарт — с текущего пресета, авто-resume
+# Стандарт — с текущего/сохранённого пресета, авто-resume
 ./scripts/jgpt-smart.sh
 
-# Попробовать максимальную скорость (batch=2, может OOM → авто-fallback)
-./scripts/jgpt-smart.sh 00-max-throughput
-
-# Начать с надёжного пресета
+# Начать с конкретного пресета
 ./scripts/jgpt-smart.sh 01-aggressive
-
-# Новый цикл эпох (веса сохраняются, LR-расписание сбрасывается)
-./scripts/jgpt-smart.sh --finetune
+./scripts/jgpt-smart.sh 02-stable
 ```
 
-### Ручной
+### Ручной (без авто-переключения)
 ```bash
-# Простой запуск с текущим пресетом
+# Текущий пресет
 ./scripts/jgpt-start.sh
 
 # Явный пресет
 ./scripts/jgpt-start.sh 02-stable
 
-# С мониторингом в отдельном терминале
-./scripts/jgpt-monitor.sh &
-./scripts/jgpt-start.sh
+# Новый цикл эпох (веса остаются, globalStep сбрасывается)
+./scripts/jgpt-start.sh --finetune
+
+# Список пресетов
+./scripts/jgpt-start.sh --help
 ```
 
 ---
@@ -79,13 +89,12 @@ jgpt-smart.sh
 **Остановить:**
 ```bash
 Ctrl+C
-# jgpt-smart.sh: сам остановит Java и сохранит checkpoint
-# jgpt-start.sh: shutdown hook в Java сохранит checkpoint при SIGTERM/SIGINT
+# Shutdown hook в LLMTrainer сохраняет checkpoint_final.bin
 ```
 
 **Продолжить:**
 ```bash
-./scripts/jgpt-smart.sh   # авто-resume, подхватит checkpoint_final.bin
+./scripts/jgpt-smart.sh   # подхватит checkpoint_final.bin автоматически
 ```
 
 ---
@@ -93,7 +102,7 @@ Ctrl+C
 ## Добавление книг в процессе
 
 1. Положить `.txt` в `data/books/`
-2. Остановить: `Ctrl+C`
+2. `Ctrl+C`
 3. Запустить снова:
 
 ```bash
@@ -101,7 +110,7 @@ Ctrl+C
 ./scripts/jgpt-smart.sh
 
 # Начать новый цикл эпох с расширенным корпусом:
-./scripts/jgpt-smart.sh --finetune
+./scripts/jgpt-start.sh --finetune
 ```
 
 > **Если добавлено много новых книг** с незнакомой лексикой — пересоздать токенизатор:
@@ -109,63 +118,51 @@ Ctrl+C
 > rm checkpoints/tokenizer_global.bin
 > ./scripts/jgpt-smart.sh  # пересоздаст словарь (~2 мин)
 > ```
-> Размер vocab (8000) сохраняется, модель совместима.
 
 ---
 
 ## Мониторинг
 
 ```bash
-# Живой дашборд (отдельный терминал)
+# Живой дашборд в терминале
 ./scripts/jgpt-monitor.sh
 
-# Следить за прогрессом в логе
+# Веб-дашборд с графиками (открыть в браузере)
+xdg-open dashboard.html
+# Автообновление каждые 30 с из state/stats.json
+
+# Хвост лога
 tail -f training_allbooks.log | grep -E "\[STEP\]|\[EVAL\]|\[SAMPLE\]|WARN|SMART"
 
-# Последний шаг
+# Текущий шаг и пресет
 cat state/last_step.txt
-
-# Текущий пресет
-readlink state/current.env
-```
-
----
-
-## Ручное переключение пресета
-
-```bash
-# Переключить пресет (следующий перезапуск применит его)
-ln -sf ../env/02-stable.env state/current.env
-
-# Или через jgpt-start.sh
-./scripts/jgpt-start.sh 02-stable
+cat state/current_preset_idx
 ```
 
 ---
 
 ## Расшифровка проблем в логе
 
-| Строка в логе | Причина | Авто-ответ smart |
-|---------------|---------|-----------------|
-| `cudaMalloc failed` | VRAM переполнен | Понижение до `03-recovery` |
-| `масштаб loss ... 1.000×` (много раз) | FP16 scale залип | Понижение до `02-stable` |
-| `Ранний останов: patience` | 20+ eval без улучшения | Штатное завершение, resume |
-| `Non-finite gradient` раз в 100 шагов | Норма после eval | Ничего |
-| `[FP16] scale ... → ...` (колеблется) | Норма с growth=50 | Ничего |
+| Строка в логе | Причина | Авто-ответ SmartTrainingSupervisor |
+|---------------|---------|----------------------------------|
+| `cudaMalloc failed` / `OutOfMemoryError` | VRAM переполнен | Downgrade → следующий пресет |
+| `overflow-скип` много раз | FP16 scale залип | Downgrade после 8 уникальных шагов |
+| Нет `[STEP]` больше 300 с | Зависание | Downgrade |
+| Плато eval 15 раз подряд | Нет прогресса | Downgrade |
+| 30 улучшений eval подряд | Стабильный прогресс | Upgrade → быстрый пресет |
+| `[SMART] Фатальная CUDA-ошибка` | GPU-контекст повреждён | `exit(2)`, перезапустить JVM |
 
 ---
 
-## Ключевые параметры
+## Ключевые параметры (в `env/*.env`)
 
-| Переменная | Пресет 01 | Описание |
-|------------|-----------|----------|
-| `JGPT_MAX_SEQ_LEN` | 1024 | Контекст. Снизить при OOM |
-| `JGPT_SAMPLED_CE_CANDIDATES` | 512 | Кандидаты sampled CE |
-| `JGPT_FP16_DYNAMIC_GROWTH_INTERVAL` | 50 | **Должно быть < 100** (eval каждые 100 шагов) |
-| `JGPT_FP16_AUX_SOFTEN` | 0 | Выключить доп. деление scale |
-| `JGPT_EARLY_STOP_EVAL_PATIENCE` | 20 | Eval без улучшения до стопа |
-| `JGPT_INTERACTIVE_EVERY` | 500 | Генерация каждые N шагов |
-| `JGPT_SAMPLE_PROMPT` | (встроенные) | Свои промпты через `\|` |
+| Переменная | Описание |
+|------------|----------|
+| `JGPT_BATCH_SIZE` | Размер батча |
+| `JGPT_SAMPLED_CE_CANDIDATES` | Кандидаты sampled CE |
+| `JGPT_FP16_DYNAMIC_INITIAL` | Начальный loss scale |
+| `JGPT_FP16_DYNAMIC_GROWTH_INTERVAL` | Интервал роста scale |
+| `JGPT_DECODER_LAYER_CUDA_GRAPH` | CUDA graph на декодер-слой (1/0) |
 
 ---
 
@@ -174,16 +171,17 @@ ln -sf ../env/02-stable.env state/current.env
 ```
 JGPT/
 ├── env/
-│   ├── 00-max-throughput.env   ← batch=2 (экспериментальный)
-│   ├── 01-aggressive.env       ← рабочий (~7k т/с)
-│   ├── 02-stable.env           ← при FP16 проблемах
-│   └── 03-recovery.env         ← при OOM
+│   ├── 00-max-throughput.env
+│   ├── 01-aggressive.env       ← старт по умолчанию
+│   ├── 02-stable.env
+│   └── 03-recovery.env
 ├── state/
 │   ├── current.env             ← symlink на активный пресет
-│   ├── current_preset_idx      ← индекс пресета (для smart)
-│   ├── last_step.txt           ← последний шаг (auto)
-│   └── .need_downgrade         ← флаг от монитора
-├── data/books/                 ← .txt книги для обучения
+│   ├── current_preset_idx      ← индекс пресета (0–3)
+│   ├── last_step.txt           ← последний сохранённый шаг
+│   └── stats.json              ← метрики для dashboard.html
+├── data/books/                 ← .txt файлы для обучения
 ├── checkpoints/all_books/      ← веса, чекпоинты, токенизатор
+├── dashboard.html              ← веб-дашборд (открыть в браузере)
 └── training_allbooks.log       ← лог (append, не перезаписывается)
 ```

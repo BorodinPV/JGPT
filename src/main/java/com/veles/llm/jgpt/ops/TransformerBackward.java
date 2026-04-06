@@ -1070,8 +1070,11 @@ public final class TransformerBackward {
             cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_Q_HEADS, ws.getQHeads(), rows * dModel);
             cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_K_HEADS, ws.getKHeads(), rows * dModel);
             cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_V_HEADS, ws.getVHeads(), rows * dModel);
-            cache.copySlotToDeviceFloat(
-                    BlockActivationCacheDevice.SlotId.ATTN_PROBS, ws.getProbs(), batchHeads * seqLen * seqLen);
+            boolean useFlash = TensorOpsGPU.FLASH_ATTENTION && dHead == 16;
+            if (!useFlash) {
+                cache.copySlotToDeviceFloat(
+                        BlockActivationCacheDevice.SlotId.ATTN_PROBS, ws.getProbs(), batchHeads * seqLen * seqLen);
+            }
             cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_CONCAT, ws.getConcat(), plane);
 
             TensorOpsGPU.matmulGpuDeviceEx(
@@ -1085,23 +1088,43 @@ public final class TransformerBackward {
                     true);
             TensorOpsGPU.splitHeadsGpuDevice(
                     ws.getGradConcat(), ws.getDHeads(), batch, seqLen, dModel, numHeads);
-            /* Кэшированные probs: FP32 softmax-bwd от p стабильнее fp16-recompute из QK. */
-            TensorOpsGPU.scaledDotProductAttentionBackwardGpuDevice(
-                    ws.getDHeads(),
-                    ws.getProbs(),
-                    ws.getQHeads(),
-                    ws.getKHeads(),
-                    ws.getVHeads(),
-                    ws.getGradQh(),
-                    ws.getGradKh(),
-                    ws.getGradVh(),
-                    batchHeads,
-                    seqLen,
-                    dHead,
-                    dHead,
-                    attScale,
-                    0L,
-                    false);
+            if (useFlash) {
+                /* FlashAttention-2 backward: recomputes attention from Q/K/V + LSE.
+                 * O_heads (saved in forward) is needed for D = dot(dO, O) computation. */
+                cache.copySlotToDeviceFloat(
+                        BlockActivationCacheDevice.SlotId.ATTN_OUT_HEADS, ws.getProbs(), batchHeads * seqLen * dHead);
+                TensorOpsGPU.flashAttentionBackwardGpuDeviceResident(
+                        ws.getQHeads(),
+                        ws.getKHeads(),
+                        ws.getVHeads(),
+                        ws.getProbs(),    // O_heads (borrowed from ws.getProbs() buffer for reuse)
+                        ws.getDHeads(),   // dO
+                        cache.attnLseBuffer(),
+                        ws.getGradQh(),
+                        ws.getGradKh(),
+                        ws.getGradVh(),
+                        batchHeads,
+                        seqLen,
+                        attScale);
+            } else {
+                /* Classic backward: use cached softmax probs (more numerically stable). */
+                TensorOpsGPU.scaledDotProductAttentionBackwardGpuDevice(
+                        ws.getDHeads(),
+                        ws.getProbs(),
+                        ws.getQHeads(),
+                        ws.getKHeads(),
+                        ws.getVHeads(),
+                        ws.getGradQh(),
+                        ws.getGradKh(),
+                        ws.getGradVh(),
+                        batchHeads,
+                        seqLen,
+                        dHead,
+                        dHead,
+                        attScale,
+                        0L,
+                        false);
+            }
 
             ws.getQHeads().clear();
             ws.getKHeads().clear();

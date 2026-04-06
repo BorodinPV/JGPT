@@ -31,6 +31,14 @@ set_target_properties(jgpt_cuda PROPERTIES
     CUDA_ARCHITECTURES "86"  # RTX 3080 = Ampere
 )
 
+# Подавить предупреждения о неиспользуемых переменных/функциях в .cu файлах
+target_compile_options(jgpt_cuda PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:
+        -diag-suppress=550   # variable set but never used
+        -diag-suppress=177   # function declared but never referenced
+    >
+)
+
 # Runtime path
 set_target_properties(jgpt_cuda PROPERTIES
     INSTALL_RPATH "/usr/lib/x86_64-linux-gnu"

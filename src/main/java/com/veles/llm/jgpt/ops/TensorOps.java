@@ -50,6 +50,12 @@ public final class TensorOps {
         }
         int[] mShape = mask.getShape();
         if (mShape.length != 2 || mShape[0] != seqLen || mShape[1] != seqLen) {
+            log.warn(
+                    "primeDecoderGraphAttentionMaskDevice: ожидается маска [{}, {}], получено {} — H2D пропущен; "
+                            + "replay CUDA graph читал бы устаревший maskDev",
+                    seqLen,
+                    seqLen,
+                    Arrays.toString(mShape));
             return;
         }
         GpuAttentionResidentWorkspace ws = GpuAttentionResidentWorkspace.local();
@@ -1504,8 +1510,9 @@ public final class TensorOps {
             return false;
         }
         int headFloats = Math.multiplyExact(Math.multiplyExact(Math.multiplyExact(batch, numHeads), seqLen), dHead);
-        int probFloats = Math.multiplyExact(Math.multiplyExact(batch * numHeads, seqLen), seqLen);
-        GpuFloatBuffer probsWrite = devCache != null ? devCache.attnProbsWriteBufferAsFloat(probFloats) : null;
+        boolean useFlash = TensorOpsGPU.FLASH_ATTENTION && dHead == 16;
+        int probFloats = useFlash ? 0 : Math.multiplyExact(Math.multiplyExact(batch * numHeads, seqLen), seqLen);
+        GpuFloatBuffer probsWrite = (!useFlash && devCache != null) ? devCache.attnProbsWriteBufferAsFloat(probFloats) : null;
         GpuAttentionResidentWorkspace ws = GpuAttentionResidentWorkspace.local();
         synchronized (ws.exclusiveUseLock()) {
             ws.ensure(rows, dModel);
@@ -1538,29 +1545,47 @@ public final class TensorOps {
                 devCache.copySlotFromDeviceFloat(BlockActivationCacheDevice.SlotId.X_NORM1, ws.getXNorm(), plane);
             }
             int bAttn = batch * numHeads;
-            GpuFloatBuffer maskDev = null;
-            if (mask != null) {
-                ws.ensureMask(seqLen);
-                maskDev = ws.getMaskDev();
-                if (!isDecoderGraphCaptureSkipAttentionMaskHostUpload()) {
-                    maskDev.copyFrom(mask.internalBuffer(), 0, Math.multiplyExact(seqLen, seqLen));
+            if (useFlash) {
+                // Q=[bAttn,S,Dh]=getConcatFlat, K=getAttnOut, V=getQ, O=getK (reuse)
+                GpuFloatBuffer lseDev = devCache != null ? devCache.attnLseBuffer() : null;
+                if (lseDev == null) {
+                    // Inference path: no cache → allocate temporary LSE buffer
+                    lseDev = GpuFloatBuffer.allocate((long) bAttn * seqLen);
                 }
-            }
-            TensorOpsGPU.scaledDotProductAttentionForwardGpuDeviceResident(
-                    ws.getConcatFlat(),
-                    ws.getAttnOut(),
-                    ws.getQ(),
-                    ws.getK(),
-                    maskDev,
-                    probsWrite,
-                    bAttn,
-                    seqLen,
-                    dHead,
-                    dHead,
-                    scale,
-                    TensorOpsGPU.useFp16Matmul());
-            if (devCache != null) {
-                devCache.storeAttnProbsFromFloatStagingIfFp16(probsWrite, probFloats);
+                TensorOpsGPU.flashAttentionForwardGpuDeviceResident(
+                        ws.getConcatFlat(), ws.getAttnOut(), ws.getQ(),
+                        ws.getK(),  // O output (head-wise) → stored here temporarily
+                        lseDev,
+                        bAttn, seqLen, scale);
+                if (devCache != null) {
+                    // Save O_heads (before concatHeads overwrites ws.getK()) for backward D computation
+                    devCache.copySlotFromDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_OUT_HEADS, ws.getK(), headFloats);
+                }
+            } else {
+                GpuFloatBuffer maskDev = null;
+                if (mask != null) {
+                    ws.ensureMask(seqLen);
+                    maskDev = ws.getMaskDev();
+                    if (!isDecoderGraphCaptureSkipAttentionMaskHostUpload()) {
+                        maskDev.copyFrom(mask.internalBuffer(), 0, Math.multiplyExact(seqLen, seqLen));
+                    }
+                }
+                TensorOpsGPU.scaledDotProductAttentionForwardGpuDeviceResident(
+                        ws.getConcatFlat(),
+                        ws.getAttnOut(),
+                        ws.getQ(),
+                        ws.getK(),
+                        maskDev,
+                        probsWrite,
+                        bAttn,
+                        seqLen,
+                        dHead,
+                        dHead,
+                        scale,
+                        TensorOpsGPU.useFp16Matmul());
+                if (devCache != null) {
+                    devCache.storeAttnProbsFromFloatStagingIfFp16(probsWrite, probFloats);
+                }
             }
             TensorOpsGPU.concatHeadsGpuDevice(ws.getK(), ws.getConcatFlat(), batch, numHeads, seqLen, dHead);
             if (devCache != null) {

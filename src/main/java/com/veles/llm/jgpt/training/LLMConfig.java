@@ -322,6 +322,31 @@ public final class LLMConfig {
     }
 
     /**
+     * Переопределяет {@link #accumulationSteps} через переменную окружения {@code JGPT_ACCUMULATION_STEPS}.
+     *
+     * <p>Микробатчей градиента на один шаг оптимизатора (см. {@link TrainingConfig#accumulationSteps}): CE и backward
+     * масштабируются как {@code 1/N}. Пример: {@code JGPT_ACCUMULATION_STEPS=4 ./scripts/train-e2e-gpu.sh allbooks}
+     */
+    public static LLMConfig applyAccumulationStepsOverrideFromEnv(LLMConfig base) {
+        int overridden = readPositiveEnvInt("JGPT_ACCUMULATION_STEPS", base.accumulationSteps);
+        if (overridden == base.accumulationSteps) {
+            return base;
+        }
+        return new LLMConfig(
+                base.name,
+                base.vocabSize,
+                base.maxSeqLen,
+                base.dModel,
+                base.numHeads,
+                base.numLayers,
+                base.dIntermediate,
+                base.batchSize,
+                overridden,
+                base.learningRate,
+                base.epochs);
+    }
+
+    /**
      * Явный запрос из env {@code JGPT_TRAIN_GPU_RESIDENT=1} / {@code true} (пустое значение — {@code false}).
      */
     public static boolean gpuResidentTrainingExplicitlyOn() {

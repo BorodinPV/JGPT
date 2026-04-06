@@ -28,7 +28,8 @@ public final class TrainLLM {
         log.info("Скрипт обучения LLM");
         log.info("{}", "=".repeat(60));
 
-        LLMConfig llm = LLMConfig.applyBatchSizeOverrideFromEnv(LLMConfig.smart50M());
+        LLMConfig llm = LLMConfig.applyAccumulationStepsOverrideFromEnv(
+                LLMConfig.applyBatchSizeOverrideFromEnv(LLMConfig.smart50M()));
         log.info("Конфигурация модели: {}", llm);
 
         log.info("Загрузка текстов...");

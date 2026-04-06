@@ -1718,24 +1718,9 @@ static constexpr int kFaDh = 16;    // d_head
 static constexpr int kFaBr = 64;    // query tile rows  (= block size for fwd / dQ)
 static constexpr int kFaBc = 64;    // KV tile rows     (= block size for dKdV)
 
-/* Thread-local scratch for LSE and D vectors (small: BH*S floats). */
-static thread_local float* tl_fa_lse  = nullptr;
-static thread_local size_t tl_fa_lse_bytes = 0;
+/* Thread-local scratch for D vector (small: BH*S floats); LSE пишется в буфер вызывающего. */
 static thread_local float* tl_fa_D    = nullptr;
 static thread_local size_t tl_fa_D_bytes   = 0;
-
-static bool fa_ensure_lse(size_t bytes) {
-    if (bytes <= tl_fa_lse_bytes) return true;
-    cudaFree(tl_fa_lse);
-    tl_fa_lse = nullptr;
-    tl_fa_lse_bytes = 0;
-    if (cudaMalloc(&tl_fa_lse, bytes) != cudaSuccess) {
-        fprintf(stderr, "fa_ensure_lse: cudaMalloc(%zu) failed\n", bytes);
-        return false;
-    }
-    tl_fa_lse_bytes = bytes;
-    return true;
-}
 
 static bool fa_ensure_D(size_t bytes) {
     if (bytes <= tl_fa_D_bytes) return true;
@@ -1837,52 +1822,54 @@ flash_attn_fwd_kernel(
         }
         __syncthreads();
 
-        if (qi >= S) { __syncthreads(); continue; }
-
-        // Compute S_ij for this thread's query row, store transposed: s_smem[j][tid]
-        #pragma unroll
-        for (int j = 0; j < kFaBc; j++) {
-            float dot = 0.f;
+        /* Все потоки блока обязаны выполнять одинаковое число __syncthreads() на итерацию.
+         * Нельзя вызывать __syncthreads() только для qi >= S (ветка continue) — иначе UB CUDA. */
+        if (qi < S) {
+            // Compute S_ij for this thread's query row, store transposed: s_smem[j][tid]
             #pragma unroll
-            for (int d = 0; d < kFaDh; d++)
-                dot = __fmaf_rn(q_smem[tid * kFaDh + d], k_smem[j * kFaDh + d], dot);
-            const int kj = kv_start + j;
-            float s = dot * scale;
-            if (qi < kj || kj >= S) s = -INFINITY;  // causal + boundary
-            s_smem[j * kFaBr + tid] = s;             // transposed: [j][tid]
-        }
+            for (int j = 0; j < kFaBc; j++) {
+                float dot = 0.f;
+                #pragma unroll
+                for (int d = 0; d < kFaDh; d++)
+                    dot = __fmaf_rn(q_smem[tid * kFaDh + d], k_smem[j * kFaDh + d], dot);
+                const int kj = kv_start + j;
+                float s = dot * scale;
+                if (qi < kj || kj >= S) s = -INFINITY;  // causal + boundary
+                s_smem[j * kFaBr + tid] = s;             // transposed: [j][tid]
+            }
 
-        // Online softmax
-        float mij = -INFINITY;
-        #pragma unroll
-        for (int j = 0; j < kFaBc; j++)
-            mij = fmaxf(mij, s_smem[j * kFaBr + tid]);
-
-        float lij = 0.f;
-        #pragma unroll
-        for (int j = 0; j < kFaBc; j++) {
-            float p = __expf(s_smem[j * kFaBr + tid] - mij);
-            s_smem[j * kFaBr + tid] = p;
-            lij += p;
-        }
-
-        const float mi_new = fmaxf(mi, mij);
-        const float alpha  = __expf(mi  - mi_new);
-        const float beta   = __expf(mij - mi_new);
-        const float li_new = alpha * li + beta * lij;
-
-        // O update: O_new = alpha*O_old + beta * sum_j(p_j * V_j)
-        #pragma unroll
-        for (int d = 0; d < kFaDh; d++) {
-            float vacc = 0.f;
+            // Online softmax
+            float mij = -INFINITY;
             #pragma unroll
             for (int j = 0; j < kFaBc; j++)
-                vacc = __fmaf_rn(s_smem[j * kFaBr + tid], v_smem[j * kFaDh + d], vacc);
-            o_reg[d] = alpha * o_reg[d] + beta * vacc;
-        }
+                mij = fmaxf(mij, s_smem[j * kFaBr + tid]);
 
-        mi = mi_new;
-        li = li_new;
+            float lij = 0.f;
+            #pragma unroll
+            for (int j = 0; j < kFaBc; j++) {
+                float p = __expf(s_smem[j * kFaBr + tid] - mij);
+                s_smem[j * kFaBr + tid] = p;
+                lij += p;
+            }
+
+            const float mi_new = fmaxf(mi, mij);
+            const float alpha  = __expf(mi  - mi_new);
+            const float beta   = __expf(mij - mi_new);
+            const float li_new = alpha * li + beta * lij;
+
+            // O update: O_new = alpha*O_old + beta * sum_j(p_j * V_j)
+            #pragma unroll
+            for (int d = 0; d < kFaDh; d++) {
+                float vacc = 0.f;
+                #pragma unroll
+                for (int j = 0; j < kFaBc; j++)
+                    vacc = __fmaf_rn(s_smem[j * kFaBr + tid], v_smem[j * kFaDh + d], vacc);
+                o_reg[d] = alpha * o_reg[d] + beta * vacc;
+            }
+
+            mi = mi_new;
+            li = li_new;
+        }
         __syncthreads();
     }
 
@@ -1927,8 +1914,6 @@ __global__ void flash_attn_compute_D_kernel(
 //    v_smem [kFaBc][kFaDh]   — value tile (fixed)
 //    q_smem [kFaBr][kFaDh]   — query tile (per Q step)
 //    do_smem[kFaBr][kFaDh]   — dO tile (per Q step)
-//    s_smem [kFaBr][kFaBc]   — S_ij, then dS_ij (per Q step)
-//                               layout [i][j] (NOT transposed here)
 // ----------------------------------------------------------------
 __global__ void __launch_bounds__(kFaBc)
 flash_attn_bwd_dkdv_kernel(
@@ -1965,7 +1950,6 @@ flash_attn_bwd_dkdv_kernel(
     float* v_smem  = k_smem  + kFaBc * kFaDh;                     // [kFaBc][kFaDh]
     float* q_smem  = v_smem  + kFaBc * kFaDh;                     // [kFaBr][kFaDh]
     float* do_smem = q_smem  + kFaBr * kFaDh;                     // [kFaBr][kFaDh]
-    float* s_smem  = do_smem + kFaBr * kFaDh;                     // [kFaBr][kFaBc]
 
     // Load K/V tile once for this block
     if (kj < S) {
@@ -2076,7 +2060,7 @@ flash_attn_bwd_dkdv_kernel(
 //    q_smem [kFaBr][kFaDh]   — query tile (fixed)
 //    do_smem[kFaBr][kFaDh]   — dO tile (fixed)
 //    k_smem [kFaBc][kFaDh]   — key tile (per KV step)
-//    s_smem [kFaBc][kFaBr]   — transposed S/dS, s_smem[j][i]
+//    v_smem [kFaBc][kFaDh]   — value tile (per KV step)
 // ----------------------------------------------------------------
 __global__ void __launch_bounds__(kFaBr)
 flash_attn_bwd_dq_kernel(
@@ -2111,7 +2095,6 @@ flash_attn_bwd_dq_kernel(
     float* do_smem = q_smem  + kFaBr * kFaDh;                     // [kFaBr][kFaDh]
     float* k_smem  = do_smem + kFaBr * kFaDh;                     // [kFaBc][kFaDh]
     float* v_smem  = k_smem  + kFaBc * kFaDh;                     // [kFaBc][kFaDh]
-    float* s_smem  = v_smem  + kFaBc * kFaDh;                     // [kFaBc][kFaBr] transposed
 
     // Load Q and dO tiles once
     if (qi < S) {
@@ -2217,7 +2200,8 @@ static bool flash_attn_fwd_run(
         + kFaBc * kFaBr * sizeof(float);               // s_smem [kFaBc][kFaBr]
     flash_attn_fwd_kernel<<<grid, kFaBr, smem, kTensorCudaStream>>>(
             d_q, d_k, d_v, d_o, d_lse, BH, S, scale);
-    return cudaPeekAtLastError() == cudaSuccess;
+    cudaError_t st = cudaGetLastError();
+    return st == cudaSuccess;
 }
 
 static bool flash_attn_bwd_run(
@@ -2232,29 +2216,27 @@ static bool flash_attn_bwd_run(
     const int d_grid = (total_rows + 63) / 64;
     flash_attn_compute_D_kernel<<<d_grid, 64, 0, kTensorCudaStream>>>(
             d_do, d_o, tl_fa_D, BH, S);
-    if (cudaPeekAtLastError() != cudaSuccess) return false;
+    if (cudaGetLastError() != cudaSuccess) return false;
 
     // 2. dK, dV kernel (one block per kv_tile)
     constexpr size_t smem_dkdv =
         2 * kFaBc * kFaDh * sizeof(float)                                // k + v fixed
-        + 2 * kFaBr * kFaDh * sizeof(float)                              // q + do per q_tile
-        + kFaBr * kFaBc * sizeof(float);                                 // s_smem [Br][Bc]
+        + 2 * kFaBr * kFaDh * sizeof(float);                             // q + do per q_tile
     const int num_kv_tiles = (S + kFaBc - 1) / kFaBc;
     flash_attn_bwd_dkdv_kernel<<<BH * num_kv_tiles, kFaBc, smem_dkdv, kTensorCudaStream>>>(
             d_q, d_k, d_v, d_do, d_lse, tl_fa_D,
             d_dk, d_dv, BH, S, scale);
-    if (cudaPeekAtLastError() != cudaSuccess) return false;
+    if (cudaGetLastError() != cudaSuccess) return false;
 
     // 3. dQ kernel (one block per q_tile)
     constexpr size_t smem_dq =
         2 * kFaBr * kFaDh * sizeof(float)                                // q + do fixed
-        + 2 * kFaBc * kFaDh * sizeof(float)                              // k + v per kv_tile
-        + kFaBc * kFaBr * sizeof(float);                                 // s_smem [Bc][Br] transposed
+        + 2 * kFaBc * kFaDh * sizeof(float);                             // k + v per kv_tile
     const int num_q_tiles = (S + kFaBr - 1) / kFaBr;
     flash_attn_bwd_dq_kernel<<<BH * num_q_tiles, kFaBr, smem_dq, kTensorCudaStream>>>(
             d_q, d_k, d_v, d_do, d_lse, tl_fa_D,
             d_dq, BH, S, scale);
-    return cudaPeekAtLastError() == cudaSuccess;
+    return cudaGetLastError() == cudaSuccess;
 }
 
 // ========== JNI ==========
@@ -5727,7 +5709,6 @@ void jgpt_cuda_extra_cleanup(void) {
     adamw_pool_free_cached();
     attn_bwd_host_free_cached();
     attn_bwd_aux_free_cached();
-    if (tl_fa_lse != nullptr) { cudaFree(tl_fa_lse); tl_fa_lse = nullptr; tl_fa_lse_bytes = 0; }
     if (tl_fa_D   != nullptr) { cudaFree(tl_fa_D);   tl_fa_D   = nullptr; tl_fa_D_bytes   = 0; }
 }
 
@@ -5744,16 +5725,19 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionForwar
     (void) env; (void) clazz;
     if (!dQPtr || !dKPtr || !dVPtr || !dOutPtr || !dLSEPtr || BH <= 0 || S <= 0) return;
 
-    size_t lse_bytes = (size_t)BH * S * sizeof(float);
-    /* dLSEPtr points to the caller's pre-allocated device buffer. */
+    /* dLSEPtr — буфер вызывающего на устройстве [BH*S] float. */
     jgpt_cuda_ensure_stream();
-    flash_attn_fwd_run(
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dQPtr)),
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dKPtr)),
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dVPtr)),
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dOutPtr)),
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dLSEPtr)),
-        BH, S, scale);
+    if (!flash_attn_fwd_run(
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dQPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dKPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dVPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dOutPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dLSEPtr)),
+                BH,
+                S,
+                scale)) {
+        fprintf(stderr, "flashAttentionForwardGPUDeviceResident: flash_attn_fwd_run failed\n");
+    }
 }
 
 // ----------------------------------------------------------------
@@ -5778,17 +5762,21 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionBackwa
     if (!fa_ensure_D(D_bytes)) return;
 
     jgpt_cuda_ensure_stream();
-    flash_attn_bwd_run(
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dQPtr)),
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dKPtr)),
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dVPtr)),
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dOPtr)),
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dOGradPtr)),
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dLSEPtr)),
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dGradQPtr)),
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dGradKPtr)),
-        reinterpret_cast<float*>(static_cast<uintptr_t>(dGradVPtr)),
-        BH, S, scale);
+    if (!flash_attn_bwd_run(
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dQPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dKPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dVPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dOPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dOGradPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dLSEPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dGradQPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dGradKPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dGradVPtr)),
+                BH,
+                S,
+                scale)) {
+        fprintf(stderr, "flashAttentionBackwardGPUDeviceResident: flash_attn_bwd_run failed\n");
+    }
 }
 
 #ifdef __cplusplus

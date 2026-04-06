@@ -91,8 +91,9 @@ public final class MultiBookTrain {
         }
 
         BookTrainingState state = BookTrainingState.load(statePath);
-        LLMConfig llm = LLMConfig.applySeqLenOverrideFromEnv(
-                LLMConfig.applyBatchSizeOverrideFromEnv(LLMConfig.smart50M()));
+        LLMConfig llm = LLMConfig.applyAccumulationStepsOverrideFromEnv(
+                LLMConfig.applySeqLenOverrideFromEnv(
+                        LLMConfig.applyBatchSizeOverrideFromEnv(LLMConfig.smart50M())));
         log.info("{} эффективный размер батча: {}", LogFmt.badge("CFG"), llm.batchSize);
         if (System.getenv("JGPT_MAX_SEQ_LEN") != null) {
             log.info("{} maxSeqLen переопределён через JGPT_MAX_SEQ_LEN: {}", LogFmt.badge("CFG"), llm.maxSeqLen);

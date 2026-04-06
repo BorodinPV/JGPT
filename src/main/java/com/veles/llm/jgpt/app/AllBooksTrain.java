@@ -94,9 +94,10 @@ public final class AllBooksTrain {
         }
         log.info("[DATA] книг найдено: {}", books.size());
 
-        LLMConfig llm = LLMConfig.applyEpochsOverrideFromEnv(
-                LLMConfig.applySeqLenOverrideFromEnv(
-                        LLMConfig.applyBatchSizeOverrideFromEnv(LLMConfig.smart50M())));
+        LLMConfig llm = LLMConfig.applyAccumulationStepsOverrideFromEnv(
+                LLMConfig.applyEpochsOverrideFromEnv(
+                        LLMConfig.applySeqLenOverrideFromEnv(
+                                LLMConfig.applyBatchSizeOverrideFromEnv(LLMConfig.smart50M()))));
         runCore(root, dataDir, books, llm, null, TrainingEventCallback.NOOP, null);
     }
 
@@ -116,7 +117,8 @@ public final class AllBooksTrain {
             throws Exception {
         LLMConfig base =
                 LLMConfig.applyEpochsOverrideFromEnv(LLMConfig.smart50M());
-        LLMConfig llm = LLMConfig.applyPreset(base, preset);
+        LLMConfig llm =
+                LLMConfig.applyAccumulationStepsOverrideFromEnv(LLMConfig.applyPreset(base, preset));
         runCore(root, dataDir, books, llm, preset, callback, lossScaler, trainerSlot);
     }
 

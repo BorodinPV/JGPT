@@ -140,9 +140,18 @@ count_plateau_evals() {
 }
 
 last_step_time() {
-    # Время последней строки [STEP] в секундах unix
+    # Секунды с последней строки прогресса в *текущем сегменте* лога (с строки start_line).
+    # Иначе: при JGPT_TRAIN_PERF=1 между редкими [STEP] идут [PERF] шаг N; tail по всему файлу
+    # цеплялся к [STEP] прошлого запуска → ложное «зависание» на тысячи секунд.
+    local start_line="${1:-1}"
+    local last_line
+    last_line=$(awk -v start="$start_line" '
+        NR >= start && /\[STEP\]/ { line = $0 }
+        NR >= start && /\[PERF\]/ && /шаг[[:space:]]+[0-9]/ { line = $0 }
+        END { if (line != "") print line }
+    ' "$LOG_FILE" 2>/dev/null)
     local last
-    last=$(grep "\[STEP\]" "$LOG_FILE" 2>/dev/null | tail -1 | grep -oE '^[0-9]{2}:[0-9]{2}:[0-9]{2}' || echo "")
+    last=$(echo "$last_line" | grep -oE '^[0-9]{2}:[0-9]{2}:[0-9]{2}' || echo "")
     if [[ -z "$last" ]]; then echo 0; return; fi
     # Конвертируем HH:MM:SS в секунды от полуночи
     local h m s
@@ -264,8 +273,8 @@ while true; do
             break
         fi
 
-        # 3. Зависание (нет новых шагов)
-        IDLE=$(last_step_time)
+        # 3. Зависание (нет новых шагов в сегменте сессии)
+        IDLE=$(last_step_time "$LOG_START_LINE")
         if [[ "$IDLE" -gt "$HANG_SECONDS" ]] && [[ "$LOG_START_LINE" -gt 1 ]]; then
             STOP_REASON="Зависание (нет шагов $IDLE сек)"
             break

@@ -42,7 +42,7 @@ public final class ProfileQuickRun {
                         nano.accumulationSteps,
                         nano.learningRate,
                         1);
-        llm = LLMConfig.applyBatchSizeOverrideFromEnv(llm);
+        llm = LLMConfig.applyAccumulationStepsOverrideFromEnv(LLMConfig.applyBatchSizeOverrideFromEnv(llm));
         StringBuilder sb = new StringBuilder();
         String line =
                 "the cat sat on the mat. the dog ran in the park. "

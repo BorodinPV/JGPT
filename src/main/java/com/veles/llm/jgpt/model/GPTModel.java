@@ -845,6 +845,13 @@ public final class GPTModel {
             }
         }
         blockCachesDevice = null;
+        /*
+         * CUDA graph capture записывает указатели на слоты {@link BlockActivationCacheDevice}. После close()/пула
+         * буферы на новых адресах при том же decoderLayerGraphKey (batch/seq/mask/режим) replay давал бы
+         * cudaGraphLaunch / illegal access — обязательно сбрасываем exec.
+         */
+        destroyDecoderLayerCudaGraphs();
+        decoderLayerGraphCaptureKey = Integer.MIN_VALUE;
     }
 
     /**
@@ -858,6 +865,7 @@ public final class GPTModel {
         closeEmbeddingScratchGpu();
         clearGpuResidentDecoderScratchForTrainHandoff();
         clearSampledTrainLossGrad();
+        /* training-кэш мог быть уже null (чистый infer); графы декодера всё равно нужно сбросить — см. scratch-handoff */
         if (decoderLayerGraphExec != null) {
             destroyDecoderLayerCudaGraphs();
             decoderLayerGraphCaptureKey = Integer.MIN_VALUE;

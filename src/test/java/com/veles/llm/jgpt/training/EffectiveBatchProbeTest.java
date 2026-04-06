@@ -45,7 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code JGPT_PROBE_MAX_BATCH}, {@code JGPT_BATCH_PROBE_CPU=1}.
  *
  * <p>FP16 GEMM (Tensor Cores): статический блок ниже выставляет {@code jgpt.fp16.matmul=true} до первой
- * загрузки {@link com.veles.llm.jgpt.TensorOpsGPU} (как {@code JGPT_FP16_MATMUL=1} / {@code run-training.sh}).
+ * загрузки {@link com.veles.llm.jgpt.TensorOpsGPU} (как {@code JGPT_FP16_MATMUL=1} / {@code ./scripts/jgpt-smart.sh}).
  * Запускайте зонд отдельно: {@code mvn test -Dtest=EffectiveBatchProbeTest ...} — иначе другие тесты могут
  * загрузить TensorOpsGPU раньше, и в сводке будет FP16=выкл. Отключить для зонда: {@code JGPT_BATCH_PROBE_FP16=0}.
  */

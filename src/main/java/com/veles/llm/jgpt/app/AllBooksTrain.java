@@ -56,7 +56,7 @@ import org.slf4j.LoggerFactory;
  *   JGPT_TRAIN_LOSS_MODE=sampled JGPT_SAMPLED_CE_CANDIDATES=512 \
  *   JGPT_MAX_SEQ_LEN=1024 JGPT_CE_ASYNC=0 JGPT_INTERACTIVE_EVERY=0 \
  *   JGPT_FINETUNE=1 JGPT_EPOCHS=40 \
- *   ./scripts/train-e2e-gpu.sh allbooks
+ *   ./scripts/jgpt-smart.sh
  * </pre>
  */
 public final class AllBooksTrain {
@@ -280,7 +280,7 @@ public final class AllBooksTrain {
             try {
                 if (trainer.getGlobalStep() > stepAtTrainStart) {
                     trainer.saveCheckpoint("final");
-                    log.info("[SHUTDOWN] checkpoint сохранён. Возобновление: ./scripts/jgpt-start.sh");
+                    log.info("[SHUTDOWN] checkpoint сохранён. Возобновление: ./scripts/jgpt-smart.sh");
                 } else {
                     trainer.saveCheckpoint("emergency");
                     log.warn("[SHUTDOWN] Нет прогресса (шаг {} = старт) — checkpoint_final.bin НЕ перезаписан. "

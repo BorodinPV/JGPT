@@ -552,7 +552,7 @@ public final class LLMTrainer {
     }
 
     /**
-     * Сводка env и эффективных флагов для сверки с {@code scripts/run-training-gpu.sh}; ключи зондов
+     * Сводка env и эффективных флагов для сверки с {@code scripts/jgpt-smart.sh}; ключи зондов
      * (JGPT_BATCH_PROBE*, JGPT_PROBE_*) в {@link #train()} не читаются.
      */
     private void logTensorTrainingEnvSnapshot() {
@@ -2180,7 +2180,7 @@ public final class LLMTrainer {
         Files.createDirectories(dir);
         String path = config.checkpointDir + "/checkpoint_" + name + ".bin";
 
-        // Обновляем state/last_step.txt для внешнего монитора (jgpt-monitor.sh)
+        // Обновляем state/last_step.txt для внешнего монитора / дашборда
         try {
             Path stateDir = Path.of("state");
             Files.createDirectories(stateDir);

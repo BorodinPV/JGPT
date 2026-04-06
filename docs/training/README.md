@@ -8,42 +8,39 @@
 |--------|---------|
 | **Рекомендуемый** (авто-адаптация, один JVM) | `./scripts/jgpt-smart.sh` |
 | С явного пресета | `./scripts/jgpt-smart.sh 01-aggressive` |
-| Ручной (без авто-переключения) | `./scripts/jgpt-start.sh [пресет] [--finetune]` |
-| Напрямую через Maven | `mvn -q exec:java -Dexec.mainClass=com.veles.llm.jgpt.app.SmartTrainingSupervisor -Dexec.args="--boo . [пресет]"` |
+| Напрямую через Maven | `mvn -q compile exec:java -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain -Dexec.args='--boo .'` (после `cmake` и экспорта `JGPT_*`) |
 
 ### Как работает `jgpt-smart.sh`
 
-Тонкая bash-обёртка (~60 строк):
+Один скрипт в `scripts/`:
 1. Собирает `libjgpt_cuda.so` (`cmake` + `cmake --build`)
-2. Выставляет базовые `JGPT_*` env-переменные
-3. Запускает **один JVM-процесс**: `SmartTrainingSupervisor | tee -a training_allbooks.log`
+2. Выставляет базовые `JGPT_*` env-переменные и подмешивает активный пресет из `env/<имя>.env`
+3. Запускает **`AllBooksTrain`** с `tee -a training_allbooks.log`
+4. **Bash-монитор** по логу: OOM, залипание FP16 scale, «зависание» без шагов, плато eval — при необходимости останавливает JVM и перезапускает со следующим пресетом (upgrade/downgrade по порогам в начале скрипта)
 
-Вся логика адаптации — в Java:
+Альтернатива в одной JVM без перезапусков: класс **`SmartTrainingSupervisor`** + `AllBooksTrain.runWithPreset` (запуск вручную через Maven, см. исходники).
 
-- **`SmartTrainingSupervisor`** запускает `AllBooksTrain.runWithPreset(preset)` в треде и слушает события
-- **`TrainingEventCallback`** — интерфейс событий из `LLMTrainer`: каждый шаг оптимизатора, каждый eval, overflow-скипы, OOM
-- **`PresetDecider`** накапливает метрики и выдаёт решение `DOWNGRADE / UPGRADE / NONE`
-- При решении: `LLMTrainer.requestSupervisedStop()` → ждём завершения → меняем пресет → снова `runWithPreset()` (тот же JVM, тот же чекпоинт)
-- При фатальной CUDA-ошибке: `System.exit(2)` — GPU-контекст повреждён, JVM нельзя переиспользовать
+Конфигурация цепочки пресетов в bash: массив `PRESETS` в `jgpt-smart.sh`; для Java-супервизора — [`PresetConfig.SMART_PRESET_CHAIN`](../../src/main/java/com/veles/llm/jgpt/training/PresetConfig.java)
 
-Конфигурация цепочки: [`PresetConfig.SMART_PRESET_CHAIN`](../../src/main/java/com/veles/llm/jgpt/training/PresetConfig.java)
+### Finetune (сброс `globalStep`, веса и Adam из чекпоинта)
 
-### `jgpt-start.sh` — ручной запуск
-
-Загружает `env/<пресет>.env` в текущий shell → запускает `train-e2e-gpu.sh allbooks`. Без авто-переключения пресетов. Полезен для:
-- Явного выбора пресета без smart-логики
-- `--finetune` (сброс `globalStep` при сохранённых весах и Adam-состоянии)
+```bash
+JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh
+# или явный пресет:
+JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh 01-aggressive
+```
 
 ## Цепочка пресетов
 
-`00-max-throughput` → `01-aggressive` → `02-stable` → `03-recovery`
+`00-max-throughput` → `01-aggressive` → `02-stable` → `03-recovery` → `04-minimal`
 
 | Пресет | Идея |
 |--------|------|
 | **00** | batch=2, максимальный throughput; первый кандидат на OOM |
 | **01** | Агрессивный режим, старт по умолчанию |
 | **02** | Мягче FP16, стабильнее при overflow |
-| **03** | batch=1, самый осторожный — аварийное продолжение |
+| **03** | batch=1, осторожный режим |
+| **04** | минимальный — последний запасной вариант |
 
 ## Пороги PresetDecider
 
@@ -68,7 +65,7 @@
 - Чекпоинты: **`checkpoints/all_books/`** (`checkpoint_final.bin` приоритетнее `checkpoint_epoch_N.bin`)
 - Checkpoint сохраняется через **shutdown hook** в `LLMTrainer` (Ctrl+C, SIGTERM, supervisedStop)
 - Веса содержат размер позиционных эмбеддингов → **`JGPT_MAX_SEQ_LEN` должен совпадать** с тем, на котором сохранялся чекпоинт
-- `--finetune` / `JGPT_FINETUNE=1`: сбрасывается только `globalStep`; веса и Adam остаются. Работает через `jgpt-start.sh`, не через `jgpt-smart.sh`
+- `JGPT_FINETUNE=1`: сбрасывается только `globalStep`; веса и Adam остаются. Задайте вместе с `./scripts/jgpt-smart.sh` (см. выше).
 
 ## Книги и токенизатор
 
@@ -81,14 +78,14 @@
 | Файл | Содержимое |
 |------|-----------|
 | `state/last_step.txt` | Последний сохранённый globalStep |
-| `state/current_preset_idx` | Текущий индекс пресета (0–3) |
+| `state/current_preset_idx` | Текущий индекс пресета (0–4) |
 | `state/current.env` | Symlink на активный env-файл |
 | `state/stats.json` | Метрики для веб-дашборда (пишет `TrainingStatsWriter`) |
 | `training_allbooks.log` | Полный лог (append) |
 
 ```bash
-# Живой терминальный дашборд
-./scripts/jgpt-monitor.sh
+# Лог обучения
+tail -f training_allbooks.log
 
 # Веб-дашборд с графиками (Chart.js, автообновление 30 с)
 xdg-open dashboard.html
@@ -97,9 +94,9 @@ xdg-open dashboard.html
 ## Ручной запуск без обёрток
 
 ```bash
-# Загрузить пресет вручную и запустить:
+# Загрузить пресет вручную и запустить тот же цикл, что в smart (cmake + mvn allbooks):
 set -a; source env/01-aggressive.env; set +a
-./scripts/train-e2e-gpu.sh allbooks
+./scripts/jgpt-smart.sh 01-aggressive
 ```
 
 **Важно**: `JGPT_*` должны быть экспортированы в **той же** shell-сессии, что запускает Maven.

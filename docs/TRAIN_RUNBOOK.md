@@ -14,33 +14,13 @@
 
 ## Как работает авто-адаптация
 
-`jgpt-smart.sh` — тонкая bash-обёртка (~60 строк). Она:
+`jgpt-smart.sh` — единственный launcher в `scripts/`. Он:
 1. Собирает нативную библиотеку (`cmake` + `cmake --build`)
-2. Выставляет базовые `JGPT_*` env-переменные
-3. Запускает **один JVM-процесс** `SmartTrainingSupervisor` через Maven
+2. Выставляет базовые `JGPT_*` и подмешивает пресет из `env/<имя>.env`
+3. Запускает **`AllBooksTrain`** через Maven, лог в `training_allbooks.log`
+4. **Bash-монитор** читает лог: OOM, залипание FP16 scale, нет шагов &gt;300 с, плато eval (15 подряд без улучшения) — останавливает JVM и перезапускает со следующим пресетом; upgrade при стабильных улучшениях eval (пороги в начале `jgpt-smart.sh`)
 
-Вся логика адаптации — внутри `SmartTrainingSupervisor.java`:
-
-```
-SmartTrainingSupervisor
-    │
-    ├── запускает AllBooksTrain.runWithPreset(preset) в отдельном треде
-    ├── получает события от LLMTrainer через TrainingEventCallback
-    │   (каждый шаг, каждый eval, каждый overflow-скип, OOM)
-    │
-    ├── PresetDecider принимает решение:
-    │   ├── DOWNGRADE: плато eval (15 eval без улучшения)
-    │   │             или много overflow-скипов (≥8 уникальных шагов)
-    │   │             или зависание (>300 с без шага)
-    │   │             или OOM/CUDA-фатал
-    │   ├── UPGRADE:   30 улучшений eval подряд → попытка ускорить
-    │   └── NONE:      продолжаем
-    │
-    ├── при решении: requestSupervisedStop() → ждём завершения шага
-    │   → меняем пресет → снова runWithPreset() (тот же JVM, тот же чекпоинт)
-    │
-    └── при фатальной CUDA-ошибке: System.exit(2) — JVM нельзя переиспользовать
-```
+Опционально в одной JVM: `SmartTrainingSupervisor` + `PresetDecider` (см. исходники, запуск через Maven вручную).
 
 ### Иерархия пресетов
 
@@ -49,9 +29,10 @@ SmartTrainingSupervisor
 | `00-max-throughput` | batch=2, максимальный throughput | Первая попытка |
 | `01-aggressive` | batch=1, агрессивный FP16 | Старт по умолчанию |
 | `02-stable` | Мягче FP16, меньше кандидатов CE | При overflow-проблемах |
-| `03-recovery` | batch=1, самый осторожный | При OOM |
+| `03-recovery` | batch=1, осторожный | При OOM / плато |
+| `04-minimal` | последний запасной вариант | После исчерпания 03 |
 
-Направление авто-понижения: `00 → 01 → 02 → 03`. Авто-повышение в обратную сторону.
+Направление понижения: `00 → 01 → … → 04`. Повышение — в сторону 00 при стабильных улучшениях eval.
 
 ---
 
@@ -67,19 +48,14 @@ SmartTrainingSupervisor
 ./scripts/jgpt-smart.sh 02-stable
 ```
 
-### Ручной (без авто-переключения)
+### Ручной пресет / finetune
 ```bash
-# Текущий пресет
-./scripts/jgpt-start.sh
+# Явный пресет (тот же smart-скрипт, без смены argv — возьмёт state/current_preset_idx)
+./scripts/jgpt-smart.sh 02-stable
 
-# Явный пресет
-./scripts/jgpt-start.sh 02-stable
+# Новый цикл эпох (веса и Adam из чекпоинта, globalStep сбрасывается)
+JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh
 
-# Новый цикл эпох (веса остаются, globalStep сбрасывается)
-./scripts/jgpt-start.sh --finetune
-
-# Список пресетов
-./scripts/jgpt-start.sh --help
 ```
 
 ---
@@ -110,7 +86,7 @@ Ctrl+C
 ./scripts/jgpt-smart.sh
 
 # Начать новый цикл эпох с расширенным корпусом:
-./scripts/jgpt-start.sh --finetune
+JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh
 ```
 
 > **Если добавлено много новых книг** с незнакомой лексикой — пересоздать токенизатор:
@@ -124,8 +100,8 @@ Ctrl+C
 ## Мониторинг
 
 ```bash
-# Живой дашборд в терминале
-./scripts/jgpt-monitor.sh
+# Хвост лога (основной «дашборд»)
+tail -f training_allbooks.log
 
 # Веб-дашборд с графиками (открыть в браузере)
 xdg-open dashboard.html
@@ -143,7 +119,7 @@ cat state/current_preset_idx
 
 ## Расшифровка проблем в логе
 
-| Строка в логе | Причина | Авто-ответ SmartTrainingSupervisor |
+| Строка в логе | Причина | Авто-ответ `jgpt-smart.sh` |
 |---------------|---------|----------------------------------|
 | `cudaMalloc failed` / `OutOfMemoryError` | VRAM переполнен | Downgrade → следующий пресет |
 | `overflow-скип` много раз | FP16 scale залип | Downgrade после 8 уникальных шагов |

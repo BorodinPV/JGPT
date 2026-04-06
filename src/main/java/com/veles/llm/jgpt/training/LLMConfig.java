@@ -276,7 +276,7 @@ public final class LLMConfig {
      * Позволяет уменьшить контекст без перекомпиляции. Актуально при OOM: на RTX 3080 10 ГиБ
      * с 20 слоями и 24 головами кэш attention для backward = {@code heads × seq² × 2 bytes × layers}.
      * При seq=2048 → ~4 ГиБ; при seq=1024 → ~1 ГиБ.
-     * <p>Пример: {@code JGPT_MAX_SEQ_LEN=1024 ./scripts/train-e2e-gpu.sh}
+     * <p>Пример: {@code JGPT_MAX_SEQ_LEN=1024 ./scripts/jgpt-smart.sh}
      */
     public static LLMConfig applySeqLenOverrideFromEnv(LLMConfig base) {
         int overridden = readPositiveEnvInt("JGPT_MAX_SEQ_LEN", base.maxSeqLen);
@@ -300,7 +300,7 @@ public final class LLMConfig {
     /**
      * Переопределяет число эпох через переменную окружения {@code JGPT_EPOCHS}.
      *
-     * <p>Пример: {@code JGPT_EPOCHS=40 ./scripts/train-e2e-gpu.sh allbooks}
+     * <p>Пример: {@code JGPT_EPOCHS=40 ./scripts/jgpt-smart.sh}
      */
     public static LLMConfig applyEpochsOverrideFromEnv(LLMConfig base) {
         int overridden = readPositiveEnvInt("JGPT_EPOCHS", base.epochs);
@@ -325,7 +325,7 @@ public final class LLMConfig {
      * Переопределяет {@link #accumulationSteps} через переменную окружения {@code JGPT_ACCUMULATION_STEPS}.
      *
      * <p>Микробатчей градиента на один шаг оптимизатора (см. {@link TrainingConfig#accumulationSteps}): CE и backward
-     * масштабируются как {@code 1/N}. Пример: {@code JGPT_ACCUMULATION_STEPS=4 ./scripts/train-e2e-gpu.sh allbooks}
+     * масштабируются как {@code 1/N}. Пример: {@code JGPT_ACCUMULATION_STEPS=4 ./scripts/jgpt-smart.sh}
      */
     public static LLMConfig applyAccumulationStepsOverrideFromEnv(LLMConfig base) {
         int overridden = readPositiveEnvInt("JGPT_ACCUMULATION_STEPS", base.accumulationSteps);

@@ -25,7 +25,7 @@
         <junit.platform.version>1.11.4</junit.platform.version>
         <!-- Доп. флаги JVM для тестов (профили gc-zgc / gc-parallel-tune). -->
         <jvm.gc.extra></jvm.gc.extra>
-        <!-- Пример: -Djvm.check.jni=-Xcheck:jni (JNI; см. scripts/profile-matmul-refactor.sh). -->
+        <!-- Пример: -Djvm.check.jni=-Xcheck:jni (JNI отладка). -->
         <jvm.check.jni></jvm.check.jni>
         <!-- exec:java (см. exec-maven-plugin): переопределение через -Dexec.mainClass=... -->
         <exec.mainClass>com.veles.llm.tensor.app.MultiBookTrain</exec.mainClass>

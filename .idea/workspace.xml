@@ -4,33 +4,23 @@
     <option name="autoReloadType" value="NONE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Обнвоил README.md">
+    <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Рефакторинг">
+      <change beforePath="$PROJECT_DIR$/.idea/dataSources.local.xml" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/clean_text.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/TRAIN_RUNBOOK.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/TRAIN_RUNBOOK.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/training/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/training/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pom.xml" beforeDir="false" afterPath="$PROJECT_DIR$/pom.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/run-training.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/batch-sweep.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/build_jgpt_cuda.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/fix_cross_package_imports.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/jgpt-gpu-train-lib.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/jgpt-monitor.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/jgpt-smart.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/jgpt-smart.sh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/jgpt-start.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/migrate_packages.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/mvn_test_gpu.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/nsys-rep-export-sqlite.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/perf-smoke.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/profile-matmul-refactor.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/profile-nsys.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/qdstrm-to-nsys-rep.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/run-training-gpu.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/train-e2e-gpu.sh" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda.cu" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_graph_prewarm.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_graph_prewarm.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_stream.cuh" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_stream.cuh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/GpuHalfBuffer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/GpuHalfBuffer.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/TensorOpsGPU.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/TensorOpsGPU.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/BlockActivationCacheDevice.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/BlockActivationCacheDevice.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/GPTModel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/GPTModel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/GpuWorkspaceCleanup.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/GpuWorkspaceCleanup.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/TensorOps.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/TensorOps.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/TransformerBackward.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/TransformerBackward.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/training/EffectiveBatchProbeTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/training/EffectiveBatchProbeTest.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/state/current.env" beforeDir="false" afterPath="$PROJECT_DIR$/state/current.env" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/state/current_preset_idx" beforeDir="false" afterPath="$PROJECT_DIR$/state/current_preset_idx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/last_step.txt" beforeDir="false" afterPath="$PROJECT_DIR$/state/last_step.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/stats.json" beforeDir="false" afterPath="$PROJECT_DIR$/state/stats.json" afterDir="false" />
     </list>
@@ -85,7 +75,7 @@
     &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
     &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
     &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.pluginManager&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;ml.llm.AcpAgentsConfigurable&quot;,
     &quot;show.migrate.to.gradle.popup&quot;: &quot;false&quot;,
     &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;,
     &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
@@ -105,7 +95,7 @@
       <updated>1775156484893</updated>
       <workItem from="1775455617597" duration="4931000" />
       <workItem from="1775460565645" duration="1047000" />
-      <workItem from="1775473023376" duration="1335000" />
+      <workItem from="1775566446952" duration="753000" />
     </task>
     <task id="LOCAL-00001" summary="Переработка для gpu">
       <option name="closed" value="true" />
@@ -259,23 +249,7 @@
       <option name="project" value="LOCAL" />
       <updated>1775458509865</updated>
     </task>
-    <task id="LOCAL-00020" summary="Рефакторинг cuda">
-      <option name="closed" value="true" />
-      <created>1775473739596</created>
-      <option name="number" value="00020" />
-      <option name="presentableId" value="LOCAL-00020" />
-      <option name="project" value="LOCAL" />
-      <updated>1775473739597</updated>
-    </task>
-    <task id="LOCAL-00021" summary="Обнвоил README.md">
-      <option name="closed" value="true" />
-      <created>1775473878882</created>
-      <option name="number" value="00021" />
-      <option name="presentableId" value="LOCAL-00021" />
-      <option name="project" value="LOCAL" />
-      <updated>1775473878882</updated>
-    </task>
-    <option name="localTasksCounter" value="22" />
+    <option name="localTasksCounter" value="20" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -306,8 +280,6 @@
     <MESSAGE value="Настройка и оптимизация." />
     <MESSAGE value="Реализовал переключение пресетов в java" />
     <MESSAGE value="Рефакторинг" />
-    <MESSAGE value="Рефакторинг cuda" />
-    <MESSAGE value="Обнвоил README.md" />
-    <option name="LAST_COMMIT_MESSAGE" value="Обнвоил README.md" />
+    <option name="LAST_COMMIT_MESSAGE" value="Рефакторинг" />
   </component>
 </project>

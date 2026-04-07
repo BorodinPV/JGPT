@@ -87,14 +87,28 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
     /** {@code true} после первой аллокации, если слоты — half. */
     private boolean storageFp16;
 
-    private GpuFloatBuffer floatStage;
-    private long floatStageCap;
+    /**
+     * Только SDPA attention probs (FP16-слоты): указатель участвует в CUDA Graph декодера — не перевыделять из путей
+     * {@link #copySlotFromHostFloat}/{@link #copySlotToHostFloat}.
+     */
+    private GpuFloatBuffer attnProbsFloatStage;
+    private long attnProbsFloatStageCap;
+
+    /** Staging half↔float для произвольных слотов; отделён от {@link #attnProbsFloatStage}. */
+    private GpuFloatBuffer halfSlotFloatStage;
+    private long halfSlotFloatStageCap;
 
     private int cachedBatch = -1;
     private int cachedSeqLen = -1;
     private int cachedDModel = -1;
     private int cachedNumHeads = -1;
     private int cachedDInt = -1;
+
+    /**
+     * Инкремент при любом перевыделении device-буферов слотов/Flash/stage, на которые может ссылаться CUDA graph
+     * декодера; участвует в {@link com.veles.llm.jgpt.model.GPTModel} {@code decoderLayerGraphKey}.
+     */
+    private long graphCaptureGeneration;
 
     private static final ThreadLocal<Map<ArchKey, ArrayDeque<PooledBuffers>>> BLOCK_CACHE_POOL =
             ThreadLocal.withInitial(HashMap::new);
@@ -104,6 +118,90 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
     /** Как фактически выделен кэш после {@link #ensure}; до ensure — {@code false}. */
     public boolean isFp16ActivationStorage() {
         return storageFp16;
+    }
+
+    /** Поколение буферов для инвалидации decoder CUDA graph при смене указателей на VRAM. */
+    public long graphCaptureGeneration() {
+        return graphCaptureGeneration;
+    }
+
+    /** Только диагностика decoder CUDA graph: строка с cacheGen и ключевыми device pointer'ами слота. */
+    void appendDecoderGraphDevicePointers(StringBuilder sb) {
+        sb.append("cacheGen=").append(graphCaptureGeneration);
+        if (!isAllocated()) {
+            sb.append(" cache=!alloc");
+            return;
+        }
+        if (TensorOpsGPU.FLASH_ATTENTION) {
+            if (attnLse != null && !attnLse.isClosed()) {
+                sb.append(" lse=0x").append(Long.toHexString(attnLse.devicePointer()));
+            }
+            if (attnOutHeads != null && !attnOutHeads.isClosed()) {
+                sb.append(" attnOutHeads=0x").append(Long.toHexString(attnOutHeads.devicePointer()));
+            }
+        }
+        if (attnProbsFloatStage != null && !attnProbsFloatStage.isClosed()) {
+            sb.append(" probsFloatStage=0x").append(Long.toHexString(attnProbsFloatStage.devicePointer()));
+        }
+    }
+
+    /**
+     * Заполняет {@code s[8..10]} для сравнения снимков (LSE, O_heads, FP32 staging probs); остальные индексы —
+     * {@link com.veles.llm.jgpt.model.GPTModel}.
+     */
+    void fillDecoderGraphDebugSnapshotSlots(long[] s) {
+        if (s == null || s.length < 11) {
+            return;
+        }
+        if (!isAllocated()) {
+            return;
+        }
+        if (TensorOpsGPU.FLASH_ATTENTION) {
+            if (attnLse != null && !attnLse.isClosed()) {
+                s[8] = attnLse.devicePointer();
+            }
+            if (attnOutHeads != null && !attnOutHeads.isClosed()) {
+                s[9] = attnOutHeads.devicePointer();
+            }
+        }
+        if (attnProbsFloatStage != null && !attnProbsFloatStage.isClosed()) {
+            s[10] = attnProbsFloatStage.devicePointer();
+        }
+    }
+
+    private void bumpGraphCaptureGeneration() {
+        graphCaptureGeneration++;
+    }
+
+    /**
+     * Закрывает только transient FP32 staging ({@link #attnProbsFloatStage}, {@link #halfSlotFloatStage}). Имеет смысл
+     * после {@link com.veles.llm.jgpt.model.GPTModel#destroyDecoderLayerCudaGraphs()} на OOM: основные слоты кэша не
+     * трогаем (backward), а staging снимает фрагментацию перед eager-остатком forward.
+     *
+     * @return {@code true}, если что-то было освобождено
+     */
+    public boolean releaseTransientFloatStagingBuffers() {
+        boolean changed = false;
+        if (attnProbsFloatStage != null) {
+            if (!attnProbsFloatStage.isClosed()) {
+                attnProbsFloatStage.close();
+                changed = true;
+            }
+            attnProbsFloatStage = null;
+            attnProbsFloatStageCap = 0L;
+        }
+        if (halfSlotFloatStage != null) {
+            if (!halfSlotFloatStage.isClosed()) {
+                halfSlotFloatStage.close();
+                changed = true;
+            }
+            halfSlotFloatStage = null;
+            halfSlotFloatStageCap = 0L;
+        }
+        if (changed) {
+            bumpGraphCaptureGeneration();
+        }
+        return changed;
     }
 
     /** Returns true for slots that are always stored as float32 regardless of storageFp16. */
@@ -144,24 +242,26 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             return;
         }
         if (storageFp16 && !isAlwaysFloat32(id)) {
-            ensureFloatStage(n);
-            floatStage.copyFrom(src, srcOff, n);
-            TensorOpsGPU.convertFloatDeviceToHalfDevice(floatStage.devicePointer(), requireHalf(id).devicePointer(), n);
+            ensureHalfSlotFloatStage(n);
+            halfSlotFloatStage.copyFrom(src, srcOff, n);
+            TensorOpsGPU.convertFloatDeviceToHalfDevice(
+                    halfSlotFloatStage.devicePointer(), requireHalf(id).devicePointer(), n);
         } else {
             dstFloat(id).copyFrom(src, srcOff, n);
         }
     }
 
     /**
-     * Буфер для прямой записи attention probs с device (FP32-слот или {@link #floatStage} при FP16-хранилище).
+     * Буфер для прямой записи attention probs с device (FP32-слот или {@link #attnProbsFloatStage} при
+     * FP16-хранилище).
      */
     public GpuFloatBuffer attnProbsWriteBufferAsFloat(int probFloats) {
         if (probFloats <= 0) {
             throw new IllegalArgumentException("probFloats must be positive");
         }
         if (storageFp16) {
-            ensureFloatStage(probFloats);
-            return floatStage;
+            ensureAttnProbsFloatStage(probFloats);
+            return attnProbsFloatStage;
         }
         GpuFloatBuffer b = dstFloat(SlotId.ATTN_PROBS);
         if (b.numFloats() < probFloats) {
@@ -171,16 +271,16 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
     }
 
     /**
-     * Перед {@code cudaStreamBeginCapture} на декодере: для FP16-слотов выделить {@link #floatStage} под SDPA probs,
-     * иначе ленивый {@link #ensureFloatStage} внутри захвата вызывает {@code cudaMalloc} (недопустимо при построении
-     * графа).
+     * Перед {@code cudaStreamBeginCapture} на декодере: для FP16-слотов выделить {@link #attnProbsFloatStage} под SDPA
+     * probs (изолирован от {@link #halfSlotFloatStage}), иначе ленивое выделение внутри захвата вызвало бы {@code
+     * cudaMalloc} (недопустимо при построении графа).
      */
     public void ensureAttentionProbsFloatStageForGraphCapture(int probFloats) {
         if (probFloats <= 0 || !isAllocated()) {
             return;
         }
         if (storageFp16) {
-            ensureFloatStage(probFloats);
+            ensureAttnProbsFloatStage(probFloats);
         }
     }
 
@@ -201,23 +301,41 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             return;
         }
         if (storageFp16 && !isAlwaysFloat32(id)) {
-            ensureFloatStage(n);
-            TensorOpsGPU.convertHalfDeviceToFloatDevice(requireHalf(id).devicePointer(), floatStage.devicePointer(), n);
-            floatStage.copyTo(dst, dstOff, n);
+            ensureHalfSlotFloatStage(n);
+            TensorOpsGPU.convertHalfDeviceToFloatDevice(
+                    requireHalf(id).devicePointer(), halfSlotFloatStage.devicePointer(), n);
+            halfSlotFloatStage.copyTo(dst, dstOff, n);
         } else {
             dstFloat(id).copyTo(dst, dstOff, n);
         }
     }
 
-    private void ensureFloatStage(long needFloats) {
-        if (floatStage != null && !floatStage.isClosed() && floatStageCap >= needFloats) {
+    private void ensureAttnProbsFloatStage(long needFloats) {
+        if (attnProbsFloatStage != null
+                && !attnProbsFloatStage.isClosed()
+                && attnProbsFloatStageCap >= needFloats) {
             return;
         }
-        if (floatStage != null) {
-            floatStage.close();
+        if (attnProbsFloatStage != null) {
+            attnProbsFloatStage.close();
         }
-        floatStage = GpuFloatBuffer.allocate(needFloats);
-        floatStageCap = needFloats;
+        attnProbsFloatStage = GpuFloatBuffer.allocate(needFloats);
+        attnProbsFloatStageCap = needFloats;
+        bumpGraphCaptureGeneration();
+    }
+
+    private void ensureHalfSlotFloatStage(long needFloats) {
+        if (halfSlotFloatStage != null
+                && !halfSlotFloatStage.isClosed()
+                && halfSlotFloatStageCap >= needFloats) {
+            return;
+        }
+        if (halfSlotFloatStage != null) {
+            halfSlotFloatStage.close();
+        }
+        halfSlotFloatStage = GpuFloatBuffer.allocate(needFloats);
+        halfSlotFloatStageCap = needFloats;
+        bumpGraphCaptureGeneration();
     }
 
     private GpuFloatBuffer dstFloat(SlotId id) {
@@ -410,21 +528,27 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         cachedDModel = dModel;
         cachedNumHeads = numHeads;
         cachedDInt = dIntermediate;
+        bumpGraphCaptureGeneration();
     }
 
     /**
      * Allocates/resizes flash-attention-only buffers (LSE and O_heads).
-     * Called from ensure() after the main pool/alloc path.  No-op when flash=false.
+     * Called from ensure() after the main pool/alloc path. No-op when flash=false.
+     *
+     * <p>При росте {@code lseFlat}/{@code headFlat} старый {@link GpuFloatBuffer} закрывается перед новым allocate —
+     * это не утечка, а смена ёмкости (см. {@link #graphCaptureGeneration}).
      */
     private void ensureFlashBuffers(boolean flash, long lseFlat, long headFlat) {
         if (!flash) return;
         if (attnLse == null || attnLse.isClosed() || attnLse.numFloats() < lseFlat) {
             if (attnLse != null && !attnLse.isClosed()) attnLse.close();
             attnLse = GpuFloatBuffer.allocate(lseFlat);
+            bumpGraphCaptureGeneration();
         }
         if (attnOutHeads == null || attnOutHeads.isClosed() || attnOutHeads.numFloats() < headFlat) {
             if (attnOutHeads != null && !attnOutHeads.isClosed()) attnOutHeads.close();
             attnOutHeads = GpuFloatBuffer.allocate(headFlat);
+            bumpGraphCaptureGeneration();
         }
     }
 
@@ -766,6 +890,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             c.attnLse = attnLse;
             c.attnOutHeads = attnOutHeads;
             c.storageFp16 = fp16;
+            c.bumpGraphCaptureGeneration();
             xIn = null;
             xNorm1 = null;
             attnOut = null;
@@ -838,6 +963,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             c.cachedNumHeads = -1;
             c.cachedDInt = -1;
             c.storageFp16 = false;
+            c.bumpGraphCaptureGeneration();
             return p;
         }
 
@@ -986,10 +1112,15 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
     private void closeBuffersHard() {
         clearFp32Slots();
         clearFp16Slots();
-        if (floatStage != null) {
-            floatStage.close();
-            floatStage = null;
-            floatStageCap = 0L;
+        if (attnProbsFloatStage != null) {
+            attnProbsFloatStage.close();
+            attnProbsFloatStage = null;
+            attnProbsFloatStageCap = 0L;
+        }
+        if (halfSlotFloatStage != null) {
+            halfSlotFloatStage.close();
+            halfSlotFloatStage = null;
+            halfSlotFloatStageCap = 0L;
         }
         cachedBatch = -1;
         cachedSeqLen = -1;
@@ -997,6 +1128,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         cachedNumHeads = -1;
         cachedDInt = -1;
         storageFp16 = false;
+        bumpGraphCaptureGeneration();
     }
 
     private static GpuFloatBuffer closeBuf(GpuFloatBuffer b) {

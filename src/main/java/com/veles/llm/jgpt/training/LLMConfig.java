@@ -494,6 +494,72 @@ public final class LLMConfig {
     }
 
     /**
+     * Подробные логи указателей decoder CUDA graph (перед capture/replay, сравнение с эталоном): env {@code
+     * JGPT_DECODER_LAYER_CUDA_GRAPH_LOG=1} / prop {@code jgpt.decoder.layer.cudaGraph.log}.
+     */
+    public static boolean decoderLayerCudaGraphDebugLogFromEnvOrProp() {
+        return readBoolEnvOrProp("JGPT_DECODER_LAYER_CUDA_GRAPH_LOG", "jgpt.decoder.layer.cudaGraph.log");
+    }
+
+    /**
+     * Лог VRAM после первого успешного graph launch слоя (MiB): env {@code JGPT_DECODER_CUDA_GRAPH_MEM_LOG=1} / prop
+     * {@code jgpt.decoder.cudaGraph.memLog}.
+     */
+    public static boolean decoderCudaGraphMemLogFromEnvOrProp() {
+        return readBoolEnvOrProp("JGPT_DECODER_CUDA_GRAPH_MEM_LOG", "jgpt.decoder.cudaGraph.memLog");
+    }
+
+    /**
+     * Минимальный cudaMemGetInfo free (MiB) перед graph-path слоя decoder: env {@code JGPT_DECODER_GRAPH_MIN_FREE_MIB} /
+     * prop {@code jgpt.decoder.graph.minFreeMib}. {@code 0} — выкл. Если {@code total − used} меньше порога, graph до
+     * конца текущего forward отключается (только eager). При OOM на {@code cudaGraphLaunch} при ~134 MiB free в логах
+     * можно задать, например, {@code 192}.
+     */
+    public static int decoderGraphMinFreeMibFromEnvOrProp() {
+        String e = System.getenv("JGPT_DECODER_GRAPH_MIN_FREE_MIB");
+        if (e != null && !e.isBlank()) {
+            try {
+                return Math.max(0, Integer.parseInt(e.trim()));
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+        String p = System.getProperty("jgpt.decoder.graph.minFreeMib");
+        if (p != null && !p.isBlank()) {
+            try {
+                return Math.max(0, Integer.parseInt(p.trim()));
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+
+    /** Байтовый порог для {@link #decoderGraphMinFreeMibFromEnvOrProp()}; {@code 0} — проверка выключена. */
+    public static long decoderGraphMinFreeBytesFromEnvOrProp() {
+        int mib = decoderGraphMinFreeMibFromEnvOrProp();
+        return mib <= 0 ? 0L : (long) mib * 1024L * 1024L;
+    }
+
+    /**
+     * Снимок VRAM вокруг training decoder forward (NDJSON session debug log): env {@code JGPT_TRAIN_VRAM_STEP_PROBE=1} /
+     * prop {@code jgpt.train.vramStepProbe}. Интервал по счётчику вызовов {@link com.veles.llm.jgpt.model.GPTModel#forwardGpuDecoder}:
+     * env {@code JGPT_TRAIN_VRAM_STEP_PROBE_EVERY} / prop {@code jgpt.train.vramStepProbeEvery} (по умолчанию {@code 50}).
+     *
+     * <p>Интерпретация: рост поля {@code used} на последовательных {@code decoderBefore} — намёк на накопление между
+     * шагами; большой скачок только между {@code decoderBefore} и {@code decoderAfter} на одном {@code seq} — пик внутри
+     * forward, а не обязательно утечка.
+     */
+    public static boolean trainVramStepProbeFromEnvOrProp() {
+        return readBoolEnvOrProp("JGPT_TRAIN_VRAM_STEP_PROBE", "jgpt.train.vramStepProbe");
+    }
+
+    public static int trainVramStepProbeEveryFromEnvOrProp() {
+        return readPositiveEnvOrPropInt(
+                "JGPT_TRAIN_VRAM_STEP_PROBE_EVERY", "jgpt.train.vramStepProbeEvery", 50);
+    }
+
+    /**
      * Один JNI для второго RMSNorm + проекций SwiGLU W1/W3: env {@code JGPT_FUSED_FFN_RMS_W1W3=1} / prop {@code
      * jgpt.fused.ffn.rms.w1w3}.
      */

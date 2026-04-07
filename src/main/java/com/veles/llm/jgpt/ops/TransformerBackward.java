@@ -1105,6 +1105,7 @@ public final class TransformerBackward {
                         ws.getGradVh(),
                         batchHeads,
                         seqLen,
+                        dHead,
                         attScale);
             } else {
                 /* Classic backward: use cached softmax probs (more numerically stable). */

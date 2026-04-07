@@ -23,6 +23,9 @@ import java.util.Objects;
  * и сбрасывается в {@code 0f} перед JNI в {@link #crossEntropySoftmaxGradLossGpuEx}.
  */
 public final class TensorOpsGPU {
+    /** Совпадает с {@code cudaErrorMemoryAllocation} в CUDA Runtime (OOM при graph launch и т.п.). */
+    public static final int CUDA_ERROR_MEMORY_ALLOCATION = 2;
+
     /**
      * Один scratch-float на поток для выхода mean CE из native ({@code lossOut[0]}). Перед каждым JNI public API сбрасывается
      * в {@code 0f}, чтобы при досрочном return из native не вернуть значение предыдущего вызова.
@@ -52,6 +55,17 @@ public final class TensorOpsGPU {
             dSrc = GpuFloatBuffer.allocate(need);
             dDst = GpuFloatBuffer.allocate(need);
             cap = need;
+        }
+
+        /** Закрывает device-буферы до {@link ThreadLocal#remove()} — иначе Cleaner печатает предупреждение. */
+        private void release() {
+            if (dSrc != null) {
+                dSrc.close();
+                dDst.close();
+                dSrc = null;
+                dDst = null;
+            }
+            cap = -1;
         }
 
         private void splitHeads(float[] src, float[] dst, int batch, int seqLen, int dModel, int numHeads) {
@@ -109,6 +123,24 @@ public final class TensorOpsGPU {
             capV = need;
         }
 
+        /** Закрывает device-буферы до {@link ThreadLocal#remove()} — иначе Cleaner печатает предупреждение. */
+        private void release() {
+            if (dq != null) {
+                dq.close();
+                dk.close();
+                dq = null;
+                dk = null;
+            }
+            if (dv != null) {
+                dv.close();
+                dOut.close();
+                dv = null;
+                dOut = null;
+            }
+            capQk = -1;
+            capV = -1;
+        }
+
         private void run(
                 float[] q,
                 float[] k,
@@ -146,6 +178,20 @@ public final class TensorOpsGPU {
                     useFp16Softmax);
             dOut.copyTo(output, 0, vzi);
         }
+    }
+
+    /**
+     * Закрывает thread-local scratch для путей host→GPU ({@code splitHeads}/{@code concatHeads}, SDPA с {@code float[]}
+     * на хосте). Без этого при {@link ThreadLocal#remove()} или завершении потока буферы освобождает только {@link
+     * java.lang.ref.Cleaner} у {@link GpuFloatBuffer} — в stderr уходит предупреждение «незакрытого буфера».
+     *
+     * <p>Вызывается из {@link com.veles.llm.jgpt.ops.GpuWorkspaceCleanup#releaseAllGpuWorkspacesThreadLocal()}.
+     */
+    public static void releaseHostPathScratchThreadLocal() {
+        TL_SDPA_HOST.get().release();
+        TL_SDPA_HOST.remove();
+        TL_HEADS_HOST.get().release();
+        TL_HEADS_HOST.remove();
     }
 
     /**
@@ -351,8 +397,20 @@ public final class TensorOpsGPU {
 
     private static native void synchronizeStream0();
 
+    /**
+     * Освобождает thread-local cuBLAS/кэши matmul/CE текущего потока. Вызывать при остановке воркера пула,
+     * выполнявшего JNI на GPU, иначе возможна утечка дескрипторов до завершения процесса.
+     */
+    private static native void cleanupCudaThreadResources0();
+
     /** Ждёт завершения работы на <b>всех</b> потоках устройства (для тестов / диагностики гонок). */
     private static native void synchronizeDevice0();
+
+    /**
+     * Полная синхронизация устройства, {@code cudaDeviceGraphMemTrim} (CUDA 12+) и trim default/device memory pool —
+     * после graph-OOM перед eager, чтобы снизить ложные OOM на {@code cudaMallocAsync}.
+     */
+    private static native void cudaTrimDeviceMemoryPoolsBestEffort0();
 
     /** Текущее использование VRAM (bytes): {@code total − free} из {@code cudaMemGetInfo}. */
     private static native long getGpuMemoryAllocated0();
@@ -1279,42 +1337,62 @@ public final class TensorOpsGPU {
             float scale,
             boolean useFp16Softmax);
 
-    /** FlashAttention-2 forward (causal). Q/K/V/O=[BH,S,16], LSE=[BH,S]. BH=batch*numHeads. */
+    /**
+     * Размер головы для скомпилированных CUDA ядер FlashAttention-2 (causal); иной d_head на этом пути не
+     * поддерживается.
+     */
+    public static final int FLASH_ATTENTION_D_HEAD = 16;
+
+    /** FlashAttention-2 forward (causal). Q/K/V/O=[BH,S,dHead], LSE=[BH,S]. BH=batch*numHeads. */
     private static native void flashAttentionForwardGPUDeviceResident(
             long dQPtr, long dKPtr, long dVPtr, long dOutPtr, long dLSEPtr,
-            int BH, int S, float scale);
+            int BH, int S, int dHead, float scale);
 
     /** FlashAttention-2 backward (causal). Q/K/V/O/dO/LSE → dQ/dK/dV. */
     private static native void flashAttentionBackwardGPUDeviceResident(
             long dQPtr, long dKPtr, long dVPtr,
             long dOPtr, long dOGradPtr, long dLSEPtr,
             long dGradQPtr, long dGradKPtr, long dGradVPtr,
-            int BH, int S, float scale);
+            int BH, int S, int dHead, float scale);
 
-    /** Вызов FlashAttention-2 forward. BH = batch*numHeads, d_head должен быть 16. */
+    /** Вызов FlashAttention-2 forward. BH = batch*numHeads; {@code dHead} должен быть {@link #FLASH_ATTENTION_D_HEAD}. */
     public static void flashAttentionForwardGpuDeviceResident(
             GpuFloatBuffer dQ, GpuFloatBuffer dK, GpuFloatBuffer dV,
             GpuFloatBuffer dOut, GpuFloatBuffer dLSE,
-            int BH, int S, float scale) {
+            int BH, int S, int dHead, float scale) {
         requireCuda("TensorOpsGPU.flashAttentionForwardGpuDeviceResident");
+        if (dHead != FLASH_ATTENTION_D_HEAD) {
+            throw new IllegalArgumentException(
+                    "FlashAttention forward requires d_head="
+                            + FLASH_ATTENTION_D_HEAD
+                            + ", got "
+                            + dHead);
+        }
         flashAttentionForwardGPUDeviceResident(
                 dQ.devicePointer(), dK.devicePointer(), dV.devicePointer(),
                 dOut.devicePointer(), dLSE.devicePointer(),
-                BH, S, scale);
+                BH, S, dHead, scale);
     }
 
-    /** Вызов FlashAttention-2 backward. */
+    /** Вызов FlashAttention-2 backward; {@code dHead} — как во forward, должен быть {@link #FLASH_ATTENTION_D_HEAD}. */
     public static void flashAttentionBackwardGpuDeviceResident(
             GpuFloatBuffer dQ, GpuFloatBuffer dK, GpuFloatBuffer dV,
             GpuFloatBuffer dO, GpuFloatBuffer dOGrad, GpuFloatBuffer dLSE,
             GpuFloatBuffer dGradQ, GpuFloatBuffer dGradK, GpuFloatBuffer dGradV,
-            int BH, int S, float scale) {
+            int BH, int S, int dHead, float scale) {
         requireCuda("TensorOpsGPU.flashAttentionBackwardGpuDeviceResident");
+        if (dHead != FLASH_ATTENTION_D_HEAD) {
+            throw new IllegalArgumentException(
+                    "FlashAttention backward requires d_head="
+                            + FLASH_ATTENTION_D_HEAD
+                            + ", got "
+                            + dHead);
+        }
         flashAttentionBackwardGPUDeviceResident(
                 dQ.devicePointer(), dK.devicePointer(), dV.devicePointer(),
                 dO.devicePointer(), dOGrad.devicePointer(), dLSE.devicePointer(),
                 dGradQ.devicePointer(), dGradK.devicePointer(), dGradV.devicePointer(),
-                BH, S, scale);
+                BH, S, dHead, scale);
     }
 
     private static native boolean ensureStridedBatchedPackScratch0(long rows, int dModel, int dIntermediate);
@@ -1340,7 +1418,26 @@ public final class TensorOpsGPU {
     /** @return {@code false} если {@code cudaGraphLaunch} вернул ошибку (граф не исполнялся). */
     private static native boolean cudaGraphExecLaunch0(long execPtr);
 
+    /** Код последней ошибки {@code cudaGraphLaunch} на потоке (0 если успех); см. {@link #cudaErrorMemoryAllocation}. */
+    private static native int decoderGraphExecLaunchLastCudaError0();
+
+    /**
+     * Зонд перед/после decoder graph launch (device, capture, streamQuery, версии, флаги exec при поддержке CUDA).
+     * Длина 9: {@code [dev, capStatus, streamQueryCode, noPrelaunchSyncEnv1, driverVer, runtimeVer, execFlagsOrNeg,
+     * streamPtr, execPtr]}.
+     */
+    private static native long[] decoderGraphLaunchProbe0(long execPtr);
+
     private static native void cudaGraphExecDestroy0(long execPtr);
+
+    /** Снимок thread-local SDPA aux на GPU: {@code [fwdPtr, graphPtr, fwdBytes, graphBytes]}. */
+    private static native long[] decoderGraphDebugNativeAuxSnapshot0();
+
+    /**
+     * FNV-1a-микс thread-local указателей/размеров, влияющих на decoder CUDA graph (graph SDPA aux, fwd aux, prewarm
+     * warmup, Flash {@code D}, QKV pack override/TL).
+     */
+    private static native long decoderGraphNativeStabilityToken0();
 
     /**
      * Fused scaled-dot-product attention backward: вычисляет {@code dQ,dK,dV}.
@@ -1526,6 +1623,16 @@ public final class TensorOpsGPU {
     }
 
     /**
+     * Освобождает нативные thread-local ресурсы CUDA/cuBLAS текущего потока. Без активного GPU не вызывает JNI.
+     */
+    public static void cleanupCudaThreadResources() {
+        if (!GPU_AVAILABLE) {
+            return;
+        }
+        cleanupCudaThreadResources0();
+    }
+
+    /**
      * Глобальная синхронизация устройства. Не использовать в горячем цикле обучения: дороже
      * {@link #synchronizeStream()} и нужна, если возможны ядра вне {@code kTensorCudaStream}.
      */
@@ -1534,6 +1641,17 @@ public final class TensorOpsGPU {
             return;
         }
         synchronizeDevice0();
+    }
+
+    /**
+     * После graph-OOM / проактивного отказа от graph: полная sync устройства, trim graph memory и async memory pools
+     * (нативно), чтобы снизить ложные OOM на {@code cudaMallocAsync} в eager-пути.
+     */
+    public static void cudaTrimDeviceMemoryPoolsBestEffort() {
+        if (!GPU_AVAILABLE) {
+            return;
+        }
+        cudaTrimDeviceMemoryPoolsBestEffort0();
     }
 
     /** Байты занятые сейчас: {@code total − free} из {@code cudaMemGetInfo}. */
@@ -1680,6 +1798,17 @@ public final class TensorOpsGPU {
         if (b.numInts() < need) {
             throw new IllegalArgumentException(
                     name + ": buffer too small, need >= " + need + " ints, have " + b.numInts());
+        }
+    }
+
+    /**
+     * Часть JNI/нативных путей индексирует плоские буферы как {@code int}; гарантируем, что размер не выходит за
+     * {@link Integer#MAX_VALUE}.
+     */
+    private static void requireJniFlatElementCount(String name, long n) {
+        if (n < 0 || n > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(
+                    name + " element count out of int32 range for JNI: " + n + " (max " + Integer.MAX_VALUE + ")");
         }
     }
 
@@ -2027,6 +2156,8 @@ public final class TensorOpsGPU {
         }
         long rows = (long) batch * seqLen;
         long need = rows * vocab;
+        requireJniFlatElementCount("CE logits/grad", need);
+        requireJniFlatElementCount("CE targets row count", rows);
         requireMinFloats(requireGpu(logits, "logits"), need, "logits");
         requireMinFloats(requireGpu(grad, "grad"), need, "grad");
         Objects.requireNonNull(targets, "targets");
@@ -2058,6 +2189,8 @@ public final class TensorOpsGPU {
         }
         long rows = (long) batch * seqLen;
         long need = rows * vocab;
+        requireJniFlatElementCount("CE logits/grad", need);
+        requireJniFlatElementCount("CE targets row count", rows);
         requireMinFloats(requireGpu(logits, "logits"), need, "logits");
         requireMinFloats(requireGpu(grad, "grad"), need, "grad");
         requireMinInts(requireGpuInt(targets, "targets"), rows, "targets");
@@ -2091,6 +2224,8 @@ public final class TensorOpsGPU {
         }
         long rows = (long) batch * seqLen;
         long need = rows * vocab;
+        requireJniFlatElementCount("CE logits/grad", need);
+        requireJniFlatElementCount("CE targets row count", rows);
         requireMinFloats(requireGpu(logits, "logits"), need, "logits");
         requireMinFloats(requireGpu(grad, "grad"), need, "grad");
         requireMinInts(requireGpuInt(targets, "targets"), rows, "targets");
@@ -2121,6 +2256,8 @@ public final class TensorOpsGPU {
         Objects.requireNonNull(targets, "targets");
         long rows = (long) batch * seqLen;
         long need = rows * vocab;
+        requireJniFlatElementCount("CE logits/grad", need);
+        requireJniFlatElementCount("CE targets row count", rows);
         requireMinFloats(requireGpu(logits, "logits"), need, "logits");
         requireMinFloats(requireGpu(grad, "grad"), need, "grad");
         if (targets.length < rows) {
@@ -2146,6 +2283,8 @@ public final class TensorOpsGPU {
         }
         long logitNeed = (long) rows * vocab;
         long candidateNeed = (long) rows * candidates;
+        requireJniFlatElementCount("gather logits plane", logitNeed);
+        requireJniFlatElementCount("gather candidate plane", candidateNeed);
         requireMinFloats(requireGpu(logits, "logits"), logitNeed, "logits");
         requireMinInts(requireGpuInt(candidateIds, "candidateIds"), candidateNeed, "candidateIds");
         requireMinFloats(requireGpu(candidateLogits, "candidateLogits"), candidateNeed, "candidateLogits");
@@ -2602,7 +2741,12 @@ public final class TensorOpsGPU {
         decoderGraphPrewarmDeviceOps0(batch, seqLen, dModel, numHeads, dIntermediate);
     }
 
-    /** Начать захват графа на {@code kTensorCudaStream} (режим global). */
+    /**
+     * Начать захват графа на {@code kTensorCudaStream} (режим global).
+     *
+     * <p>Диагностика VRAM: env {@code JGPT_DECODER_GRAPH_MEM_PROBE=1} — нативно пишет {@code cudaMemGetInfo} в stderr и
+     * NDJSON при begin capture, после instantiate и до/после {@link #cudaGraphExecLaunch(long)}.
+     */
     public static boolean cudaStreamBeginCapture() {
         requireCuda("TensorOpsGPU.cudaStreamBeginCapture");
         return cudaStreamBeginCapture0();
@@ -2628,6 +2772,11 @@ public final class TensorOpsGPU {
     /**
      * Запуск захваченного графа на {@code kTensorCudaStream}.
      *
+     * <p>Диагностика (натив): при ошибке в stderr — коды {@code cudaGraphLaunch} и {@code cudaGetLastError}, статус
+     * capture потока и снимок SDPA aux. По умолчанию перед запуском выполняется {@code cudaStreamSynchronize} на
+     * основном потоке TensorOps (снижает ложные {@code cudaErrorInvalidValue} от отложенных ошибок). Отключить:
+     * {@code JGPT_DECODER_CUDA_GRAPH_NO_PRELAUNCH_SYNC=1}.
+     *
      * @return {@code false} при ошибке драйвера (в т.ч. illegal memory access) — вызывающий должен отключить graph
      *     и выполнить eager-путь.
      */
@@ -2638,10 +2787,50 @@ public final class TensorOpsGPU {
         return cudaGraphExecLaunch0(execPtr);
     }
 
+    /**
+     * Код CUDA после последнего {@link #cudaGraphExecLaunch(long)} с ненулевым {@code execPtr} на этом потоке:
+     * {@code 0} — успех, иначе {@code cudaError*} (например {@link #CUDA_ERROR_MEMORY_ALLOCATION}).
+     */
+    public static int decoderGraphExecLaunchLastCudaError() {
+        if (!isGpuAvailable()) {
+            return 0;
+        }
+        return decoderGraphExecLaunchLastCudaError0();
+    }
+
+    /** См. {@link #decoderGraphLaunchProbe0(long)}. */
+    public static long[] decoderGraphLaunchProbe(long execPtr) {
+        if (!isGpuAvailable() || execPtr == 0L) {
+            return new long[0];
+        }
+        long[] a = decoderGraphLaunchProbe0(execPtr);
+        return a != null && a.length > 0 ? a : new long[0];
+    }
+
     public static void cudaGraphExecDestroy(long execPtr) {
         if (execPtr != 0L) {
             cudaGraphExecDestroy0(execPtr);
         }
+    }
+
+    /**
+     * Текущие указатели/размеры thread-local буферов SDPA для отладки decoder CUDA graph (см. нативный stderr при
+     * неудачном {@link #cudaGraphExecLaunch}).
+     */
+    public static long[] decoderGraphDebugNativeAuxSnapshot() {
+        if (!isGpuAvailable()) {
+            return new long[] {0L, 0L, 0L, 0L};
+        }
+        long[] s = decoderGraphDebugNativeAuxSnapshot0();
+        return s != null ? s : new long[] {0L, 0L, 0L, 0L};
+    }
+
+    /** См. {@link #decoderGraphNativeStabilityToken0()}. */
+    public static long decoderGraphNativeStabilityToken() {
+        if (!isGpuAvailable()) {
+            return 0L;
+        }
+        return decoderGraphNativeStabilityToken0();
     }
 
     public static void scaledDotProductAttentionBackwardGpuDevice(

@@ -1,6 +1,7 @@
 package com.veles.llm.jgpt;
 
 import java.lang.ref.Cleaner;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -57,7 +58,14 @@ public final class GpuHalfBuffer implements AutoCloseable {
         }
         long p = nativeAlloc(numHalfs);
         if (p == 0L) {
-            throw new OutOfMemoryError("cudaMalloc failed for GpuHalfBuffer");
+            double mib = (numHalfs * 2.0) / (1024.0 * 1024.0);
+            throw new OutOfMemoryError(
+                    String.format(
+                            Locale.ROOT,
+                            "cudaMalloc(Async) failed for GpuHalfBuffer: numHalfs=%d (~%.1f MiB); "
+                                    + "см. stderr: cudaMemGetInfo и строку GpuHalfBuffer.nativeAlloc",
+                            numHalfs,
+                            mib));
         }
         return new GpuHalfBuffer(p, numHalfs);
     }

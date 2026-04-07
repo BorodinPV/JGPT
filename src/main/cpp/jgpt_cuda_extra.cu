@@ -8,25 +8,47 @@
 #include <cstdint>
 #include <climits>
 #include <cstring>
+#include <mutex>
 
 #include "jgpt_cuda_stream.cuh"
 #include "jgpt_cuda_ffn_link.h"
 #include "jgpt_cuda_graph_prewarm.h"
-
-/** Тот же stream, что memcpy/kernels (см. jgpt_cuda.cu). */
-#define kTensorCudaStream (g_jgpt_cuda_stream)
+#include "jgpt_cuda_size_check.cuh"
 
 /* ========== Thread-safe cuBLAS handle per thread (extra ops / strided batched GEMM) ========== */
 static thread_local cublasHandle_t tl_extra_cublas_handle = nullptr;
 
 static cublasHandle_t get_extra_cublas_handle() {
-    if (tl_extra_cublas_handle == nullptr) {
-        /* Дескриптор thread_local — на поток один create; g_stream защищён mutex в jgpt_cuda.cu. */
-        jgpt_cuda_ensure_stream();
-        cublasCreate(&tl_extra_cublas_handle);
-        cublasSetMathMode(tl_extra_cublas_handle, CUBLAS_TF32_TENSOR_OP_MATH);
-        cublasSetStream(tl_extra_cublas_handle, g_jgpt_cuda_stream);
+    if (tl_extra_cublas_handle != nullptr) {
+        return tl_extra_cublas_handle;
     }
+    /* Дескриптор thread_local — на поток один create; g_stream защищён mutex в jgpt_cuda.cu. */
+    jgpt_cuda_ensure_stream();
+    cublasHandle_t h = nullptr;
+    cublasStatus_t st = cublasCreate(&h);
+    if (st != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "TensorOpsGPU extra: cublasCreate failed: %d\n", static_cast<int>(st));
+        return nullptr;
+    }
+    st = cublasSetMathMode(h, CUBLAS_TF32_TENSOR_OP_MATH);
+    if (st != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "TensorOpsGPU extra: cublasSetMathMode failed: %d\n", static_cast<int>(st));
+        cublasDestroy(h);
+        return nullptr;
+    }
+    cudaStream_t stream = jgpt_cuda_stream_handle();
+    if (stream == nullptr) {
+        fprintf(stderr, "TensorOpsGPU extra: CUDA stream unavailable after jgpt_cuda_ensure_stream (cublas)\n");
+        cublasDestroy(h);
+        return nullptr;
+    }
+    st = cublasSetStream(h, stream);
+    if (st != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "TensorOpsGPU extra: cublasSetStream failed: %d\n", static_cast<int>(st));
+        cublasDestroy(h);
+        return nullptr;
+    }
+    tl_extra_cublas_handle = h;
     return tl_extra_cublas_handle;
 }
 
@@ -39,13 +61,6 @@ static void destroy_extra_cublas_handle() {
         cublasDestroy(tl_extra_cublas_handle);
         tl_extra_cublas_handle = nullptr;
     }
-}
-
-static inline bool check_size_overflow(size_t a, size_t b, size_t elem_size) {
-    if (a == 0 || b == 0) return false;
-    if (a > SIZE_MAX / b) return true;
-    size_t prod = a * b;
-    return prod > SIZE_MAX / elem_size;
 }
 
 /* ========== Device buffers cached for CE loss (freed in jgpt_cuda_extra_cleanup) ========== */
@@ -133,12 +148,53 @@ static void ce_free_cached() {
     ce_pinned_flt_targets_free();
 }
 
+/**
+ * Увеличивает пару device-буферов CE (logits + grad) до {@code bytes_logits}.
+ * При ошибке второго {@code cudaMalloc} освобождает первый и сбрасывает кэш — без рассинхрона {@code tl_ce_logits_bytes}.
+ */
+static bool ce_ensure_logits_grad_buffers(size_t bytes_logits) {
+    if (bytes_logits <= tl_ce_logits_bytes) {
+        return true;
+    }
+    cudaFree(tl_ce_d_logits);
+    cudaFree(tl_ce_d_grad);
+    tl_ce_d_logits = nullptr;
+    tl_ce_d_grad = nullptr;
+    tl_ce_logits_bytes = 0;
+
+    cudaError_t e_logits = cudaMalloc(reinterpret_cast<void**>(&tl_ce_d_logits), bytes_logits);
+    if (e_logits != cudaSuccess) {
+        fprintf(
+                stderr,
+                "ce_ensure_logits_grad_buffers: cudaMalloc(logits) %zu bytes: %s\n",
+                bytes_logits,
+                cudaGetErrorString(e_logits));
+        return false;
+    }
+    cudaError_t e_grad = cudaMalloc(reinterpret_cast<void**>(&tl_ce_d_grad), bytes_logits);
+    if (e_grad != cudaSuccess) {
+        fprintf(
+                stderr,
+                "ce_ensure_logits_grad_buffers: cudaMalloc(grad) %zu bytes: %s\n",
+                bytes_logits,
+                cudaGetErrorString(e_grad));
+        cudaFree(tl_ce_d_logits);
+        tl_ce_d_logits = nullptr;
+        tl_ce_d_grad = nullptr;
+        tl_ce_logits_bytes = 0;
+        return false;
+    }
+    tl_ce_logits_bytes = bytes_logits;
+    return true;
+}
+
 /* ========== Thread-local JNI scratch (grow-only; освобождается в jgpt_cuda_extra_cleanup) ========== */
 
 static thread_local void* tl_softmax_pair = nullptr;
 static thread_local size_t tl_softmax_bytes_per = 0;
 
 static bool softmax_pair_ensure(size_t bytes_per, float** d_src, float** d_dst) {
+    jgpt_cuda_ensure_stream();
     if (bytes_per == 0U) {
         return false;
     }
@@ -170,6 +226,7 @@ static thread_local float* tl_adamw_d_v = nullptr;
 static thread_local size_t tl_adamw_bytes = 0;
 
 static bool adamw_pool_ensure(size_t bytes) {
+    jgpt_cuda_ensure_stream();
     if (bytes == 0U) {
         return false;
     }
@@ -477,6 +534,39 @@ __global__ void softmax_scaled_masked_block_kernel(
     }
 }
 
+/** In-place: один указатель без src/dst restrict-aliasing (для graph-aux размером bytesProb вместо 2×). */
+__global__ void softmax_scaled_masked_inplace_block_kernel(
+        float* __restrict__ buf, const float* __restrict__ mask, float scale, int nrows, int inner) {
+    extern __shared__ float smem[];
+    const int row = blockIdx.x;
+    if (row >= nrows) {
+        return;
+    }
+    const int tid = threadIdx.x;
+    float* rowBuf = buf + (ptrdiff_t)row * inner;
+    const int qPos = row % inner;
+
+    float maxv = -INFINITY;
+    for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
+        float v = rowBuf[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        maxv = fmaxf(maxv, v);
+    }
+    maxv = blockReduceMax256(maxv, smem);
+
+    float sumv = 0.f;
+    for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
+        float v = rowBuf[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        sumv += expf(v - maxv);
+    }
+    sumv = blockReduceSum256(sumv, smem);
+
+    const float inv = 1.f / fmaxf(sumv, 1e-12f);
+    for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
+        float v = rowBuf[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        rowBuf[j] = expf(v - maxv) * inv;
+    }
+}
+
 /**
  * Одна строка = один позиционный токен [batch*seq]: стабильный softmax, CE loss (atomic),
  * градиент (p - one_hot) * scale. Невалидный target: строка градиента в ноль, в loss не входит.
@@ -734,6 +824,33 @@ __global__ void rms_norm_fwd_block_kernel(
 
 static constexpr int kRmsNormFwdBlockThreshold = 64;
 
+#define CUDA_CHECK_X(call) \
+    do { \
+        cudaError_t err = (call); \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+            return; \
+        } \
+    } while (0)
+
+#define CUDA_KERNEL_CHECK() \
+    do { \
+        cudaError_t err = cudaGetLastError(); \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "Kernel launch error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+            return; \
+        } \
+    } while (0)
+
+#define CUDA_KERNEL_CHECK_RV(rv) \
+    do { \
+        cudaError_t err = cudaGetLastError(); \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "Kernel launch error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+            return (rv); \
+        } \
+    } while (0)
+
 static void launch_rms_norm_fwd(const float* src, const float* gamma, float* dst,
         int outer, int lastDim, float eps) {
     if (lastDim >= kRmsNormFwdBlockThreshold) {
@@ -746,6 +863,7 @@ static void launch_rms_norm_fwd(const float* src, const float* gamma, float* dst
         rms_norm_fwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
                 src, gamma, dst, outer, lastDim, eps);
     }
+    CUDA_KERNEL_CHECK();
 }
 
 __device__ float gelu_tanh_dev(float x) {
@@ -1375,34 +1493,8 @@ static void launch_rms_norm_bwd(const float* gOut, const float* x, const float* 
         rms_norm_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
                 gOut, x, gamma, eps, gX, gGamma, outer, lastDim);
     }
+    CUDA_KERNEL_CHECK();
 }
-
-#define CUDA_CHECK_X(call) \
-    do { \
-        cudaError_t err = (call); \
-        if (err != cudaSuccess) { \
-            fprintf(stderr, "CUDA error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return; \
-        } \
-    } while (0)
-
-#define CUDA_KERNEL_CHECK() \
-    do { \
-        cudaError_t err = cudaGetLastError(); \
-        if (err != cudaSuccess) { \
-            fprintf(stderr, "Kernel launch error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return; \
-        } \
-    } while (0)
-
-#define CUDA_KERNEL_CHECK_RV(rv) \
-    do { \
-        cudaError_t err = cudaGetLastError(); \
-        if (err != cudaSuccess) { \
-            fprintf(stderr, "Kernel launch error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return (rv); \
-        } \
-    } while (0)
 
 static void launch_softmax_last_dim(const float* src, float* dst, int nrows, int inner, bool use_fp16_softmax) {
     if (inner >= kSoftmaxBlockThreshold) {
@@ -1417,10 +1509,7 @@ static void launch_softmax_last_dim(const float* src, float* dst, int nrows, int
             softmax_last_dim_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(src, dst, nrows, inner);
         }
     }
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        fprintf(stderr, "launch_softmax error: %s\n", cudaGetErrorString(err));
-    }
+    CUDA_KERNEL_CHECK();
 }
 
 static void launch_softmax_last_dim_bwd(const float* gOut, const float* p, float* gIn, int nrows, int inner) {
@@ -1432,10 +1521,7 @@ static void launch_softmax_last_dim_bwd(const float* gOut, const float* p, float
         int blocks = (nrows + threads - 1) / threads;
         softmax_last_dim_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(gOut, p, gIn, nrows, inner);
     }
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        fprintf(stderr, "launch_softmax_bwd error: %s\n", cudaGetErrorString(err));
-    }
+    CUDA_KERNEL_CHECK();
 }
 
 static void launch_cross_entropy(const float* logits, const float* targets, float* grad, float scale,
@@ -1449,10 +1535,7 @@ static void launch_cross_entropy(const float* logits, const float* targets, floa
         cross_entropy_softmax_grad_loss_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
                 logits, targets, grad, scale, loss_sum, valid, nrows, vocab);
     }
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        fprintf(stderr, "launch_cross_entropy error: %s\n", cudaGetErrorString(err));
-    }
+    CUDA_KERNEL_CHECK();
 }
 
 static void launch_cross_entropy_i32(const float* logits, const int* targets_i, float* grad, float scale,
@@ -1466,10 +1549,7 @@ static void launch_cross_entropy_i32(const float* logits, const int* targets_i, 
         cross_entropy_softmax_grad_loss_kernel_i32<<<blocks, threads, 0, kTensorCudaStream>>>(
                 logits, targets_i, grad, scale, loss_sum, valid, nrows, vocab);
     }
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        fprintf(stderr, "launch_cross_entropy_i32 error: %s\n", cudaGetErrorString(err));
-    }
+    CUDA_KERNEL_CHECK();
 }
 
 __global__ void float_token_ids_to_int32_kernel(const float* src, int* dst, int n) {
@@ -1483,6 +1563,7 @@ static void launch_float_to_int32_targets(const float* d_float_src, int* d_int_d
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (n + threads - 1) / threads;
     float_token_ids_to_int32_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_float_src, d_int_dst, n);
+    CUDA_KERNEL_CHECK();
 }
 
 static inline void* jni_direct_ptr(JNIEnv* env, jobject buf, jlong byte_off, jlong need_bytes, const char* ctx) {
@@ -1508,6 +1589,10 @@ static bool batched_sgemm_row_major_extra(
         const float* d_A, const float* d_B, float* d_C,
         int batchCount, int M, int K, int N, float alpha, float beta) {
     cublasHandle_t handle = get_extra_cublas_handle();
+    if (handle == nullptr) {
+        fprintf(stderr, "[TensorOpsGPU] extra batched sgemm: cuBLAS handle unavailable\n");
+        return false;
+    }
     long long strideA = (long long) M * (long long) K;
     long long strideB = (long long) K * (long long) N;
     long long strideC = (long long) M * (long long) N;
@@ -1543,6 +1628,10 @@ static bool batched_sgemm_row_major_transB(
         const float* d_A, const float* d_B, float* d_C,
         int batchCount, int M, int K, int N, float alpha, float beta) {
     cublasHandle_t handle = get_extra_cublas_handle();
+    if (handle == nullptr) {
+        fprintf(stderr, "[TensorOpsGPU] extra batched sgemm (transB): cuBLAS handle unavailable\n");
+        return false;
+    }
     long long strideA = (long long) M * K;
     long long strideB = (long long) N * K;   // B is N×K row-major
     long long strideC = (long long) M * N;
@@ -1571,6 +1660,10 @@ static bool batched_sgemm_row_major_transA(
         const float* d_A, const float* d_B, float* d_C,
         int batchCount, int M, int K, int N, float alpha, float beta) {
     cublasHandle_t handle = get_extra_cublas_handle();
+    if (handle == nullptr) {
+        fprintf(stderr, "[TensorOpsGPU] extra batched sgemm (transA): cuBLAS handle unavailable\n");
+        return false;
+    }
     long long strideA = (long long) K * M;   // A is K×M row-major
     long long strideB = (long long) K * N;   // B is K×N row-major
     long long strideC = (long long) M * N;
@@ -1642,11 +1735,18 @@ static bool attn_fwd_aux_ensure(
  * Если tl_attn_fwd_aux перевыделяется другими операциями (например, генерацией текста через
  * scaledDotProductAttentionForwardGPUDevice с маской), GPU-адреса в графе устаревают →
  * cudaGraphLaunch падает с "illegal memory access".
- * Использование отдельного буфера tl_attn_fwd_graph_aux гарантирует, что
+ * Использование отдельного буфера (не tl_attn_fwd_aux) гарантирует, что
  * нe-graph операции не могут изменить указатели, захваченные в графе.
+ *
+ * Глобальный (процессный) буфер с mutex: один и тот же device-адрес для всех слоёв декодера на одном GPU —
+ * иначе thread_local копии не делят память между вызовами и при глубоком стеке растёт пик VRAM.
+ *
+ * Размер = bytesProb (одна матрица B×S×S): QK^T пишет logits, затем in-place softmax → probs, затем GEMM(P,V).
+ * Раньше было 2×bytesProb (отдельные scores/probs); уполовинивание снимает ~100 MiB+ VRAM на типичных S и снижает OOM на cudaGraphLaunch.
  */
-static thread_local void* tl_attn_fwd_graph_aux = nullptr;
-static thread_local size_t tl_attn_fwd_graph_aux_total = 0;
+static std::mutex g_attn_fwd_graph_aux_mu;
+static void* g_attn_fwd_graph_aux = nullptr;
+static size_t g_attn_fwd_graph_aux_total = 0;
 
 /** Workspace без слота под mask: mask передаётся отдельным device-указателем (для CUDA graph / без H2D probs). */
 static bool attn_fwd_aux_ensure_qk_probs_only(
@@ -1654,23 +1754,41 @@ static bool attn_fwd_aux_ensure_qk_probs_only(
         size_t bytesProb,
         float** d_scores,
         float** d_probs) {
-    size_t total = bytesProb * 2U;
-    if (total > tl_attn_fwd_graph_aux_total) {
-        cudaFree(tl_attn_fwd_graph_aux);
-        tl_attn_fwd_graph_aux = nullptr;
-        tl_attn_fwd_graph_aux_total = 0;
-        if (cudaMalloc(&tl_attn_fwd_graph_aux, total) != cudaSuccess) {
+    size_t total = bytesProb;
+    std::lock_guard<std::mutex> lock(g_attn_fwd_graph_aux_mu);
+    if (total > g_attn_fwd_graph_aux_total
+            || (g_attn_fwd_graph_aux != nullptr && total < g_attn_fwd_graph_aux_total)) {
+        cudaFree(g_attn_fwd_graph_aux);
+        g_attn_fwd_graph_aux = nullptr;
+        g_attn_fwd_graph_aux_total = 0;
+        if (cudaMalloc(&g_attn_fwd_graph_aux, total) != cudaSuccess) {
             return false;
         }
-        tl_attn_fwd_graph_aux_total = total;
+        g_attn_fwd_graph_aux_total = total;
     }
-    unsigned char* base = static_cast<unsigned char*>(tl_attn_fwd_graph_aux);
-    size_t off = 0;
-    *d_scores = reinterpret_cast<float*>(base + off);
-    off += bytesProb;
-    *d_probs = reinterpret_cast<float*>(base + off);
+    unsigned char* base = static_cast<unsigned char*>(g_attn_fwd_graph_aux);
+    float* p = reinterpret_cast<float*>(base);
+    *d_scores = p;
+    *d_probs = p;
     (void) bytesQK;
     return true;
+}
+
+void jgpt_cuda_decoder_graph_debug_aux_snapshot(
+        uintptr_t* fwd_ptr, uintptr_t* graph_ptr, size_t* fwd_sz, size_t* graph_sz) {
+    if (fwd_ptr != nullptr) {
+        *fwd_ptr = reinterpret_cast<uintptr_t>(tl_attn_fwd_aux);
+    }
+    if (fwd_sz != nullptr) {
+        *fwd_sz = tl_attn_fwd_aux_total;
+    }
+    std::lock_guard<std::mutex> lock(g_attn_fwd_graph_aux_mu);
+    if (graph_ptr != nullptr) {
+        *graph_ptr = reinterpret_cast<uintptr_t>(g_attn_fwd_graph_aux);
+    }
+    if (graph_sz != nullptr) {
+        *graph_sz = g_attn_fwd_graph_aux_total;
+    }
 }
 
 static bool attn_fwd_run_core(
@@ -1696,8 +1814,13 @@ static bool attn_fwd_run_core(
     int nrows = batch * seqLen;
     {
         size_t smem = kSoftmaxNumWarps * sizeof(float);
-        softmax_scaled_masked_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(
-                d_scores, d_probs, d_mask, scale, nrows, seqLen);
+        if (d_probs == d_scores) {
+            softmax_scaled_masked_inplace_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(
+                    d_scores, d_mask, scale, nrows, seqLen);
+        } else {
+            softmax_scaled_masked_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(
+                    d_scores, d_probs, d_mask, scale, nrows, seqLen);
+        }
     }
     CUDA_KERNEL_CHECK_RV(false);
     if (!batched_sgemm_row_major_extra(d_probs, d_v, d_out, batch, seqLen, seqLen, dV, 1.0f, 0.0f)) {
@@ -1718,19 +1841,35 @@ static constexpr int kFaDh = 16;    // d_head
 static constexpr int kFaBr = 64;    // query tile rows  (= block size for fwd / dQ)
 static constexpr int kFaBc = 64;    // KV tile rows     (= block size for dKdV)
 
+static_assert(kFaDh > 0 && (kFaDh % 2) == 0, "FlashAttention: d_head must be positive even");
+
+/** Поднимает лимит dynamic shared memory, если плитка (Br/Bc/Dh) требует больше 48 KiB на блок. */
+static cudaError_t flash_kernel_ensure_dyn_smem(const void* kernel, size_t dynamic_shmem) {
+    constexpr size_t kDefaultDynSmem = 48u * 1024u;
+    if (dynamic_shmem <= kDefaultDynSmem) {
+        return cudaSuccess;
+    }
+    if (dynamic_shmem > static_cast<size_t>(INT_MAX)) {
+        return cudaErrorInvalidValue;
+    }
+    return cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(dynamic_shmem));
+}
+
 /* Thread-local scratch for D vector (small: BH*S floats); LSE пишется в буфер вызывающего. */
 static thread_local float* tl_fa_D    = nullptr;
 static thread_local size_t tl_fa_D_bytes   = 0;
 
 static bool fa_ensure_D(size_t bytes) {
     if (bytes <= tl_fa_D_bytes) return true;
-    cudaFree(tl_fa_D);
-    tl_fa_D = nullptr;
-    tl_fa_D_bytes = 0;
-    if (cudaMalloc(&tl_fa_D, bytes) != cudaSuccess) {
+    void* raw = nullptr;
+    if (cudaMalloc(&raw, bytes) != cudaSuccess) {
         fprintf(stderr, "fa_ensure_D: cudaMalloc(%zu) failed\n", bytes);
         return false;
     }
+    if (tl_fa_D != nullptr) {
+        (void) cudaFree(tl_fa_D);
+    }
+    tl_fa_D = static_cast<float*>(raw);
     tl_fa_D_bytes = bytes;
     return true;
 }
@@ -2188,20 +2327,40 @@ flash_attn_bwd_dq_kernel(
 // ----------------------------------------------------------------
 //  Host-side launchers
 // ----------------------------------------------------------------
+static bool flash_attn_sync_stream_ok(const char* ctx) {
+    return jgpt_cuda_sync_stream_unless_capturing(ctx) != 0;
+}
+
 static bool flash_attn_fwd_run(
         const float* d_q, const float* d_k, const float* d_v,
         float* d_o, float* d_lse,
         int BH, int S, float scale)
 {
     const int num_q_tiles = (S + kFaBr - 1) / kFaBr;
-    const int grid = BH * num_q_tiles;
+    const long long grid_ll = (long long) BH * (long long) num_q_tiles;
+    if (grid_ll <= 0LL || grid_ll > static_cast<long long>(INT_MAX)) {
+        fprintf(
+                stderr,
+                "flash_attn_fwd: grid overflow BH=%d S=%d num_q_tiles=%d (blocks=%lld)\n",
+                BH,
+                S,
+                num_q_tiles,
+                static_cast<long long>(grid_ll));
+        return false;
+    }
+    const int grid = static_cast<int>(grid_ll);
     constexpr size_t smem =
         (kFaBr + 2 * kFaBc) * kFaDh * sizeof(float)   // q + k + v tiles
         + kFaBc * kFaBr * sizeof(float);               // s_smem [kFaBc][kFaBr]
+    cudaError_t sa = flash_kernel_ensure_dyn_smem((const void*)flash_attn_fwd_kernel, smem);
+    if (sa != cudaSuccess) {
+        fprintf(stderr, "flash_attn_fwd: cudaFuncSetAttribute smem=%zu: %s\n", smem, cudaGetErrorString(sa));
+        return false;
+    }
     flash_attn_fwd_kernel<<<grid, kFaBr, smem, kTensorCudaStream>>>(
             d_q, d_k, d_v, d_o, d_lse, BH, S, scale);
-    cudaError_t st = cudaGetLastError();
-    return st == cudaSuccess;
+    CUDA_KERNEL_CHECK_RV(false);
+    return flash_attn_sync_stream_ok("flash_attn_fwd");
 }
 
 static bool flash_attn_bwd_run(
@@ -2211,32 +2370,88 @@ static bool flash_attn_bwd_run(
         float* d_dq, float* d_dk, float* d_dv,
         int BH, int S, float scale)
 {
+    const size_t qkv_bytes = (size_t)BH * (size_t)S * (size_t)kFaDh * sizeof(float);
+    if (cudaMemsetAsync(d_dq, 0, qkv_bytes, kTensorCudaStream) != cudaSuccess) {
+        return false;
+    }
+    if (cudaMemsetAsync(d_dk, 0, qkv_bytes, kTensorCudaStream) != cudaSuccess) {
+        return false;
+    }
+    if (cudaMemsetAsync(d_dv, 0, qkv_bytes, kTensorCudaStream) != cudaSuccess) {
+        return false;
+    }
+
     // 1. Compute D[bh][qi] = dot(dO[qi], O[qi])
-    const int total_rows = BH * S;
+    const long long total_rows_ll = (long long) BH * (long long) S;
+    if (total_rows_ll <= 0LL || total_rows_ll > static_cast<long long>(INT_MAX)) {
+        fprintf(
+                stderr,
+                "flash_attn_bwd: total_rows overflow BH=%d S=%d (rows=%lld)\n",
+                BH,
+                S,
+                static_cast<long long>(total_rows_ll));
+        return false;
+    }
+    const int total_rows = static_cast<int>(total_rows_ll);
     const int d_grid = (total_rows + 63) / 64;
     flash_attn_compute_D_kernel<<<d_grid, 64, 0, kTensorCudaStream>>>(
             d_do, d_o, tl_fa_D, BH, S);
-    if (cudaGetLastError() != cudaSuccess) return false;
+    CUDA_KERNEL_CHECK_RV(false);
 
     // 2. dK, dV kernel (one block per kv_tile)
     constexpr size_t smem_dkdv =
         2 * kFaBc * kFaDh * sizeof(float)                                // k + v fixed
         + 2 * kFaBr * kFaDh * sizeof(float);                             // q + do per q_tile
     const int num_kv_tiles = (S + kFaBc - 1) / kFaBc;
-    flash_attn_bwd_dkdv_kernel<<<BH * num_kv_tiles, kFaBc, smem_dkdv, kTensorCudaStream>>>(
+    const long long grid_dkdv_ll = (long long) BH * (long long) num_kv_tiles;
+    if (grid_dkdv_ll <= 0LL || grid_dkdv_ll > static_cast<long long>(INT_MAX)) {
+        fprintf(
+                stderr,
+                "flash_attn_bwd dkdv: grid overflow BH=%d S=%d num_kv_tiles=%d (blocks=%lld)\n",
+                BH,
+                S,
+                num_kv_tiles,
+                static_cast<long long>(grid_dkdv_ll));
+        return false;
+    }
+    const int grid_dkdv = static_cast<int>(grid_dkdv_ll);
+    cudaError_t sb = flash_kernel_ensure_dyn_smem((const void*)flash_attn_bwd_dkdv_kernel, smem_dkdv);
+    if (sb != cudaSuccess) {
+        fprintf(stderr, "flash_attn_bwd dkdv: cudaFuncSetAttribute smem=%zu: %s\n", smem_dkdv, cudaGetErrorString(sb));
+        return false;
+    }
+    flash_attn_bwd_dkdv_kernel<<<grid_dkdv, kFaBc, smem_dkdv, kTensorCudaStream>>>(
             d_q, d_k, d_v, d_do, d_lse, tl_fa_D,
             d_dk, d_dv, BH, S, scale);
-    if (cudaGetLastError() != cudaSuccess) return false;
+    CUDA_KERNEL_CHECK_RV(false);
 
     // 3. dQ kernel (one block per q_tile)
     constexpr size_t smem_dq =
         2 * kFaBr * kFaDh * sizeof(float)                                // q + do fixed
         + 2 * kFaBc * kFaDh * sizeof(float);                             // k + v per kv_tile
     const int num_q_tiles = (S + kFaBr - 1) / kFaBr;
-    flash_attn_bwd_dq_kernel<<<BH * num_q_tiles, kFaBr, smem_dq, kTensorCudaStream>>>(
+    const long long grid_dq_ll = (long long) BH * (long long) num_q_tiles;
+    if (grid_dq_ll <= 0LL || grid_dq_ll > static_cast<long long>(INT_MAX)) {
+        fprintf(
+                stderr,
+                "flash_attn_bwd dq: grid overflow BH=%d S=%d num_q_tiles=%d (blocks=%lld)\n",
+                BH,
+                S,
+                num_q_tiles,
+                static_cast<long long>(grid_dq_ll));
+        return false;
+    }
+    const int grid_dq = static_cast<int>(grid_dq_ll);
+    sb = flash_kernel_ensure_dyn_smem((const void*)flash_attn_bwd_dq_kernel, smem_dq);
+    if (sb != cudaSuccess) {
+        fprintf(stderr, "flash_attn_bwd dq: cudaFuncSetAttribute smem=%zu: %s\n", smem_dq, cudaGetErrorString(sb));
+        return false;
+    }
+    flash_attn_bwd_dq_kernel<<<grid_dq, kFaBr, smem_dq, kTensorCudaStream>>>(
             d_q, d_k, d_v, d_do, d_lse, tl_fa_D,
             d_dq, BH, S, scale);
-    return cudaGetLastError() == cudaSuccess;
+    CUDA_KERNEL_CHECK_RV(false);
+    return flash_attn_sync_stream_ok("flash_attn_bwd");
 }
 
 // ========== JNI ==========
@@ -2299,14 +2514,16 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
         fprintf(stderr, "crossEntropySoftmaxGradLossGPU: size overflow\n");
         return;
     }
+    jgpt_cuda_ensure_stream();
     size_t bytes_logits = (size_t) nrows * (size_t) vocab * sizeof(float);
     size_t bytes_tgt = (size_t) nrows * sizeof(float);
-    if (bytes_logits > tl_ce_logits_bytes) {
-        cudaFree(tl_ce_d_logits);
-        cudaFree(tl_ce_d_grad);
-        CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&tl_ce_d_logits), bytes_logits));
-        CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&tl_ce_d_grad), bytes_logits));
-        tl_ce_logits_bytes = bytes_logits;
+    if (!ce_ensure_logits_grad_buffers(bytes_logits)) {
+        jfloat* plo = env->GetFloatArrayElements(h_lossOut, nullptr);
+        if (plo) {
+            plo[0] = 0.f;
+            env->ReleaseFloatArrayElements(h_lossOut, plo, 0);
+        }
+        return;
     }
     if (bytes_tgt > tl_ce_targets_bytes) {
         cudaFree(tl_ce_d_targets);
@@ -2387,6 +2604,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
         fprintf(stderr, "crossEntropySoftmaxGradLossGPUDirect: size overflow\n");
         return;
     }
+    jgpt_cuda_ensure_stream();
     size_t bytes_logits = (size_t) nrows * (size_t) vocab * sizeof(float);
     size_t bytes_tgt = (size_t) nrows * sizeof(float);
 
@@ -2401,12 +2619,13 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
         return;
     }
 
-    if (bytes_logits > tl_ce_logits_bytes) {
-        cudaFree(tl_ce_d_logits);
-        cudaFree(tl_ce_d_grad);
-        CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&tl_ce_d_logits), bytes_logits));
-        CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&tl_ce_d_grad), bytes_logits));
-        tl_ce_logits_bytes = bytes_logits;
+    if (!ce_ensure_logits_grad_buffers(bytes_logits)) {
+        jfloat* plo = env->GetFloatArrayElements(h_loss_out, nullptr);
+        if (plo) {
+            plo[0] = 0.f;
+            env->ReleaseFloatArrayElements(h_loss_out, plo, 0);
+        }
+        return;
     }
     if (bytes_tgt > tl_ce_targets_bytes) {
         cudaFree(tl_ce_d_targets);
@@ -2422,6 +2641,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
 
     CUDA_CHECK_X(cudaMemcpyAsync(tl_ce_d_logits, plog, bytes_logits, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaMemcpyAsync(tl_ce_d_targets, ptgt, bytes_tgt, cudaMemcpyHostToDevice, kTensorCudaStream));
+    CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
 
     CUDA_CHECK_X(cudaMemsetAsync(tl_ce_d_loss_sum, 0, sizeof(float), kTensorCudaStream));
     CUDA_CHECK_X(cudaMemsetAsync(tl_ce_d_valid, 0, sizeof(unsigned int), kTensorCudaStream));
@@ -2475,7 +2695,6 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_copyHostFloatBufferT
     CUDA_CHECK_X(cudaMemcpyAsync(tl_ce_d_targets, pf, bytes_f, cudaMemcpyHostToDevice, kTensorCudaStream));
     int* ddst = reinterpret_cast<int*>(static_cast<uintptr_t>(d_dst_int));
     launch_float_to_int32_targets(tl_ce_d_targets, ddst, n_tokens);
-    CUDA_KERNEL_CHECK();
 }
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_layerNormGPU(
@@ -2514,6 +2733,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_layerNormGPU(
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (outer + threads - 1) / threads;
     layer_norm_fwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_x, d_g, d_b, d_o, outer, lastDim, eps);
+    CUDA_KERNEL_CHECK();
     jfloat* po = env->GetFloatArrayElements(h_out, nullptr);
     if (!po) {
         cudaFree(d_x);
@@ -2587,6 +2807,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormGPUDevice(
     if (dX == 0 || dGamma == 0 || dOut == 0 || outer <= 0 || lastDim <= 0) {
         return;
     }
+    jgpt_cuda_ensure_stream();
     const float* x = reinterpret_cast<const float*>(static_cast<uintptr_t>(dX));
     const float* gamma = reinterpret_cast<const float*>(static_cast<uintptr_t>(dGamma));
     float* out = reinterpret_cast<float*>(static_cast<uintptr_t>(dOut));
@@ -2615,6 +2836,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormMatmulLmHeadG
     if (rows <= 0 || dModel <= 0 || vocab <= 0) {
         return;
     }
+    jgpt_cuda_ensure_stream();
     const float* x = reinterpret_cast<const float*>(static_cast<uintptr_t>(dX));
     const float* gamma = reinterpret_cast<const float*>(static_cast<uintptr_t>(dGamma));
     float* normOut = reinterpret_cast<float*>(static_cast<uintptr_t>(dNormOut));
@@ -2626,6 +2848,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormMatmulLmHeadG
     const float alpha = 1.0f;
     const float beta = 0.0f;
     cublasHandle_t handle = get_extra_cublas_handle();
+    if (handle == nullptr) {
+        fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: cuBLAS handle unavailable\n");
+        return;
+    }
     cublasStatus_t st =
             cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, vocab, rows, dModel, &alpha, w, vocab, normOut, dModel, &beta, logits, vocab);
     if (st != CUBLAS_STATUS_SUCCESS) {
@@ -3169,6 +3395,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyRoPEBackward4DG
     float* gradX = reinterpret_cast<float*>(static_cast<uintptr_t>(dGradX));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
+    /*
+     * rope_4d_bwd_kernel накапливает в gradX через +=. На пути JNI буфер предзаполняется копией с хоста;
+     * здесь вызывающий GPU-код обязан обнулить gradX до вызова (см. TransformerBackward: QHeads.clear()).
+     */
     rope_4d_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
             gradY, gradX, batch, numHeads, seqLen, dHead, nullptr, seqLen, posBaseOffset);
 }
@@ -4075,6 +4305,9 @@ static double sum_squares_float_device_chunked_double_acc(cublasHandle_t h, cons
     if (n <= 0 || x == nullptr) {
         return 0.0;
     }
+    if (h == nullptr) {
+        return 0.0;
+    }
     const int chunk = 1 << 18;
     double* d_dbl = nullptr;
     if (cudaMalloc(reinterpret_cast<void**>(&d_dbl), (size_t) chunk * sizeof(double)) != cudaSuccess) {
@@ -4109,6 +4342,7 @@ JNIEXPORT jdouble JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sumSquaresGPU(
     if (n <= 0) {
         return 0.0;
     }
+    jgpt_cuda_ensure_stream();
     size_t bytes = (size_t) n * sizeof(float);
     float* d_src = nullptr;
     cudaError_t e1 = cudaMalloc(reinterpret_cast<void**>(&d_src), bytes);
@@ -4133,6 +4367,10 @@ JNIEXPORT jdouble JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sumSquaresGPU(
     }
     env->ReleaseFloatArrayElements(h_src, psrc, JNI_ABORT);
     cublasHandle_t h = get_extra_cublas_handle();
+    if (h == nullptr) {
+        cudaFree(d_src);
+        return 0.0;
+    }
     double acc = sum_squares_float_device_chunked_double_acc(h, d_src, n);
     if (cudaStreamSynchronize(kTensorCudaStream) != cudaSuccess) {
         cudaFree(d_src);
@@ -4538,6 +4776,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_layerNormBackwardGPU
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (outer + threads - 1) / threads;
     layer_norm_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_go, d_x, d_g, eps, d_gx, d_gg, d_gb, outer, lastDim);
+    CUDA_KERNEL_CHECK();
     pgx = env->GetFloatArrayElements(h_gX, nullptr);
     pgg = env->GetFloatArrayElements(h_gGamma, nullptr);
     pgb = env->GetFloatArrayElements(h_gBeta, nullptr);
@@ -4990,6 +5229,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaleInPlaceGPUDevic
     (void) env;
     (void) clazz;
     if (n <= 0 || dSrc == 0) return;
+    jgpt_cuda_ensure_stream();
     float* src = reinterpret_cast<float*>(static_cast<uintptr_t>(dSrc));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (n + threads - 1) / threads;
@@ -5001,8 +5241,12 @@ JNIEXPORT jdouble JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sumSquaresGPUDevi
     (void) env;
     (void) clazz;
     if (n <= 0 || dSrc == 0) return 0.0;
+    jgpt_cuda_ensure_stream();
     float* x = reinterpret_cast<float*>(static_cast<uintptr_t>(dSrc));
     cublasHandle_t h = get_extra_cublas_handle();
+    if (h == nullptr) {
+        return 0.0;
+    }
     double acc = sum_squares_float_device_chunked_double_acc(h, x, n);
     CUDA_CHECK_RV(cudaStreamSynchronize(kTensorCudaStream), 0.0);
     return static_cast<jdouble>(acc);
@@ -5025,7 +5269,13 @@ JNIEXPORT jdouble JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sumSquaresGPUDevi
         }
         return 0.0;
     }
+    jgpt_cuda_ensure_stream();
     cublasHandle_t h = get_extra_cublas_handle();
+    if (h == nullptr) {
+        env->ReleaseLongArrayElements(dPtrs, pp, JNI_ABORT);
+        env->ReleaseIntArrayElements(lens, ll, JNI_ABORT);
+        return 0.0;
+    }
     double acc = 0.0;
     for (jint i = 0; i < nBufs; i++) {
         jint n = ll[i];
@@ -5045,7 +5295,26 @@ JNIEXPORT jdouble JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sumSquaresGPUDevi
     return static_cast<jdouble>(acc);
 }
 
+static std::mutex g_any_nonfinite_alloc_mu;
 static unsigned int* g_any_nonfinite_flag = nullptr;
+
+static bool any_nonfinite_flag_ensure() {
+    if (g_any_nonfinite_flag != nullptr) {
+        return true;
+    }
+    std::lock_guard<std::mutex> lock(g_any_nonfinite_alloc_mu);
+    if (g_any_nonfinite_flag != nullptr) {
+        return true;
+    }
+    unsigned int* p = nullptr;
+    cudaError_t e = cudaMalloc(reinterpret_cast<void**>(&p), sizeof(unsigned int));
+    if (e != cudaSuccess) {
+        fprintf(stderr, "any_nonfinite_flag_ensure: cudaMalloc failed (%d)\n", static_cast<int>(e));
+        return false;
+    }
+    g_any_nonfinite_flag = p;
+    return true;
+}
 
 __global__ void any_nonfinite_kernel(const float* src, unsigned int* flag, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -5071,13 +5340,11 @@ JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_anyNonFiniteGPUD
         return JNI_FALSE;
     }
 
-    if (g_any_nonfinite_flag == nullptr) {
-        cudaError_t e = cudaMalloc(reinterpret_cast<void**>(&g_any_nonfinite_flag), sizeof(unsigned int));
-        if (e != cudaSuccess) {
-            env->ReleaseLongArrayElements(dPtrs, pp, JNI_ABORT);
-            env->ReleaseIntArrayElements(lens,  ll, JNI_ABORT);
-            return JNI_FALSE;
-        }
+    jgpt_cuda_ensure_stream();
+    if (!any_nonfinite_flag_ensure()) {
+        env->ReleaseLongArrayElements(dPtrs, pp, JNI_ABORT);
+        env->ReleaseIntArrayElements(lens, ll, JNI_ABORT);
+        return JNI_FALSE;
     }
     /* Единственный memset перед всеми ядрами. */
     CUDA_CHECK_RV(cudaMemsetAsync(g_any_nonfinite_flag, 0, sizeof(unsigned int), kTensorCudaStream), JNI_FALSE);
@@ -5108,11 +5375,11 @@ JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_anyNonFiniteGPUD
     (void) env;
     (void) clazz;
     if (n <= 0 || dSrc == 0) return JNI_FALSE;
-    float* src = reinterpret_cast<float*>(static_cast<uintptr_t>(dSrc));
-    if (g_any_nonfinite_flag == nullptr) {
-        CUDA_CHECK_RV(
-                cudaMalloc(reinterpret_cast<void**>(&g_any_nonfinite_flag), sizeof(unsigned int)), JNI_FALSE);
+    jgpt_cuda_ensure_stream();
+    if (!any_nonfinite_flag_ensure()) {
+        return JNI_FALSE;
     }
+    float* src = reinterpret_cast<float*>(static_cast<uintptr_t>(dSrc));
     CUDA_CHECK_RV(cudaMemsetAsync(g_any_nonfinite_flag, 0, sizeof(unsigned int), kTensorCudaStream), JNI_FALSE);
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (n + threads - 1) / threads;
@@ -5136,6 +5403,7 @@ JNIEXPORT jfloat JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftma
     (void) clazz;
     int nrows = batch * seqLen;
     if (nrows <= 0 || vocab <= 0) return 0.f;
+    jgpt_cuda_ensure_stream();
 
     float* logits = reinterpret_cast<float*>(static_cast<uintptr_t>(dLogits));
     float* grad   = reinterpret_cast<float*>(static_cast<uintptr_t>(dGrad));
@@ -5183,6 +5451,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     if (nrows <= 0 || vocab <= 0) {
         return;
     }
+    jgpt_cuda_ensure_stream();
 
     float* logits = reinterpret_cast<float*>(static_cast<uintptr_t>(dLogits));
     float* grad = reinterpret_cast<float*>(static_cast<uintptr_t>(dGrad));
@@ -5250,6 +5519,7 @@ JNIEXPORT jfloat JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftma
     (void) clazz;
     int nrows = batch * seqLen;
     if (nrows <= 0 || vocab <= 0 || dTargetsInt == 0) return 0.f;
+    jgpt_cuda_ensure_stream();
 
     float* logits = reinterpret_cast<float*>(static_cast<uintptr_t>(dLogits));
     float* grad   = reinterpret_cast<float*>(static_cast<uintptr_t>(dGrad));
@@ -5287,6 +5557,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     if (nrows <= 0 || vocab <= 0 || dTargetsInt == 0) {
         return;
     }
+    jgpt_cuda_ensure_stream();
 
     float* logits = reinterpret_cast<float*>(static_cast<uintptr_t>(dLogits));
     float* grad = reinterpret_cast<float*>(static_cast<uintptr_t>(dGrad));
@@ -5689,6 +5960,13 @@ extern "C" void jgpt_cuda_graph_prewarm_sdpa_aux_and_cublas(int bAttn, int seqLe
 
 void jgpt_cuda_extra_cleanup(void) {
     destroy_extra_cublas_handle();
+    {
+        std::lock_guard<std::mutex> lock(g_any_nonfinite_alloc_mu);
+        if (g_any_nonfinite_flag != nullptr) {
+            cudaFree(g_any_nonfinite_flag);
+            g_any_nonfinite_flag = nullptr;
+        }
+    }
     if (tl_graph_sdpa_warmup != nullptr) {
         cudaFree(tl_graph_sdpa_warmup);
         tl_graph_sdpa_warmup = nullptr;
@@ -5699,10 +5977,13 @@ void jgpt_cuda_extra_cleanup(void) {
         tl_attn_fwd_aux = nullptr;
         tl_attn_fwd_aux_total = 0;
     }
-    if (tl_attn_fwd_graph_aux != nullptr) {
-        cudaFree(tl_attn_fwd_graph_aux);
-        tl_attn_fwd_graph_aux = nullptr;
-        tl_attn_fwd_graph_aux_total = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_attn_fwd_graph_aux_mu);
+        if (g_attn_fwd_graph_aux != nullptr) {
+            cudaFree(g_attn_fwd_graph_aux);
+            g_attn_fwd_graph_aux = nullptr;
+            g_attn_fwd_graph_aux_total = 0;
+        }
     }
     ce_free_cached();
     softmax_pair_free_cached();
@@ -5717,13 +5998,62 @@ void jgpt_cuda_extra_cleanup(void) {
 //  Q/K/V/O = [BH, S, Dh=kFaDh].  dLSEPtr = device float[BH*S].
 //  S must be divisible by kFaBr (= 64); for padding caller truncates.
 // ----------------------------------------------------------------
+JNIEXPORT jlong JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_decoderGraphNativeStabilityToken0(
+        JNIEnv* env, jclass clazz) {
+    (void) env;
+    (void) clazz;
+    uintptr_t fp = 0;
+    uintptr_t gp = 0;
+    size_t fsz = 0;
+    size_t gsz = 0;
+    jgpt_cuda_decoder_graph_debug_aux_snapshot(&fp, &gp, &fsz, &gsz);
+    uintptr_t wp = 0;
+    uintptr_t cp = 0;
+    unsigned long long cwe = 0;
+    unsigned long long cce = 0;
+    int ov = 0;
+    jgpt_cuda_decoder_graph_pack_snapshot(&wp, &cp, &cwe, &cce, &ov);
+    const uintptr_t warm = reinterpret_cast<uintptr_t>(tl_graph_sdpa_warmup);
+    const size_t warm_sz = tl_graph_sdpa_warmup_bytes;
+    const uintptr_t fad = reinterpret_cast<uintptr_t>(tl_fa_D);
+    const size_t fad_sz = tl_fa_D_bytes;
+
+    uint64_t h = 1469598103934665603ULL;
+    auto mix = [&](uint64_t x) {
+        h ^= x;
+        h *= 1099511628211ULL;
+    };
+    mix(static_cast<uint64_t>(fp));
+    mix(static_cast<uint64_t>(gp));
+    mix(static_cast<uint64_t>(fsz));
+    mix(static_cast<uint64_t>(gsz));
+    mix(static_cast<uint64_t>(wp));
+    mix(static_cast<uint64_t>(cp));
+    mix(static_cast<uint64_t>(cwe));
+    mix(static_cast<uint64_t>(cce));
+    mix(static_cast<uint64_t>(static_cast<unsigned int>(ov)));
+    mix(static_cast<uint64_t>(warm));
+    mix(static_cast<uint64_t>(warm_sz));
+    mix(static_cast<uint64_t>(fad));
+    mix(static_cast<uint64_t>(fad_sz));
+    return static_cast<jlong>(static_cast<int64_t>(h));
+}
+
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionForwardGPUDeviceResident(
     JNIEnv* env, jclass clazz,
     jlong dQPtr, jlong dKPtr, jlong dVPtr, jlong dOutPtr, jlong dLSEPtr,
-    jint BH, jint S, jfloat scale)
+    jint BH, jint S, jint dHead, jfloat scale)
 {
     (void) env; (void) clazz;
     if (!dQPtr || !dKPtr || !dVPtr || !dOutPtr || !dLSEPtr || BH <= 0 || S <= 0) return;
+    if (dHead != static_cast<jint>(kFaDh)) {
+        fprintf(
+                stderr,
+                "FlashAttention forward: compiled for d_head=%d, got d_head=%d\n",
+                kFaDh,
+                static_cast<int>(dHead));
+        return;
+    }
 
     /* dLSEPtr — буфер вызывающего на устройстве [BH*S] float. */
     jgpt_cuda_ensure_stream();
@@ -5752,11 +6082,19 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionBackwa
     jlong dQPtr, jlong dKPtr, jlong dVPtr,
     jlong dOPtr, jlong dOGradPtr, jlong dLSEPtr,
     jlong dGradQPtr, jlong dGradKPtr, jlong dGradVPtr,
-    jint BH, jint S, jfloat scale)
+    jint BH, jint S, jint dHead, jfloat scale)
 {
     (void) env; (void) clazz;
     if (!dQPtr || !dKPtr || !dVPtr || !dOPtr || !dOGradPtr || !dLSEPtr
             || !dGradQPtr || !dGradKPtr || !dGradVPtr || BH <= 0 || S <= 0) return;
+    if (dHead != static_cast<jint>(kFaDh)) {
+        fprintf(
+                stderr,
+                "FlashAttention backward: compiled for d_head=%d, got d_head=%d\n",
+                kFaDh,
+                static_cast<int>(dHead));
+        return;
+    }
 
     size_t D_bytes = (size_t)BH * S * sizeof(float);
     if (!fa_ensure_D(D_bytes)) return;

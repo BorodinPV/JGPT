@@ -67,8 +67,14 @@ public final class TensorOps {
     }
 
     /**
-     * Выделить thread-local attention/FFN workspace и staging под probs до {@code cudaStreamBeginCapture}. Во время
-     * захвата недопустимы {@code cudaMalloc}/{@code cudaFree} и синхронизация основного stream.
+     * Выделить thread-local attention/FFN workspace, нативный SDPA aux и FP16 staging под probs до любого
+     * {@code cudaStreamBeginCapture}/{@code cudaGraphExecLaunch} в этом decoder-pass.
+     *
+     * <p><b>Обязательно вызывать один раз до цикла по слоям</b>: при частичном захвате (часть {@code exec} уже есть)
+     * повторный prime только перед слоем N перевыделил бы общие TL-буферы и инвалидировал графы слоёв
+     * {@code 0..N-1} (устаревшие указатели в CUDA graph → {@code cudaGraphLaunch} / illegal access).
+     *
+     * <p>Во время захвата недопустимы {@code cudaMalloc}/{@code cudaFree} и синхронизация основного stream.
      */
     public static void primeDecoderGraphLayerWorkspaces(
             int batch,
@@ -77,7 +83,7 @@ public final class TensorOps {
             int numHeads,
             int dIntermediate,
             Tensor mask,
-            BlockActivationCacheDevice devCache) {
+            BlockActivationCacheDevice[] cachesPerLayer) {
         int rows = Math.multiplyExact(batch, seqLen);
         GpuAttentionResidentWorkspace aw = GpuAttentionResidentWorkspace.local();
         synchronized (aw.exclusiveUseLock()) {
@@ -90,10 +96,14 @@ public final class TensorOps {
         synchronized (fw.exclusiveUseLock()) {
             fw.ensureFfnNormResidual(rows, dModel, dIntermediate);
         }
-        if (devCache != null) {
+        if (cachesPerLayer != null) {
             int bAttn = Math.multiplyExact(batch, numHeads);
             int probFloats = Math.multiplyExact(Math.multiplyExact(bAttn, seqLen), seqLen);
-            devCache.ensureAttentionProbsFloatStageForGraphCapture(probFloats);
+            for (BlockActivationCacheDevice c : cachesPerLayer) {
+                if (c != null) {
+                    c.ensureAttentionProbsFloatStageForGraphCapture(probFloats);
+                }
+            }
         }
         TensorOpsGPU.decoderGraphPrewarmDeviceOps(batch, seqLen, dModel, numHeads, dIntermediate);
     }
@@ -1556,7 +1566,7 @@ public final class TensorOps {
                         ws.getConcatFlat(), ws.getAttnOut(), ws.getQ(),
                         ws.getK(),  // O output (head-wise) → stored here temporarily
                         lseDev,
-                        bAttn, seqLen, scale);
+                        bAttn, seqLen, dHead, scale);
                 if (devCache != null) {
                     // Save O_heads (before concatHeads overwrites ws.getK()) for backward D computation
                     devCache.copySlotFromDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_OUT_HEADS, ws.getK(), headFloats);

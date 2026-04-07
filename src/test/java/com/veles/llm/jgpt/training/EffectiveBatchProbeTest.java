@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * JGPT_BATCH_PROBE=1 mvn test -Dtest=EffectiveBatchProbeTest#probeMaxBatchAndAccumulation
  * </pre>
  *
- * <p>По умолчанию берётся та же база, что и в {@link com.veles.llm.jgpt.app.MultiBookTrain}:
+ * <p>По умолчанию берётся та же база, что и в {@link com.veles.llm.jgpt.app.AllBooksTrain}:
  * {@link LLMConfig#small16M()} + {@link LLMConfig#applyBatchSizeOverrideFromEnv} (переменная {@code JGPT_BATCH_SIZE}),
  * а шаг оптимизатора строится из {@link LLMConfig#toTrainingConfig(String, int)} (LR, warmup, weight decay, клип,
  * косинусный LR и т.д.), с подставляемыми при зонде {@code batchSize} / {@code accumulationSteps}.
@@ -99,7 +99,7 @@ final class EffectiveBatchProbeTest {
         TrainingConfig t = lc.toTrainingConfig("checkpoints", modelVocabSize);
         return String.format(
                 Locale.ROOT,
-                "Эталон (LLMConfig + toTrainingConfig, как в MultiBookTrain): batch=%d, accum=%d, lr=%.6f, "
+                "Эталон (LLMConfig + toTrainingConfig, как в AllBooksTrain): batch=%d, accum=%d, lr=%.6f, "
                         + "warmup=%.2f, weightDecay=%.5f, maxGradNorm=%.2f, lrSchedule=%s, minLrRatio=%.2f; FP16 GEMM=%s",
                 lc.batchSize,
                 lc.accumulationSteps,

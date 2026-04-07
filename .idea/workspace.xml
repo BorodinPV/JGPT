@@ -5,20 +5,30 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Рефакторинг">
-      <change beforePath="$PROJECT_DIR$/.idea/dataSources.local.xml" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/TRAIN_RUNBOOK.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/TRAIN_RUNBOOK.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/training/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/training/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/env/01-aggressive.env" beforeDir="false" afterPath="$PROJECT_DIR$/env/01-aggressive.env" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/env/02-stable.env" beforeDir="false" afterPath="$PROJECT_DIR$/env/02-stable.env" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pom.xml" beforeDir="false" afterPath="$PROJECT_DIR$/pom.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/jgpt-smart.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/jgpt-smart.sh" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda.cu" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_graph_prewarm.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_graph_prewarm.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_stream.cuh" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_stream.cuh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/GpuHalfBuffer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/GpuHalfBuffer.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/GpuFloatBuffer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/GpuFloatBuffer.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/TensorOpsGPU.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/TensorOpsGPU.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/BlockActivationCacheDevice.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/BlockActivationCacheDevice.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/MultiBookTrain.java" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/ProfileQuickRun.java" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/SmartTrainingSupervisor.java" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/TrainLLM.java" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/GPTModel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/GPTModel.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/GpuWorkspaceCleanup.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/GpuWorkspaceCleanup.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/TensorOps.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/TensorOps.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/TransformerBackward.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/ops/TransformerBackward.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/PresetConfig.java" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/PresetDecider.java" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/training/EffectiveBatchProbeTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/training/EffectiveBatchProbeTest.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/test/resources/jgpt-training-env-keys.txt" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/resources/jgpt-training-env-keys.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/current.env" beforeDir="false" afterPath="$PROJECT_DIR$/state/current.env" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/current_preset_idx" beforeDir="false" afterPath="$PROJECT_DIR$/state/current_preset_idx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/last_step.txt" beforeDir="false" afterPath="$PROJECT_DIR$/state/last_step.txt" afterDir="false" />
@@ -49,41 +59,47 @@
     <option name="showLibraryContents" value="true" />
     <option name="showScratchesAndConsoles" value="false" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;Maven.jgpt [test].executor&quot;: &quot;Run&quot;,
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.cidr.known.project.marker&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.readMode.enableVisualFormatting&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
-    &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
-    &quot;cf.first.check.clang-format&quot;: &quot;false&quot;,
-    &quot;cidr.known.project.marker&quot;: &quot;true&quot;,
-    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
-    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1&quot;: &quot;true&quot;,
-    &quot;dart.analysis.tool.window.visible&quot;: &quot;false&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
-    &quot;junie.onboarding.icon.badge.shown&quot;: &quot;true&quot;,
-    &quot;kotlin-language-version-configured&quot;: &quot;true&quot;,
-    &quot;last_opened_file_path&quot;: &quot;/home/pavel/Рабочий стол/JGPT&quot;,
-    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
-    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
-    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
-    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
-    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;ml.llm.AcpAgentsConfigurable&quot;,
-    &quot;show.migrate.to.gradle.popup&quot;: &quot;false&quot;,
-    &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;,
-    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "Maven.jgpt [clean,compile].executor": "Run",
+    "Maven.jgpt [clean,project].executor": "Run",
+    "Maven.jgpt [package].executor": "Run",
+    "Maven.jgpt [test].executor": "Run",
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.cidr.known.project.marker": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.readMode.enableVisualFormatting": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
+    "cf.first.check.clang-format": "false",
+    "cidr.known.project.marker": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
+    "dart.analysis.tool.window.visible": "false",
+    "git-widget-placeholder": "main",
+    "junie.onboarding.icon.badge.shown": "true",
+    "kotlin-language-version-configured": "true",
+    "last_opened_file_path": "/home/pavel/Рабочий стол/JGPT",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "settings.editor.selected.configurable": "ml.llm.AcpAgentsConfigurable",
+    "show.migrate.to.gradle.popup": "false",
+    "to.speed.mode.migration.done": "true",
+    "vue.rearranger.settings.migration": "true"
   }
-}</component>
+}]]></component>
   <component name="RunAnythingCache">
     <option name="myCommands">
       <command value="mvn test" />
+      <command value="mvn clean compile" />
+      <command value="mvn clean project" />
+      <command value="mvn package" />
     </option>
   </component>
   <component name="TaskManager">
@@ -95,7 +111,7 @@
       <updated>1775156484893</updated>
       <workItem from="1775455617597" duration="4931000" />
       <workItem from="1775460565645" duration="1047000" />
-      <workItem from="1775566446952" duration="753000" />
+      <workItem from="1775566446952" duration="6660000" />
     </task>
     <task id="LOCAL-00001" summary="Переработка для gpu">
       <option name="closed" value="true" />
@@ -249,7 +265,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775458509865</updated>
     </task>
-    <option name="localTasksCounter" value="20" />
+    <task id="LOCAL-00020" summary="Рефакторинг">
+      <option name="closed" value="true" />
+      <created>1775567863734</created>
+      <option name="number" value="00020" />
+      <option name="presentableId" value="LOCAL-00020" />
+      <option name="project" value="LOCAL" />
+      <updated>1775567863734</updated>
+    </task>
+    <option name="localTasksCounter" value="21" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

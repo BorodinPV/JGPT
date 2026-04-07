@@ -113,60 +113,25 @@ jgpt_resolve_mvn_command() {
         export JGPT_GPU_E2E_TRAIN=1
         export JGPT_FULL_GPU_TRAIN=1
     done
+    # Совместимость: старый вызов «… e2e allbooks …» — слово allbooks игнорируем.
+    while [[ "${1:-}" == allbooks ]]; do
+        shift
+    done
 
-    local -a cmd=()
-
-    case "${1:-}" in
-        single|train)
-            shift
-            if [[ $# -gt 0 ]]; then
-                cmd=(
-                    mvn -q compile exec:java
-                    -Dexec.mainClass=com.veles.llm.jgpt.app.TrainLLM
-                    "-Dexec.args=$*"
-                )
-            else
-                cmd=(mvn -q compile exec:java -Dexec.mainClass=com.veles.llm.jgpt.app.TrainLLM)
-            fi
-            ;;
-        allbooks)
-            shift
-            if [[ $# -gt 0 ]]; then
-                cmd=(
-                    mvn -q compile exec:java
-                    -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain
-                    "-Dexec.args=$*"
-                )
-            else
-                cmd=(
-                    mvn -q compile exec:java
-                    -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain
-                    '-Dexec.args=--boo .'
-                )
-            fi
-            ;;
-        profile)
-            shift
-            if [[ $# -gt 0 ]]; then
-                cmd=(
-                    mvn -q compile exec:java
-                    -Dexec.mainClass=com.veles.llm.jgpt.app.ProfileQuickRun
-                    "-Dexec.args=$*"
-                )
-            else
-                cmd=(mvn -q compile exec:java -Dexec.mainClass=com.veles.llm.jgpt.app.ProfileQuickRun)
-            fi
-            ;;
-    esac
-
-    if [[ ${#cmd[@]} -eq 0 ]]; then
+    local -a cmd
+    if [[ $# -gt 0 ]]; then
         cmd=(
             mvn -q compile exec:java
-            -Dexec.mainClass=com.veles.llm.jgpt.app.MultiBookTrain
+            -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain
+            "-Dexec.args=$*"
+        )
+    else
+        cmd=(
+            mvn -q compile exec:java
+            -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain
             '-Dexec.args=--boo .'
         )
     fi
-
     JGPT_EXEC_CMD=("${cmd[@]}")
 }
 

@@ -18,9 +18,7 @@
 3. Запускает **`AllBooksTrain`** с `tee -a training_allbooks.log`
 4. **Bash-монитор** по логу: OOM, залипание FP16 scale, «зависание» без шагов, плато eval — при необходимости останавливает JVM и перезапускает со следующим пресетом (upgrade/downgrade по порогам в начале скрипта)
 
-Альтернатива в одной JVM без перезапусков: класс **`SmartTrainingSupervisor`** + `AllBooksTrain.runWithPreset` (запуск вручную через Maven, см. исходники).
-
-Конфигурация цепочки пресетов в bash: массив `PRESETS` в `jgpt-smart.sh`; для Java-супервизора — [`PresetConfig.SMART_PRESET_CHAIN`](../../src/main/java/com/veles/llm/jgpt/training/PresetConfig.java)
+Цепочка имён пресетов и переключение — только в bash: массив `PRESETS` и логика монитора в `jgpt-smart.sh`.
 
 ### Finetune (сброс `globalStep`, веса и Adam из чекпоинта)
 
@@ -42,7 +40,7 @@ JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh 01-aggressive
 | **03** | batch=1, осторожный режим |
 | **04** | минимальный — последний запасной вариант |
 
-## Пороги PresetDecider
+## Пороги bash-монитора (`jgpt-smart.sh`)
 
 **Downgrade** — при первом же из:
 - OOM / фатальная CUDA-ошибка (любой момент)
@@ -56,7 +54,7 @@ JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh 01-aggressive
 
 ## Пресет и env
 
-Файлы `env/<имя>.env` содержат только `export JGPT_*=…`. `SmartTrainingSupervisor` записывает активный пресет в `state/current_preset_idx` и обновляет symlink `state/current.env → ../env/<имя>.env`.
+Файлы `env/<имя>.env` содержат только `export JGPT_*=…`. Скрипт записывает активный пресет в `state/current_preset_idx` и обновляет symlink `state/current.env → ../env/<имя>.env`.
 
 `JGPT_*` экспортируются в окружение JVM через `jgpt-smart.sh` ДО запуска Maven — подпроцессы наследуют их.
 

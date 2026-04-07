@@ -125,130 +125,6 @@ public final class LLMConfig {
     }
 
     /**
-     * Переопределяет {@link #maxSeqLen} и {@link #batchSize} из {@link PresetConfig} (для супервизора).
-     */
-    public static LLMConfig applyPreset(LLMConfig base, PresetConfig preset) {
-        if (preset.maxSeqLen() == base.maxSeqLen && preset.batchSize() == base.batchSize) {
-            return base;
-        }
-        return new LLMConfig(
-                base.name,
-                base.vocabSize,
-                preset.maxSeqLen(),
-                base.dModel,
-                base.numHeads,
-                base.numLayers,
-                base.dIntermediate,
-                preset.batchSize(),
-                base.accumulationSteps,
-                base.learningRate,
-                base.epochs);
-    }
-
-    /**
-     * Как {@link #toTrainingConfig(String, int)}, но поля train/eval из {@link PresetConfig} (без env для этих
-     * параметров).
-     */
-    public TrainingConfig toTrainingConfigWithPreset(String checkpointDir, int modelVocabSize, PresetConfig preset) {
-        TensorOpsGPU.requireCuda("LLMConfig.toTrainingConfigWithPreset");
-        int interactive = Math.max(0, preset.interactiveEvery());
-        int evalPatience = Math.max(0, preset.earlyStopEvalPatience());
-        int sampledCand = Math.max(2, preset.sampledCeCandidates());
-        SampledNegativeMode negMode = sampledCeNegativeModeFromEnvOrProp();
-        if (gpuE2eTrainFromEnv()) {
-            if (!TensorOpsGPU.isGpuAvailable()) {
-                throw new IllegalStateException(
-                        "JGPT_GPU_E2E_TRAIN requires CUDA (GPU not available).");
-            }
-            if (!effectiveGpuResidentTraining()) {
-                throw new IllegalStateException(
-                        "JGPT_GPU_E2E_TRAIN requires GPU resident training (CUDA and JGPT_TRAIN_GPU_RESIDENT not 0/false)");
-            }
-            ensureDecoderGpuPipelineForFullGpuTrainRequest();
-            return new TrainingConfig(
-                    modelVocabSize,
-                    maxSeqLen,
-                    dModel,
-                    numHeads,
-                    numLayers,
-                    dIntermediate,
-                    batchSize,
-                    accumulationSteps,
-                    epochs,
-                    learningRate,
-                    0.1f,
-                    0.01f,
-                    1.0f,
-                    500,
-                    100,
-                    LearningRateSchedule.COSINE,
-                    0f,
-                    checkpointDir,
-                    50,
-                    interactive,
-                    evalPatience,
-                    false,
-                    1e-8f,
-                    8,
-                    true,
-                    true,
-                    true,
-                    true,
-                    false,
-                    TrainLossMode.SAMPLED,
-                    sampledCand,
-                    negMode);
-        }
-        boolean useGpu = effectiveGpuResidentTraining();
-        boolean fullStep = effectiveFullGpuTrainStepFromEnv();
-        boolean deviceLogits = useGpu && deviceLogitsTrainStepFromEnv();
-        boolean deviceDec = useGpu && deviceDecoderBackwardFromEnv();
-        if (useGpu && TensorOpsGPU.isGpuAvailable()) {
-            fullStep = true;
-            deviceLogits = true;
-            deviceDec = true;
-            ensureDecoderGpuPipelineForFullGpuTrainRequest();
-        } else if (fullStep) {
-            deviceLogits = true;
-            deviceDec = true;
-            ensureDecoderGpuPipelineForFullGpuTrainRequest();
-        }
-        return new TrainingConfig(
-                modelVocabSize,
-                maxSeqLen,
-                dModel,
-                numHeads,
-                numLayers,
-                dIntermediate,
-                batchSize,
-                accumulationSteps,
-                epochs,
-                learningRate,
-                0.1f,
-                0.01f,
-                1.0f,
-                500,
-                100,
-                LearningRateSchedule.COSINE,
-                0f,
-                checkpointDir,
-                50,
-                interactive,
-                evalPatience,
-                false,
-                1e-8f,
-                8,
-                useGpu,
-                fullStep,
-                deviceLogits,
-                deviceDec,
-                false,
-                TrainLossMode.SAMPLED,
-                sampledCand,
-                negMode);
-    }
-
-    /**
      * Runtime override from env {@code JGPT_BATCH_SIZE}.
      */
     public static LLMConfig applyBatchSizeOverrideFromEnv(LLMConfig base) {
@@ -342,6 +218,30 @@ public final class LLMConfig {
                 base.dIntermediate,
                 base.batchSize,
                 overridden,
+                base.learningRate,
+                base.epochs);
+    }
+
+    /**
+     * Переопределяет {@link #numLayers} через {@code JGPT_PRESET_NUM_LAYERS}.
+     * Используется в {@link com.veles.llm.jgpt.app.AllBooksTrain#main(String[])} при запуске через
+     * {@code jgpt-smart.sh} ({@code env/*.env} задаёт только переменные окружения процесса).
+     */
+    public static LLMConfig applyPresetNumLayersOverrideFromEnv(LLMConfig base) {
+        int overridden = readPositiveEnvInt("JGPT_PRESET_NUM_LAYERS", base.numLayers);
+        if (overridden == base.numLayers) {
+            return base;
+        }
+        return new LLMConfig(
+                base.name,
+                base.vocabSize,
+                base.maxSeqLen,
+                base.dModel,
+                base.numHeads,
+                overridden,
+                base.dIntermediate,
+                base.batchSize,
+                base.accumulationSteps,
                 base.learningRate,
                 base.epochs);
     }

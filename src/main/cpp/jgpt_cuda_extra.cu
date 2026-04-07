@@ -423,6 +423,8 @@ __global__ void softmax_last_dim_kernel_fp16(const float* src, float* dst, int n
 
 static constexpr int kSoftmaxBlockDim       = 256;         // нитей на блок
 static constexpr int kSoftmaxNumWarps       = kSoftmaxBlockDim / 32;  // 8
+/** Префикс dynamic shared для softmax_scaled_masked_* под blockReduce (не пересекается с row-кэшем длиной inner). */
+static constexpr int kSoftmaxSharedPrefixFloats = 32;
 static constexpr int kSoftmaxBlockThreshold = 64;          // при inner >= этого → block-per-row
 
 __device__ __forceinline__ float warpReduceMax32(float v) {
@@ -497,15 +499,17 @@ __global__ void softmax_last_dim_block_kernel(
 
 /**
  * Слитый (scale + causal-mask + softmax), block-per-row для attention.
- * Устраняет отдельные вызовы scale_inplace и add_mask_inplace — читает d_scores только один раз.
+ * Одно чтение глобальной строки scores: z[j] кэшируется в shared (dynamic smem = prefix + inner).
  * Для causal mask: row % inner — query-позиция; mask[qPos * inner + j] добавляется к scaled logit.
- * Запуск: gridDim.x=nrows, blockDim.x=kSoftmaxBlockDim, smem=kSoftmaxNumWarps*sizeof(float).
+ * Запуск: gridDim.x=nrows, blockDim.x=kSoftmaxBlockDim, smem=(kSoftmaxSharedPrefixFloats+inner)*sizeof(float).
  */
 __global__ void softmax_scaled_masked_block_kernel(
         const float* __restrict__ src, float* __restrict__ dst,
         const float* __restrict__ mask, float scale,
         int nrows, int inner) {
     extern __shared__ float smem[];
+    float* const red = smem;
+    float* const z = smem + kSoftmaxSharedPrefixFloats;
     const int row = blockIdx.x;
     if (row >= nrows) return;
     const int tid = threadIdx.x;
@@ -515,29 +519,36 @@ __global__ void softmax_scaled_masked_block_kernel(
 
     float maxv = -INFINITY;
     for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
-        float v = rowSrc[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        const float v = rowSrc[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        z[j] = v;
         maxv = fmaxf(maxv, v);
     }
-    maxv = blockReduceMax256(maxv, smem);
+    __syncthreads();
+    maxv = blockReduceMax256(maxv, red);
 
     float sumv = 0.f;
     for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
-        float v = rowSrc[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        const float v = z[j];
         sumv += expf(v - maxv);
     }
-    sumv = blockReduceSum256(sumv, smem);
+    sumv = blockReduceSum256(sumv, red);
 
     const float inv = 1.f / fmaxf(sumv, 1e-12f);
     for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
-        float v = rowSrc[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        const float v = z[j];
         rowDst[j] = expf(v - maxv) * inv;
     }
 }
 
-/** In-place: один указатель без src/dst restrict-aliasing (для graph-aux размером bytesProb вместо 2×). */
+/**
+ * In-place: один указатель без src/dst restrict-aliasing (для graph-aux размером bytesProb вместо 2×).
+ * Одно чтение глобальной строки на этапе заполнения z в shared.
+ */
 __global__ void softmax_scaled_masked_inplace_block_kernel(
         float* __restrict__ buf, const float* __restrict__ mask, float scale, int nrows, int inner) {
     extern __shared__ float smem[];
+    float* const red = smem;
+    float* const z = smem + kSoftmaxSharedPrefixFloats;
     const int row = blockIdx.x;
     if (row >= nrows) {
         return;
@@ -548,21 +559,23 @@ __global__ void softmax_scaled_masked_inplace_block_kernel(
 
     float maxv = -INFINITY;
     for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
-        float v = rowBuf[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        const float v = rowBuf[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        z[j] = v;
         maxv = fmaxf(maxv, v);
     }
-    maxv = blockReduceMax256(maxv, smem);
+    __syncthreads();
+    maxv = blockReduceMax256(maxv, red);
 
     float sumv = 0.f;
     for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
-        float v = rowBuf[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        const float v = z[j];
         sumv += expf(v - maxv);
     }
-    sumv = blockReduceSum256(sumv, smem);
+    sumv = blockReduceSum256(sumv, red);
 
     const float inv = 1.f / fmaxf(sumv, 1e-12f);
     for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
-        float v = rowBuf[j] * scale + (mask ? mask[(ptrdiff_t)qPos * inner + j] : 0.f);
+        const float v = z[j];
         rowBuf[j] = expf(v - maxv) * inv;
     }
 }
@@ -1810,10 +1823,11 @@ static bool attn_fwd_run_core(
     if (!batched_sgemm_row_major_transB(d_q, d_k, d_scores, batch, seqLen, dK, seqLen, 1.0f, 0.0f)) {
         return false;
     }
-    // Слитый scale + causal-mask + softmax: читаем d_scores один раз вместо трёх отдельных проходов
+    // Слитый scale + causal-mask + softmax: одно чтение global scores на строку (кэш z в shared).
     int nrows = batch * seqLen;
     {
-        size_t smem = kSoftmaxNumWarps * sizeof(float);
+        const size_t smem = (static_cast<size_t>(kSoftmaxSharedPrefixFloats) + static_cast<size_t>(seqLen)) *
+                sizeof(float);
         if (d_probs == d_scores) {
             softmax_scaled_masked_inplace_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(
                     d_scores, d_mask, scale, nrows, seqLen);
@@ -3393,12 +3407,11 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyRoPEBackward4DG
     }
     const float* gradY = reinterpret_cast<const float*>(static_cast<uintptr_t>(dGradY));
     float* gradX = reinterpret_cast<float*>(static_cast<uintptr_t>(dGradX));
+    jgpt_cuda_ensure_stream();
+    const size_t gxBytes = (size_t) batch * (size_t) numHeads * (size_t) seqLen * (size_t) dHead * sizeof(float);
+    CUDA_CHECK_X(cudaMemsetAsync(gradX, 0, gxBytes, kTensorCudaStream));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
-    /*
-     * rope_4d_bwd_kernel накапливает в gradX через +=. На пути JNI буфер предзаполняется копией с хоста;
-     * здесь вызывающий GPU-код обязан обнулить gradX до вызова (см. TransformerBackward: QHeads.clear()).
-     */
     rope_4d_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
             gradY, gradX, batch, numHeads, seqLen, dHead, nullptr, seqLen, posBaseOffset);
 }

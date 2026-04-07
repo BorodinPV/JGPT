@@ -20,20 +20,14 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-
-import com.veles.llm.jgpt.training.DynamicLossScaler;
-import com.veles.llm.jgpt.training.PresetConfig;
-import com.veles.llm.jgpt.training.TrainingEventCallback;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * Обучение на ВСЕХ книгах одновременно (единый датасет, один прогон).
- * Решает проблему катастрофического забывания по сравнению с {@link MultiBookTrain}.
  *
  * <p>Все {@code .txt} из {@code data/books/} (или {@code --data-dir}) объединяются в один
  * {@link DataLoader}. Чекпоинты — в {@code checkpoints/all_books/}.
@@ -96,53 +90,14 @@ public final class AllBooksTrain {
 
         LLMConfig llm = LLMConfig.applyAccumulationStepsOverrideFromEnv(
                 LLMConfig.applyEpochsOverrideFromEnv(
-                        LLMConfig.applySeqLenOverrideFromEnv(
-                                LLMConfig.applyBatchSizeOverrideFromEnv(LLMConfig.smart50M()))));
-        runCore(root, dataDir, books, llm, null, TrainingEventCallback.NOOP, null);
+                        LLMConfig.applyPresetNumLayersOverrideFromEnv(
+                                LLMConfig.applySeqLenOverrideFromEnv(
+                                        LLMConfig.applyBatchSizeOverrideFromEnv(
+                                                LLMConfig.smart50M())))));
+        runCore(root, dataDir, books, llm);
     }
 
-    /**
-     * Полный цикл all-books с пресетом и колбэком (для {@link SmartTrainingSupervisor}).
-     *
-     * @param trainerSlot если не {@code null}, в него кладётся {@link LLMTrainer} до {@link LLMTrainer#train()}
-     */
-    public static void runWithPreset(
-            Path root,
-            Path dataDir,
-            List<Path> books,
-            PresetConfig preset,
-            TrainingEventCallback callback,
-            DynamicLossScaler lossScaler,
-            AtomicReference<LLMTrainer> trainerSlot)
-            throws Exception {
-        LLMConfig base =
-                LLMConfig.applyEpochsOverrideFromEnv(LLMConfig.smart50M());
-        LLMConfig llm =
-                LLMConfig.applyAccumulationStepsOverrideFromEnv(LLMConfig.applyPreset(base, preset));
-        runCore(root, dataDir, books, llm, preset, callback, lossScaler, trainerSlot);
-    }
-
-    private static void runCore(
-            Path root,
-            Path dataDir,
-            List<Path> books,
-            LLMConfig llm,
-            PresetConfig presetOrNull,
-            TrainingEventCallback callback,
-            DynamicLossScaler lossScaler)
-            throws Exception {
-        runCore(root, dataDir, books, llm, presetOrNull, callback, lossScaler, null);
-    }
-
-    private static void runCore(
-            Path root,
-            Path dataDir,
-            List<Path> books,
-            LLMConfig llm,
-            PresetConfig presetOrNull,
-            TrainingEventCallback callback,
-            DynamicLossScaler lossScaler,
-            AtomicReference<LLMTrainer> trainerSlot)
+    private static void runCore(Path root, Path dataDir, List<Path> books, LLMConfig llm)
             throws Exception {
         Path checkpointsDir = root.resolve("checkpoints").resolve("all_books");
         Path tokenizerPath = root.resolve("checkpoints").resolve("tokenizer_global.bin");
@@ -236,17 +191,8 @@ public final class AllBooksTrain {
 
         // --- тренировка ---
         boolean finetune = isFinetuneMode();
-        TrainingConfig trainConfig =
-                presetOrNull != null
-                        ? llm.toTrainingConfigWithPreset(checkpointsDir.toString(), vocabSize, presetOrNull)
-                        : llm.toTrainingConfig(checkpointsDir.toString(), vocabSize);
-        LLMTrainer trainer =
-                presetOrNull != null
-                        ? new LLMTrainer(model, trainConfig, dataLoader, callback, lossScaler)
-                        : new LLMTrainer(model, trainConfig, dataLoader);
-        if (trainerSlot != null) {
-            trainerSlot.set(trainer);
-        }
+        TrainingConfig trainConfig = llm.toTrainingConfig(checkpointsDir.toString(), vocabSize);
+        LLMTrainer trainer = new LLMTrainer(model, trainConfig, dataLoader);
 
         // Ищем чекпоинт для resume: сначала checkpoint_final.bin, затем последний checkpoint_epoch_N.bin
         Optional<Path> resumeCkpt = findResumeCheckpoint(checkpointsDir);
@@ -342,11 +288,6 @@ public final class AllBooksTrain {
 
     private static String readUtf8(Path p) throws IOException {
         return new String(Files.readAllBytes(p), StandardCharsets.UTF_8);
-    }
-
-    /** Для {@link SmartTrainingSupervisor}: отсортированный список {@code .txt} под корпус. */
-    public static List<Path> listTxtFilesSortedPublic(Path dir) throws IOException {
-        return listTxtFilesSorted(dir);
     }
 
     private static List<Path> listTxtFilesSorted(Path dir) throws IOException {

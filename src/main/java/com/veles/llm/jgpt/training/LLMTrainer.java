@@ -139,6 +139,9 @@ public final class LLMTrainer {
         GpuPendingGradients.clearAllPendingGpuBuffers();
         GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
         TensorOpsGPU.synchronizeStream();
+        /* После eval/sample infer: trim async memory pools — иначе фрагментация и задержка возврата блоков после
+         * cudaFreeAsync часто дают ложный OOM на следующем cudaMallocAsync/cudaMalloc. */
+        TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
         if (fp16Matmul && dynamicLossScaler != null) {
             dynamicLossScaler.resetConsecutiveNonOverflowAfterAuxiliaryGpuWork();
             if (fp16AuxSoftenScaleAfterInfer()) {
@@ -176,7 +179,7 @@ public final class LLMTrainer {
     }
 
     /**
-     * После завершения книги в цепочке ({@code MultiBookTrain}): освобождает VRAM тренера и модели до выхода из
+     * После завершения сегмента обучения (например между книгами в цепочке): освобождает VRAM тренера и модели до выхода из
      * области видимости, чтобы не полагаться на {@code finalize} у {@link GpuTensor}/{@link GpuFloatBuffer}.
      */
     public void releaseGpuResourcesAfterBook() {
@@ -210,6 +213,8 @@ public final class LLMTrainer {
         model.closeGpuResidentWeights();
         if (TensorOpsGPU.isGpuAvailable()) {
             TensorOpsGPU.synchronizeStream();
+            TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+            TensorOpsGPU.cleanupCudaThreadResources();
         }
         if (DebugGpuTrain.isEnabled()) {
             agentLogB39372(
@@ -1248,11 +1253,13 @@ public final class LLMTrainer {
                     Thread.currentThread().interrupt();
                 }
             }
-            if (TensorOpsGPU.isGpuAvailable()) {
-                TensorOpsGPU.synchronizeStream();
-            }
             GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
             GpuPendingGradients.cleanupThreadLocal();
+            if (TensorOpsGPU.isGpuAvailable()) {
+                TensorOpsGPU.synchronizeStream();
+                TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+                TensorOpsGPU.cleanupCudaThreadResources();
+            }
         }
     }
 

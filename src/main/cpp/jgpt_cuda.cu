@@ -786,7 +786,7 @@ static void mb_free_half_cached() {
     tl_mb_nelemAh = tl_mb_nelemBh = 0;
 }
 
-extern void jgpt_cuda_extra_cleanup(void);
+extern "C" void jgpt_cuda_extra_cleanup(void);
 
 void jgpt_cuda_cleanup_thread_resources(void) {
     cudaStream_t stream = jgpt_cuda_stream_handle();
@@ -2264,8 +2264,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuHalfBuffer_nativeFree(JNIEnv* 
     }
 #if CUDART_VERSION >= 11020
     jgpt_cuda_ensure_stream();
-    if (g_jgpt_cuda_stream != nullptr) {
-        cudaError_t e = cudaFreeAsync(p, g_jgpt_cuda_stream);
+    if (jgpt_cuda_stream_handle() != nullptr) {
+        cudaError_t e = cudaFreeAsync(p, jgpt_cuda_stream_handle());
         if (e == cudaSuccess) {
             return;
         }
@@ -2403,8 +2403,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeFree(JNIEnv*
     }
 #if CUDART_VERSION >= 11020
     jgpt_cuda_ensure_stream();
-    if (g_jgpt_cuda_stream != nullptr) {
-        cudaError_t e = cudaFreeAsync(p, g_jgpt_cuda_stream);
+    if (jgpt_cuda_stream_handle() != nullptr) {
+        cudaError_t e = cudaFreeAsync(p, jgpt_cuda_stream_handle());
         if (e == cudaSuccess) {
             return;
         }
@@ -2439,7 +2439,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyHtoD(
         e = cudaMemcpy(d, p + offset, bytes, cudaMemcpyHostToDevice);
         env->ReleaseFloatArrayElements(src, p, JNI_ABORT);
     }
-    if (e == cudaSuccess && g_jgpt_cuda_stream != nullptr) {
+    if (e == cudaSuccess && jgpt_cuda_stream_handle() != nullptr) {
         if (jgpt_cuda_sync_stream_unless_capturing("GpuFloatBuffer.nativeCopyHtoD") == 0) {
             e = cudaErrorUnknown;
         }
@@ -2467,7 +2467,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyHtoDOffs
         e = cudaMemcpy(d, p + srcOff, bytes, cudaMemcpyHostToDevice);
         env->ReleaseFloatArrayElements(src, p, JNI_ABORT);
     }
-    if (e == cudaSuccess && g_jgpt_cuda_stream != nullptr) {
+    if (e == cudaSuccess && jgpt_cuda_stream_handle() != nullptr) {
         if (jgpt_cuda_sync_stream_unless_capturing("GpuFloatBuffer.nativeCopyHtoDOffset") == 0) {
             e = cudaErrorUnknown;
         }
@@ -2554,7 +2554,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyHtoDDire
     } else {
         err = cudaMemcpyAsync(d, base, nb, cudaMemcpyHostToDevice, kTensorCudaStream);
     }
-    if (err == cudaSuccess && g_jgpt_cuda_stream != nullptr) {
+    if (err == cudaSuccess && jgpt_cuda_stream_handle() != nullptr) {
         if (jgpt_cuda_sync_stream_unless_capturing("GpuFloatBuffer.nativeCopyHtoDDirect") == 0) {
             err = cudaErrorUnknown;
         }
@@ -2602,7 +2602,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyHtoDFloa
     } else {
         err = cudaMemcpyAsync(d, base, nb, cudaMemcpyHostToDevice, kTensorCudaStream);
     }
-    if (err == cudaSuccess && g_jgpt_cuda_stream != nullptr) {
+    if (err == cudaSuccess && jgpt_cuda_stream_handle() != nullptr) {
         if (jgpt_cuda_sync_stream_unless_capturing("GpuFloatBuffer.nativeCopyHtoDFloatBuffer") == 0) {
             err = cudaErrorUnknown;
         }
@@ -2649,7 +2649,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyHtoDAddr
     } else {
         err = cudaMemcpyAsync(d, base, nb, cudaMemcpyHostToDevice, kTensorCudaStream);
     }
-    if (err == cudaSuccess && g_jgpt_cuda_stream != nullptr) {
+    if (err == cudaSuccess && jgpt_cuda_stream_handle() != nullptr) {
         if (jgpt_cuda_sync_stream_unless_capturing("GpuFloatBuffer.nativeCopyHtoDAddress") == 0) {
             err = cudaErrorUnknown;
         }
@@ -2688,7 +2688,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeClear(
     size_t nbytes = static_cast<size_t>(numFloats) * sizeof(float);
     /* Same stream as D2H async paths — avoids races between cudaMemset on default stream and memcpy on kTensorCudaStream. */
     cudaError_t err = cudaSuccess;
-    if (g_jgpt_cuda_stream != nullptr) {
+    if (jgpt_cuda_stream_handle() != nullptr) {
         err = cudaMemsetAsync(d, 0, nbytes, kTensorCudaStream);
         if (err == cudaSuccess) {
             if (jgpt_cuda_sync_stream_unless_capturing("GpuFloatBuffer.nativeClear") == 0) {
@@ -2751,7 +2751,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuIntBuffer_nativeCopyHtoD(
         e = cudaMemcpy(d, p + offset, bytes, cudaMemcpyHostToDevice);
         env->ReleaseIntArrayElements(src, p, JNI_ABORT);
     }
-    if (e == cudaSuccess && g_jgpt_cuda_stream != nullptr) {
+    if (e == cudaSuccess && jgpt_cuda_stream_handle() != nullptr) {
         if (jgpt_cuda_sync_stream_unless_capturing("GpuIntBuffer.nativeCopyHtoD") == 0) {
             e = cudaErrorUnknown;
         }
@@ -2808,7 +2808,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuIntBuffer_nativeCopyHtoDDirect
     } else {
         err = cudaMemcpyAsync(d, base, nb, cudaMemcpyHostToDevice, kTensorCudaStream);
     }
-    if (err == cudaSuccess && g_jgpt_cuda_stream != nullptr) {
+    if (err == cudaSuccess && jgpt_cuda_stream_handle() != nullptr) {
         if (jgpt_cuda_sync_stream_unless_capturing("GpuIntBuffer.nativeCopyHtoDDirect") == 0) {
             err = cudaErrorUnknown;
         }
@@ -2847,9 +2847,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuIntBuffer_nativeClear(
     int* d = reinterpret_cast<int*>(static_cast<uintptr_t>(devicePtr));
     size_t nbytes = static_cast<size_t>(numInts) * sizeof(int);
     cudaError_t err = cudaSuccess;
-    if (g_jgpt_cuda_stream != nullptr) {
+    if (jgpt_cuda_stream_handle() != nullptr) {
         err = cudaMemsetAsync(d, 0, nbytes, kTensorCudaStream);
-        if (err == cudaSuccess) err = cudaStreamSynchronize(g_jgpt_cuda_stream);
+        if (err == cudaSuccess) err = cudaStreamSynchronize(jgpt_cuda_stream_handle());
     } else {
         err = cudaMemset(d, 0, nbytes);
     }
@@ -2967,7 +2967,7 @@ JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_initGPU(JNIEnv* 
         return JNI_FALSE;
     }
     jgpt_cuda_ensure_stream();
-    return (g_jgpt_cuda_stream != nullptr) ? JNI_TRUE : JNI_FALSE;
+    return (jgpt_cuda_stream_handle() != nullptr) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jstring JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_getGPUName(JNIEnv* env, jclass clazz) {
@@ -2986,12 +2986,12 @@ JNIEXPORT jlong JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_getGPUMemory(JNIEnv
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_synchronizeStream0(JNIEnv* env, jclass clazz) {
     (void) clazz;
-    if (g_jgpt_cuda_stream == nullptr) {
+    if (jgpt_cuda_stream_handle() == nullptr) {
         return;
     }
     /* Иначе cudaStreamSynchronize при активном захвате графа даёт «operation not permitted when stream is capturing». */
     jgpt_cuda_abort_stream_capture_discard_graph();
-    cudaError_t err = cudaStreamSynchronize(g_jgpt_cuda_stream);
+    cudaError_t err = cudaStreamSynchronize(jgpt_cuda_stream_handle());
     if (err != cudaSuccess) {
         (void) cudaGetLastError();
         char buf[384];

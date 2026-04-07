@@ -223,6 +223,14 @@ public final class GPTModel {
      */
     private long[][] decoderLayerGraphDebugCaptureSnapshot;
 
+    /**
+     * Exec-объекты промежуточных слоёв, отложенные до конца {@link #runDecoderStackLayers}: один batched destroy +
+     * trim в {@link #flushPendingDecoderGraphExecDestroy()}.
+     */
+    private long[] decoderLayerGraphExecPendingDestroy;
+
+    private int decoderLayerGraphExecPendingDestroyCount;
+
     private static final int DECODER_GRAPH_DEVICE_SNAPSHOT_LEN = 15;
 
     /** Счётчик вызовов {@link #forwardGpuDecoder} для {@link LLMConfig#trainVramStepProbeFromEnvOrProp()}. */
@@ -562,6 +570,7 @@ public final class GPTModel {
     }
 
     private void destroyDecoderLayerCudaGraphs() {
+        destroyPendingDecoderGraphExecQueuedHandles();
         if (decoderLayerGraphExec == null) {
             return;
         }
@@ -576,6 +585,69 @@ public final class GPTModel {
         }
     }
 
+    /**
+     * После {@link #destroyDecoderLayerCudaGraphs()} при смене ключа захвата: полная синхронизация устройства и trim
+     * memory pools — иначе graph memory pool (CUDA 12+) может давать монотонный рост «использованной» VRAM в
+     * {@code cudaMemGetInfo} до отложенного reclaim.
+     */
+    private void trimDecoderGraphMemoryAfterExecDestroy() {
+        if (!TensorOpsGPU.isGpuAvailable()) {
+            return;
+        }
+        TensorOpsGPU.synchronizeDevice();
+        TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+    }
+
+    /** Уничтожает handle'ы в очереди pending без trim (см. {@link #flushPendingDecoderGraphExecDestroy}). */
+    private void destroyPendingDecoderGraphExecQueuedHandles() {
+        if (decoderLayerGraphExecPendingDestroyCount == 0) {
+            return;
+        }
+        for (int i = 0; i < decoderLayerGraphExecPendingDestroyCount; i++) {
+            long ex = decoderLayerGraphExecPendingDestroy[i];
+            if (ex != 0L) {
+                TensorOpsGPU.cudaGraphExecDestroy(ex);
+            }
+            decoderLayerGraphExecPendingDestroy[i] = 0L;
+        }
+        decoderLayerGraphExecPendingDestroyCount = 0;
+    }
+
+    /**
+     * Откладывает destroy exec текущего слоя до конца forward: все накопленные exec уничтожаются одним блоком в
+     * {@link #flushPendingDecoderGraphExecDestroy()} с одним trim вместо N отдельных.
+     */
+    private void scheduleDecoderGraphExecDestroyIfNotLast(int layerIndex, int numLayers) {
+        if (decoderLayerGraphExec == null || layerIndex >= numLayers - 1) {
+            return;
+        }
+        long ex = decoderLayerGraphExec[layerIndex];
+        if (ex == 0L) {
+            return;
+        }
+        if (decoderLayerGraphExecPendingDestroy == null
+                || decoderLayerGraphExecPendingDestroy.length < numLayers) {
+            decoderLayerGraphExecPendingDestroy = new long[numLayers];
+        }
+        decoderLayerGraphExecPendingDestroy[decoderLayerGraphExecPendingDestroyCount++] = ex;
+        decoderLayerGraphExec[layerIndex] = 0L;
+        if (decoderLayerGraphDebugCaptureSnapshot != null) {
+            decoderLayerGraphDebugCaptureSnapshot[layerIndex] = null;
+        }
+    }
+
+    /**
+     * Уничтожает все exec, накопленные за этот forward, и делает один trim — вместо N отдельных synchronize + trim
+     * после каждого слоя.
+     */
+    private void flushPendingDecoderGraphExecDestroy() {
+        if (decoderLayerGraphExecPendingDestroyCount == 0) {
+            return;
+        }
+        destroyPendingDecoderGraphExecQueuedHandles();
+        trimDecoderGraphMemoryAfterExecDestroy();
+    }
+
     /** Сколько кэшей реально освободили staging; см. {@link BlockActivationCacheDevice#releaseTransientFloatStagingBuffers()}. */
     private static int releaseTransientFloatStagingForAllCaches(BlockActivationCacheDevice[] caches) {
         int n = 0;
@@ -588,26 +660,6 @@ public final class GPTModel {
             }
         }
         return n;
-    }
-
-    /**
-     * После успешного {@code cudaGraphExecLaunch} в этом forward exec текущего слоя до следующего training-step не нужен;
-     * ранний {@link TensorOpsGPU#cudaGraphExecDestroy(long)} освобождает VRAM для capture/launch верхних слоёв.
-     * Exec <b>последнего</b> слоя сохраняем для replay на следующем шаге.
-     */
-    private void releaseDecoderLayerGraphExecAfterForwardIfNotLast(int layerIndex, int numLayers) {
-        if (decoderLayerGraphExec == null || layerIndex >= numLayers - 1) {
-            return;
-        }
-        long ex = decoderLayerGraphExec[layerIndex];
-        if (ex == 0L) {
-            return;
-        }
-        TensorOpsGPU.cudaGraphExecDestroy(ex);
-        decoderLayerGraphExec[layerIndex] = 0L;
-        if (decoderLayerGraphDebugCaptureSnapshot != null) {
-            decoderLayerGraphDebugCaptureSnapshot[layerIndex] = null;
-        }
     }
 
     private static boolean decoderGraphDeviceSnapshotsEqual(long[] a, long[] b) {
@@ -916,6 +968,7 @@ public final class GPTModel {
             int nk = decoderLayerGraphKey(mask, trainingStep, batch, seqLen, inPtr);
             if (decoderLayerGraphCaptureKey != nk) {
                 destroyDecoderLayerCudaGraphs();
+                trimDecoderGraphMemoryAfterExecDestroy();
                 decoderLayerGraphCaptureKey = nk;
             }
         }
@@ -969,6 +1022,7 @@ public final class GPTModel {
                                     TensorOpsGPU.decoderGraphNativeStabilityToken()));
                     // #endregion
                     destroyDecoderLayerCudaGraphs();
+                    trimDecoderGraphMemoryAfterExecDestroy();
                     decoderLayerGraphCaptureKey = nkPost;
                 }
             }
@@ -1051,7 +1105,7 @@ public final class GPTModel {
                         if (TensorOpsGPU.cudaGraphExecLaunch(ex)) {
                             executed = true;
                             TensorOpsGPU.synchronizeDevice();
-                            releaseDecoderLayerGraphExecAfterForwardIfNotLast(i, numLayers);
+                            scheduleDecoderGraphExecDestroyIfNotLast(i, numLayers);
                         } else {
                             logDecoderGraphB39372Failure("replay", i, ex, batch, seqLen);
                             log.warn(
@@ -1137,6 +1191,12 @@ public final class GPTModel {
                         }
                     } else {
                         /*
+                         * Перед захватом нового слоя: pending exec предыдущих слоёв + trim — иначе graph memory pool
+                         * всё ещё держит aux до {@link #flushPendingDecoderGraphExecDestroy()} в finally (слишком поздно для
+                         * следующего {@code cudaStreamEndCaptureAndInstantiate}).
+                         */
+                        flushPendingDecoderGraphExecDestroy();
+                        /*
                          * Полная синхронизация устройства перед захватом: снижает пик VRAM при цепочке
                          * capture→instantiate→launch по слоям (OOM на поздних слоях при stream-only sync).
                          */
@@ -1195,7 +1255,7 @@ public final class GPTModel {
                                                     u / (1024L * 1024L),
                                                     t / (1024L * 1024L));
                                         }
-                                        releaseDecoderLayerGraphExecAfterForwardIfNotLast(i, numLayers);
+                                        scheduleDecoderGraphExecDestroyIfNotLast(i, numLayers);
                                     } else {
                                         logDecoderGraphB39372Failure("postCapture", i, nexec, batch, seqLen);
                                         log.warn(
@@ -1302,6 +1362,7 @@ public final class GPTModel {
             if (stridedPackOverride) {
                 TensorOpsGPU.clearStridedBatchedPackOverride();
             }
+            flushPendingDecoderGraphExecDestroy();
         }
     }
 

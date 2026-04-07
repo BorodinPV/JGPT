@@ -28,7 +28,7 @@
         <!-- Пример: -Djvm.check.jni=-Xcheck:jni (JNI отладка). -->
         <jvm.check.jni></jvm.check.jni>
         <!-- exec:java (см. exec-maven-plugin): переопределение через -Dexec.mainClass=... -->
-        <exec.mainClass>com.veles.llm.tensor.app.MultiBookTrain</exec.mainClass>
+        <exec.mainClass>com.veles.llm.jgpt.app.AllBooksTrain</exec.mainClass>
     </properties>
 
     <!-- ================= ЗАВИСИМОСТИ ================= -->

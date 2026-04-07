@@ -86,6 +86,7 @@ public final class GpuFloatBuffer implements AutoCloseable {
         if (numFloats <= 0) {
             throw new IllegalArgumentException("numFloats must be positive");
         }
+        TensorOpsGPU.logVramBeforeDeviceFloatAlloc(numFloats, "GpuFloatBuffer.allocate");
         long p = nativeAlloc(numFloats);
         if (p == 0L) {
             throw new OutOfMemoryError("cudaMalloc failed for GpuFloatBuffer");

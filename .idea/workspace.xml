@@ -6,31 +6,10 @@
   <component name="ChangeListManager">
     <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Рефакторинг">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/TRAIN_RUNBOOK.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/TRAIN_RUNBOOK.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/training/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/training/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/env/01-aggressive.env" beforeDir="false" afterPath="$PROJECT_DIR$/env/01-aggressive.env" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/env/02-stable.env" beforeDir="false" afterPath="$PROJECT_DIR$/env/02-stable.env" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pom.xml" beforeDir="false" afterPath="$PROJECT_DIR$/pom.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/jgpt-smart.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/jgpt-smart.sh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda.cu" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/GpuFloatBuffer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/GpuFloatBuffer.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/TensorOpsGPU.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/TensorOpsGPU.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/MultiBookTrain.java" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/ProfileQuickRun.java" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/SmartTrainingSupervisor.java" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/TrainLLM.java" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/GPTModel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/GPTModel.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/PresetConfig.java" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/PresetDecider.java" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/training/EffectiveBatchProbeTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/training/EffectiveBatchProbeTest.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/test/resources/jgpt-training-env-keys.txt" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/resources/jgpt-training-env-keys.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/state/current.env" beforeDir="false" afterPath="$PROJECT_DIR$/state/current.env" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/state/current_preset_idx" beforeDir="false" afterPath="$PROJECT_DIR$/state/current_preset_idx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/env/03-recovery.env" beforeDir="false" afterPath="$PROJECT_DIR$/env/03-recovery.env" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/env/04-minimal.env" beforeDir="false" afterPath="$PROJECT_DIR$/env/04-minimal.env" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/last_step.txt" beforeDir="false" afterPath="$PROJECT_DIR$/state/last_step.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/stats.json" beforeDir="false" afterPath="$PROJECT_DIR$/state/stats.json" afterDir="false" />
     </list>
@@ -111,7 +90,7 @@
       <updated>1775156484893</updated>
       <workItem from="1775455617597" duration="4931000" />
       <workItem from="1775460565645" duration="1047000" />
-      <workItem from="1775566446952" duration="6660000" />
+      <workItem from="1775566446952" duration="8123000" />
     </task>
     <task id="LOCAL-00001" summary="Переработка для gpu">
       <option name="closed" value="true" />
@@ -273,7 +252,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775567863734</updated>
     </task>
-    <option name="localTasksCounter" value="21" />
+    <task id="LOCAL-00021" summary="Рефакторинг">
+      <option name="closed" value="true" />
+      <created>1775574028037</created>
+      <option name="number" value="00021" />
+      <option name="presentableId" value="LOCAL-00021" />
+      <option name="project" value="LOCAL" />
+      <updated>1775574028037</updated>
+    </task>
+    <option name="localTasksCounter" value="22" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

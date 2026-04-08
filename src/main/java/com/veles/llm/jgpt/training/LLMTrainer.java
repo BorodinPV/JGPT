@@ -232,6 +232,13 @@ public final class LLMTrainer {
     private int globalStep;
     private float bestLoss;
     /**
+     * Линия отсчёта для внешнего graceful shutdown ({@code AllBooksTrain}): после загрузки чекпоинта совпадает с
+     * {@link #globalStep}; после {@link #restartOptimizerScheduleForNewPlan} и {@link #resetGlobalStep} — с текущим
+     * {@code globalStep} (обычно 0). Иначе сравнение «прогресс после restart_schedule» с устаревшим шагом из файла
+     * даёт ложное «нет прогресса» и не обновляет {@code checkpoint_final.bin}.
+     */
+    private int shutdownProgressBaselineStep = 0;
+    /**
      * После {@link #loadCheckpoint}: с какого индекса эпохи (0-based) начинать внешний цикл в {@link #train()}.
      * В чекпоинт пишется {@link #pendingCheckpointEpochIndex} — номер эпохи для следующего запуска после
      * полного завершения эпохи {@code epoch} это {@code epoch + 1}; внутри незавершённой эпохи — {@code epoch}.
@@ -758,14 +765,35 @@ public final class LLMTrainer {
         final boolean profile = profiler != null || timings != null;
 
         if (globalStep >= totalTrainingSteps) {
-            log.info(
-                    "План обучения уже выполнен: шаг {}/{} — дальнейшие шаги пропускаются.",
-                    globalStep,
-                    totalTrainingSteps);
-            if (profiler != null) {
-                profiler.printSummary();
+            StepBeyondPlanPolicy beyond = StepBeyondPlanPolicy.fromEnvironment();
+            if (beyond == StepBeyondPlanPolicy.RESTART_SCHEDULE) {
+                int prev = globalStep;
+                log.warn(
+                        "globalStep={} >= totalTrainingSteps={} — JGPT_IF_STEP_BEYOND_PLAN=restart_schedule: "
+                                + "сброс счётчика шагов и LR-расписания; веса, Adam и лучший eval сохранены. "
+                                + "Иначе: JGPT_EPOCHS (расширить план), JGPT_FINETUNE=1 или другой чекпоинт.",
+                        prev,
+                        totalTrainingSteps);
+                restartOptimizerScheduleForNewPlan();
+            } else if (beyond == StepBeyondPlanPolicy.FAIL) {
+                throw new TrainingPlanExhaustedException(
+                        String.format(
+                                Locale.ROOT,
+                                "globalStep=%d >= totalTrainingSteps=%d — JGPT_IF_STEP_BEYOND_PLAN=fail. "
+                                        + "Увеличьте JGPT_EPOCHS, задайте restart_schedule/skip или смените чекпоинт.",
+                                globalStep,
+                                totalTrainingSteps));
+            } else {
+                log.info(
+                        "План обучения уже выполнен: шаг {}/{} — дальнейшие шаги пропускаются. "
+                                + "(JGPT_IF_STEP_BEYOND_PLAN=skip; для продолжения: restart_schedule)",
+                        globalStep,
+                        totalTrainingSteps);
+                if (profiler != null) {
+                    profiler.printSummary();
+                }
+                return;
             }
-            return;
         }
 
         ExecutorService prefetchExecutor =
@@ -805,6 +833,9 @@ public final class LLMTrainer {
                     config.epochs,
                     resumeSeqCopy,
                     replayCkpt);
+        }
+        if (trainingStatsWriter != null) {
+            trainingStatsWriter.syncProgressFromResume(globalStep, startEpoch + 1, config.epochs);
         }
 
         outer:
@@ -2136,7 +2167,7 @@ public final class LLMTrainer {
         int saved = dataLoader.getCurrentIndex();
         float total = 0f;
         int n = 0;
-        int maxBatches = Math.min(8, dataLoader.numBatches());
+        int maxBatches = Math.min(64, dataLoader.numBatches());
         boolean deviceLogitsEval = false;
         for (int i = 0; i < maxBatches && dataLoader.hasMore(); i++) {
             DataLoader.Batch batch = dataLoader.nextBatch();
@@ -2365,6 +2396,7 @@ public final class LLMTrainer {
                         config.epochs,
                         loadedResumeDataLoaderIndex,
                         formatEvalBestLossForLog(bestLoss));
+                syncShutdownProgressBaselineFromGlobalStep();
                 return;
             }
             if (CHECKPOINT_FORMAT_V3.equals(tag)) {
@@ -2388,6 +2420,7 @@ public final class LLMTrainer {
                         loadedResumeEpochIndex,
                         config.epochs,
                         formatEvalBestLossForLog(bestLoss));
+                syncShutdownProgressBaselineFromGlobalStep();
                 return;
             }
             if (CHECKPOINT_FORMAT_V2.equals(tag)) {
@@ -2408,6 +2441,7 @@ public final class LLMTrainer {
                         path,
                         globalStep,
                         formatEvalBestLossForLog(bestLoss));
+                syncShutdownProgressBaselineFromGlobalStep();
                 return;
             }
             bis.reset();
@@ -2433,6 +2467,7 @@ public final class LLMTrainer {
                     path,
                     globalStep,
                     formatEvalBestLossForLog(bestLoss));
+            syncShutdownProgressBaselineFromGlobalStep();
         }
     }
 
@@ -2446,8 +2481,40 @@ public final class LLMTrainer {
         return globalStep;
     }
 
+    /**
+     * См. {@link #shutdownProgressBaselineStep}: {@code getGlobalStep() > getShutdownProgressBaselineStep()} означает,
+     * что после загрузки чекпоина и возможного сброса плана был хотя бы один новый шаг оптимизатора.
+     */
+    public int getShutdownProgressBaselineStep() {
+        return shutdownProgressBaselineStep;
+    }
+
+    private void syncShutdownProgressBaselineFromGlobalStep() {
+        shutdownProgressBaselineStep = globalStep;
+    }
+
+    /** Плановое число шагов оптимизатора за весь прогон ({@code epochs × stepsPerEpoch}). */
+    public int getTotalTrainingSteps() {
+        return totalTrainingSteps;
+    }
+
     public float getBestLoss() {
         return bestLoss;
+    }
+
+    /**
+     * Сброс позиции в плане после смены длины эпохи/батча: шаг 0 и начало эпохи, без сброса {@link #bestLoss}
+     * и без очистки весов/Adam (в отличие от {@link #resetGlobalStep()}).
+     */
+    public void restartOptimizerScheduleForNewPlan() {
+        globalStep = 0;
+        optimizer.setStep(0);
+        loadedResumeEpochIndex = 0;
+        loadedResumeDataLoaderIndex = 0;
+        pendingCheckpointEpochIndex = 0;
+        pendingCheckpointDataLoaderIndex = 0;
+        resumeReplayCheckpointShuffles = false;
+        syncShutdownProgressBaselineFromGlobalStep();
     }
 
     /**
@@ -2464,6 +2531,7 @@ public final class LLMTrainer {
         pendingCheckpointEpochIndex = 0;
         pendingCheckpointDataLoaderIndex = 0;
         resumeReplayCheckpointShuffles = false;
+        syncShutdownProgressBaselineFromGlobalStep();
     }
 
     /**

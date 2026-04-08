@@ -59,6 +59,7 @@
 | `JGPT_FUSED_LM_HEAD` | Слияние финального RMSNorm и LM head на GPU, где поддерживается. |
 | `JGPT_GENERATE_GPU_KV` | Генерация с KV-кэшем на GPU (`LlmTextGeneration` и связанные пути). |
 | `JGPT_GPU_E2E_TRAIN` | Пресет end-to-end GPU в `LLMConfig.toTrainingConfig` (resident + full step + device logits/decoder). Свойство: `jgpt.gpu.e2eTrain`. |
+| `JGPT_IF_STEP_BEYOND_PLAN` | Если `globalStep` из чекпоина ≥ нового плана: `skip` (выход без шагов), `restart_schedule` (сброс шага/LR, веса и best eval сохраняются; по умолчанию в `jgpt-smart.sh`), `fail` — выход с кодом 2. |
 | `JGPT_INTERACTIVE_EVERY` | Каждые N шагов оптимизатора — короткая генерация; `0` или отрицательное — выкл. |
 | `JGPT_JAVA_MEM` | Строка для подмешивания в `MAVEN_OPTS` в скриптах (например `-Xmx…`). |
 | `JGPT_LOG_COLOR` | Принудительно включить цветные префиксы в логе. |

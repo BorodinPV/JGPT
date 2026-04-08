@@ -36,6 +36,8 @@ public final class TrainingStatsWriter {
     private String presetIdx = "?";
     private String cfgSeqLen = "-";
     private String cfgBatch = "1";
+    private String cfgEpochs = "-";
+    private String cfgNumLayers = "-";
     private String cfgFp16Max = "-";
     private String cfgFp16GrowInterval = "-";
     private String cfgEarlyStopPatience = "-";
@@ -44,7 +46,8 @@ public final class TrainingStatsWriter {
 
     // Скаляры (обновляются по событиям)
     private int    currentStep;
-    private String currentEpoch = "1/20";
+    /** До первого {@link #onStep} — «1/totalEpochs» из конфига (см. {@link #setConfig}). */
+    private String currentEpoch = "1/?";
     private float  bestLoss     = Float.MAX_VALUE;
     private float  lastEvalLoss;
     private float  lastPerplexity;
@@ -62,8 +65,12 @@ public final class TrainingStatsWriter {
     private final List<Integer> evalSteps    = new ArrayList<>();
     private final List<Float>   evalLoss     = new ArrayList<>();
     private final List<Float>   perplexity   = new ArrayList<>();
+    /** Epoch millis на момент точки eval (для дашборда: фильтр по времени). */
+    private final List<Long>    evalTimeMs   = new ArrayList<>();
     private final List<Integer> trainSteps   = new ArrayList<>();
     private final List<Float>   trainLoss    = new ArrayList<>();
+    /** Epoch millis на момент залогированного train-шага. */
+    private final List<Long>    trainTimeMs  = new ArrayList<>();
     private final List<Integer> overflowSteps = new ArrayList<>();
     private final List<String>  samples      = new ArrayList<>();
 
@@ -79,13 +86,27 @@ public final class TrainingStatsWriter {
         this.totalSteps = totalSteps;
         this.preset     = preset;
         this.presetIdx  = presetIdx;
+        this.currentEpoch = "1/" + cfg.epochs;
         this.cfgSeqLen            = String.valueOf(cfg.maxSeqLen);
         this.cfgBatch             = String.valueOf(cfg.batchSize);
+        this.cfgEpochs            = String.valueOf(cfg.epochs);
+        this.cfgNumLayers         = String.valueOf(cfg.numLayers);
         this.cfgEarlyStopPatience = String.valueOf(cfg.earlyStopEvalPatience);
         // Остальные параметры FP16/CE берём из env-переменных
         this.cfgFp16Max           = envOrDash("JGPT_FP16_DYNAMIC_MAX");
         this.cfgFp16GrowInterval  = envOrDash("JGPT_FP16_DYNAMIC_GROWTH_INTERVAL");
         this.cfgCeCandidates      = envOrDash("JGPT_SAMPLED_CE_CANDIDATES");
+        write();
+    }
+
+    /**
+     * Обновить отображаемый прогресс после {@link LLMTrainer#loadCheckpoint} — до первого {@link #onStep}
+     * иначе в stats.json остаётся current_step=0.
+     */
+    public void syncProgressFromResume(int step, int epochOneBased, int totalEpochs) {
+        this.currentStep = Math.max(0, step);
+        int ep = Math.max(1, Math.min(epochOneBased, Math.max(1, totalEpochs)));
+        this.currentEpoch = ep + "/" + Math.max(1, totalEpochs);
         write();
     }
 
@@ -98,7 +119,7 @@ public final class TrainingStatsWriter {
         this.lastTrainLoss = loss;
         this.tokensPerSec  = tokPerSec;
         this.lr = String.format(Locale.ROOT, "%.2e", lrValue);
-        addToSeries(trainSteps, trainLoss, step, loss);
+        addTrainSeries(step, loss);
         write();
     }
 
@@ -107,8 +128,7 @@ public final class TrainingStatsWriter {
         this.lastEvalLoss  = loss;
         this.lastPerplexity = perp;
         this.bestLoss      = best;
-        addToSeries(evalSteps, evalLoss, step, loss);
-        if (perplexity.size() < MAX_SERIES) perplexity.add(perp);
+        addEvalSeries(step, loss, perp);
         write();
     }
 
@@ -179,6 +199,8 @@ public final class TrainingStatsWriter {
         sb.append("  \"preset\": \"").append(escape(preset)).append("\",\n");
         sb.append("  \"preset_idx\": \"").append(escape(presetIdx)).append("\",\n");
         sb.append("  \"config\": {\n");
+        sb.append("    \"epochs\": \"").append(cfgEpochs).append("\",\n");
+        sb.append("    \"num_layers\": \"").append(cfgNumLayers).append("\",\n");
         sb.append("    \"seq_len\": \"").append(cfgSeqLen).append("\",\n");
         sb.append("    \"batch\": \"").append(cfgBatch).append("\",\n");
         sb.append("    \"fp16_max\": \"").append(cfgFp16Max).append("\",\n");
@@ -193,8 +215,10 @@ public final class TrainingStatsWriter {
         sb.append("  \"eval_steps\": ").append(intListToJson(evalSteps)).append(",\n");
         sb.append("  \"eval_loss\": ").append(floatListToJson(evalLoss)).append(",\n");
         sb.append("  \"perplexity\": ").append(floatListToJson(perplexity)).append(",\n");
+        sb.append("  \"eval_time_ms\": ").append(longListToJson(evalTimeMs)).append(",\n");
         sb.append("  \"train_steps\": ").append(intListToJson(trainSteps)).append(",\n");
         sb.append("  \"train_loss\": ").append(floatListToJson(trainLoss)).append(",\n");
+        sb.append("  \"train_time_ms\": ").append(longListToJson(trainTimeMs)).append(",\n");
         sb.append("  \"overflow_steps\": ").append(intListToJson(overflowSteps)).append("\n");
         sb.append("}\n");
         return sb.toString();
@@ -218,16 +242,44 @@ public final class TrainingStatsWriter {
         return (v != null && !v.isBlank()) ? v.trim() : "-";
     }
 
-    private <T> void addToSeries(List<Integer> steps, List<T> values, int step, T value) {
-        if (steps.size() >= MAX_SERIES) {
-            steps.remove(0);
-            values.remove(0);
+    /** Eval loss и перплексия по одним и тем же шагам (иначе графики в dashboard расходятся). */
+    private void addEvalSeries(int step, float loss, float perp) {
+        long now = System.currentTimeMillis();
+        if (evalSteps.size() >= MAX_SERIES) {
+            evalSteps.remove(0);
+            evalLoss.remove(0);
+            perplexity.remove(0);
+            evalTimeMs.remove(0);
         }
-        steps.add(step);
-        values.add(value);
+        evalSteps.add(step);
+        evalLoss.add(loss);
+        perplexity.add(perp);
+        evalTimeMs.add(now);
+    }
+
+    private void addTrainSeries(int step, float loss) {
+        long now = System.currentTimeMillis();
+        if (trainSteps.size() >= MAX_SERIES) {
+            trainSteps.remove(0);
+            trainLoss.remove(0);
+            trainTimeMs.remove(0);
+        }
+        trainSteps.add(step);
+        trainLoss.add(loss);
+        trainTimeMs.add(now);
     }
 
     private String intListToJson(List<Integer> list) {
+        if (list.isEmpty()) return "[]";
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < list.size(); i++) {
+            if (i > 0) sb.append(',');
+            sb.append(list.get(i));
+        }
+        return sb.append(']').toString();
+    }
+
+    private String longListToJson(List<Long> list) {
         if (list.isEmpty()) return "[]";
         StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < list.size(); i++) {

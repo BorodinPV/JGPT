@@ -4,12 +4,24 @@
     <option name="autoReloadType" value="NONE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Рефакторинг">
+    <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Обновил пресеты">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/dashboard.html" beforeDir="false" afterPath="$PROJECT_DIR$/dashboard.html" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/env/00-max-throughput.env" beforeDir="false" afterPath="$PROJECT_DIR$/env/00-max-throughput.env" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/env/01-aggressive.env" beforeDir="false" afterPath="$PROJECT_DIR$/env/01-aggressive.env" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/env/02-stable.env" beforeDir="false" afterPath="$PROJECT_DIR$/env/02-stable.env" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/env/03-recovery.env" beforeDir="false" afterPath="$PROJECT_DIR$/env/03-recovery.env" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/env/04-minimal.env" beforeDir="false" afterPath="$PROJECT_DIR$/env/04-minimal.env" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/jgpt-smart.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/jgpt-smart.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/GPTModel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/GPTModel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMConfig.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/TrainingStatsWriter.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/TrainingStatsWriter.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/test/resources/jgpt-training-env-keys.txt" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/resources/jgpt-training-env-keys.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/state/current.env" beforeDir="false" afterPath="$PROJECT_DIR$/state/current.env" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/state/current_preset_idx" beforeDir="false" afterPath="$PROJECT_DIR$/state/current_preset_idx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/last_step.txt" beforeDir="false" afterPath="$PROJECT_DIR$/state/last_step.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/stats.json" beforeDir="false" afterPath="$PROJECT_DIR$/state/stats.json" afterDir="false" />
     </list>
@@ -21,10 +33,17 @@
   <component name="ClangdSettings">
     <option name="formatViaClangd" value="false" />
   </component>
+  <component name="EmbeddingIndexingInfo">
+    <option name="cachedIndexableFilesCount" value="827" />
+  </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
   <component name="GradleModuleStateConfig" initialized="true" />
+  <component name="McpProjectServerCommands">
+    <commands />
+    <urls />
+  </component>
   <component name="OpenIdeProjectLocalState">
     <option name="firstOpen" value="false" />
   </component>
@@ -45,6 +64,7 @@
     "Maven.jgpt [package].executor": "Run",
     "Maven.jgpt [test].executor": "Run",
     "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.MCP Project settings loaded": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
@@ -90,7 +110,9 @@
       <updated>1775156484893</updated>
       <workItem from="1775455617597" duration="4931000" />
       <workItem from="1775460565645" duration="1047000" />
-      <workItem from="1775566446952" duration="8123000" />
+      <workItem from="1775566446952" duration="9913000" />
+      <workItem from="1775596296264" duration="15097000" />
+      <workItem from="1775632547872" duration="676000" />
     </task>
     <task id="LOCAL-00001" summary="Переработка для gpu">
       <option name="closed" value="true" />
@@ -260,7 +282,23 @@
       <option name="project" value="LOCAL" />
       <updated>1775574028037</updated>
     </task>
-    <option name="localTasksCounter" value="22" />
+    <task id="LOCAL-00022" summary="Имзенил пресеты">
+      <option name="closed" value="true" />
+      <created>1775575326707</created>
+      <option name="number" value="00022" />
+      <option name="presentableId" value="LOCAL-00022" />
+      <option name="project" value="LOCAL" />
+      <updated>1775575326707</updated>
+    </task>
+    <task id="LOCAL-00023" summary="Обновил пресеты">
+      <option name="closed" value="true" />
+      <created>1775575534410</created>
+      <option name="number" value="00023" />
+      <option name="presentableId" value="LOCAL-00023" />
+      <option name="project" value="LOCAL" />
+      <updated>1775575534410</updated>
+    </task>
+    <option name="localTasksCounter" value="24" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -291,6 +329,12 @@
     <MESSAGE value="Настройка и оптимизация." />
     <MESSAGE value="Реализовал переключение пресетов в java" />
     <MESSAGE value="Рефакторинг" />
-    <option name="LAST_COMMIT_MESSAGE" value="Рефакторинг" />
+    <MESSAGE value="Имзенил пресеты" />
+    <MESSAGE value="Обновил пресеты" />
+    <option name="LAST_COMMIT_MESSAGE" value="Обновил пресеты" />
+  </component>
+  <component name="XSLT-Support.FileAssociations.UIState">
+    <expand />
+    <select />
   </component>
 </project>

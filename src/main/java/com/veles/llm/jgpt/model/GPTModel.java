@@ -3338,6 +3338,39 @@ public final class GPTModel {
     }
 
     /**
+     * Число тензоров вне стека {@link DecoderBlock}: token emb, pos emb, final RMSNorm, LM head (порядок
+     * {@link #getParameters()}).
+     */
+    private static final int WEIGHT_SAVE_NON_LAYER_TENSOR_COUNT = 4;
+
+    /**
+     * Число тензоров на слой в файле весов (см. {@link DecoderBlock#collectParameters}).
+     */
+    private static final int WEIGHT_SAVE_TENSORS_PER_DECODER_LAYER = 9;
+
+    private String weightTensorCountMismatchMessage(int savedN, int modelN) {
+        StringBuilder sb = new StringBuilder(280);
+        sb.append("saved parameter count ")
+                .append(savedN)
+                .append(" != model parameter count ")
+                .append(modelN)
+                .append(" (текущая геометрия: ")
+                .append(numLayers)
+                .append(" слоёв).");
+        if (savedN >= WEIGHT_SAVE_NON_LAYER_TENSOR_COUNT
+                && (savedN - WEIGHT_SAVE_NON_LAYER_TENSOR_COUNT) % WEIGHT_SAVE_TENSORS_PER_DECODER_LAYER == 0) {
+            int fileLayers =
+                    (savedN - WEIGHT_SAVE_NON_LAYER_TENSOR_COUNT) / WEIGHT_SAVE_TENSORS_PER_DECODER_LAYER;
+            sb.append(" По числу тензоров файл похож на ")
+                    .append(fileLayers)
+                    .append("-слойный чекпоинт; задайте --layers ")
+                    .append(fileLayers)
+                    .append(" (и при необходимости --seq-len как при обучении), либо те же env, что при train.");
+        }
+        return sb.toString();
+    }
+
+    /**
      * Загружает веса из файла, сохранённого {@link LLMTrainer#saveModelWeights(String)} (тот же порядок
      * тензоров, что у {@link #getParameters()}).
      */
@@ -3368,8 +3401,7 @@ public final class GPTModel {
         int n = in.readInt();
         List<Tensor> params = getParameters();
         if (n != params.size()) {
-            throw new IOException(
-                    "saved parameter count " + n + " != model parameter count " + params.size());
+            throw new IOException(weightTensorCountMismatchMessage(n, params.size()));
         }
         for (int i = 0; i < n; i++) {
             int[] shape = (int[]) in.readObject();
@@ -3382,8 +3414,7 @@ public final class GPTModel {
         int n = in.readInt();
         List<Tensor> params = getParameters();
         if (n != params.size()) {
-            throw new IOException(
-                    "saved parameter count " + n + " != model parameter count " + params.size());
+            throw new IOException(weightTensorCountMismatchMessage(n, params.size()));
         }
         for (int i = 0; i < n; i++) {
             int rank = in.readInt();
@@ -3405,17 +3436,50 @@ public final class GPTModel {
         }
     }
 
+    private static IOException shapeMismatchAtParam(int i, int[] savedShape, int[] modelShape) {
+        String base =
+                "shape mismatch at param "
+                        + i
+                        + ": saved "
+                        + Arrays.toString(savedShape)
+                        + " vs model "
+                        + Arrays.toString(modelShape);
+        if (i == 1
+                && savedShape.length == 2
+                && modelShape.length == 2
+                && savedShape[1] == modelShape[1]
+                && savedShape[0] != modelShape[0]) {
+            return new IOException(
+                    base
+                            + ". Несовпадение maxSeqLen у позиционной таблицы: в чекпоинте "
+                            + savedShape[0]
+                            + " позиций, в текущей геометрии "
+                            + modelShape[0]
+                            + ". Задайте --seq-len "
+                            + savedShape[0]
+                            + " (и то же, что при обучении / JGPT_MAX_SEQ_LEN).");
+        }
+        if (i == 0
+                && savedShape.length == 2
+                && modelShape.length == 2
+                && savedShape[1] == modelShape[1]
+                && savedShape[0] != modelShape[0]) {
+            return new IOException(
+                    base
+                            + ". Несовпадение vocab у эмбеддинга токенов: файл "
+                            + savedShape[0]
+                            + " vs модель "
+                            + modelShape[0]
+                            + " (токенизатор/пресет).");
+        }
+        return new IOException(base);
+    }
+
     private static void copyLoadedParamSlice(int i, List<Tensor> params, int[] shape, float[] data)
             throws IOException {
         Tensor p = params.get(i);
         if (!Arrays.equals(shape, p.getShape())) {
-            throw new IOException(
-                    "shape mismatch at param "
-                            + i
-                            + ": saved "
-                            + Arrays.toString(shape)
-                            + " vs model "
-                            + Arrays.toString(p.getShape()));
+            throw shapeMismatchAtParam(i, shape, p.getShape());
         }
         float[] dst = p.internalBuffer();
         if (data.length != dst.length) {

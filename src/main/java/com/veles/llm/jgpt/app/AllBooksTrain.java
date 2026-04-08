@@ -7,6 +7,7 @@ import com.veles.llm.jgpt.model.GPTModel;
 import com.veles.llm.jgpt.training.LLMConfig;
 import com.veles.llm.jgpt.training.LLMTrainer;
 import com.veles.llm.jgpt.training.TrainingConfig;
+import com.veles.llm.jgpt.training.TrainingPlanExhaustedException;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -43,6 +44,10 @@ import org.slf4j.LoggerFactory;
  *   <li><b>JGPT_FINETUNE=1</b> — сбросить {@code globalStep} в 0; веса и Adam-состояние
  *       при этом сохраняются. Используйте, если добавили новые книги и хотите
  *       переобучить полный цикл эпох заново.</li>
+ *   <li><b>JGPT_IF_STEP_BEYOND_PLAN</b> — если из чекпоинта {@code globalStep} не меньше нового
+ *       {@code totalTrainingSteps} (типично после смены пресета/батча): {@code skip} (по умолчанию вне smart),
+ *       {@code restart_schedule} (сброс шага и LR-цикла, веса/Adam/best eval сохраняются;
+ *       задаётся по умолчанию в {@code scripts/jgpt-smart.sh}), {@code fail} — выход с кодом 2.</li>
  * </ul>
  *
  * <p>Пример дообучения после добавления новых книг:
@@ -208,9 +213,6 @@ public final class AllBooksTrain {
             log.info("[CKPT] JGPT_FINETUNE=1 — чекпоинт не найден, обучение с нуля");
         }
 
-        // Фиксируем шаг на момент старта — нужен shutdown-hook'у для определения прогресса
-        final int stepAtTrainStart = trainer.getGlobalStep();
-
         if (TensorOpsGPU.isGpuAvailable()) {
             long usedMb = TensorOpsGPU.getGpuMemoryAllocated() / (1024 * 1024);
             long totalMb = TensorOpsGPU.getGpuMemoryReserved() / (1024 * 1024);
@@ -224,14 +226,16 @@ public final class AllBooksTrain {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("[SHUTDOWN] Получен сигнал остановки — сохраняем checkpoint...");
             try {
-                if (trainer.getGlobalStep() > stepAtTrainStart) {
+                if (trainer.getGlobalStep() > trainer.getShutdownProgressBaselineStep()) {
                     trainer.saveCheckpoint("final");
                     log.info("[SHUTDOWN] checkpoint сохранён. Возобновление: ./scripts/jgpt-smart.sh");
                 } else {
                     trainer.saveCheckpoint("emergency");
-                    log.warn("[SHUTDOWN] Нет прогресса (шаг {} = старт) — checkpoint_final.bin НЕ перезаписан. "
-                            + "Аварийный: checkpoint_emergency.bin",
-                            stepAtTrainStart);
+                    log.warn(
+                            "[SHUTDOWN] Нет прогресса (шаг {} ≤ базы {}) — checkpoint_final.bin НЕ перезаписан. "
+                                    + "Аварийный: checkpoint_emergency.bin",
+                            trainer.getGlobalStep(),
+                            trainer.getShutdownProgressBaselineStep());
                 }
             } catch (Exception e) {
                 log.warn("[SHUTDOWN] Не удалось сохранить checkpoint: {}", e.getMessage());
@@ -239,7 +243,12 @@ public final class AllBooksTrain {
         }, "shutdown-ckpt"));
 
         log.info("=".repeat(60));
-        trainer.train();
+        try {
+            trainer.train();
+        } catch (TrainingPlanExhaustedException e) {
+            log.error("[ALL-BOOKS] {}", e.getMessage());
+            System.exit(2);
+        }
 
         trainer.saveCheckpoint("final");
         log.info("[ALL-BOOKS] обучение завершено. Лучший eval loss: {}",

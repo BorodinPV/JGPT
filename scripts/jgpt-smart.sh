@@ -5,10 +5,12 @@
 # Запускает обучение, следит за логом и автоматически:
 #   - понижает пресет при OOM / зависании FP16
 #   - повышает пресет обратно после стабильной работы
+#   - после штатного завершения AllBooksTrain переходит к следующему пресету по кругу
+#     (цикл не завершается — остановка: Ctrl+C в этом скрипте)
 #   - делает resume после каждого переключения
 #
-# Иерархия пресетов (от быстрого к безопасному):
-#   00-max-throughput → 01-aggressive → 02-stable → 03-recovery → 04-minimal
+# Иерархия пресетов (от быстрого к безопасному), по кругу:
+#   00 → 01 → 02 → 03 → 04 → 00 → …
 #
 # Использование:
 #   ./scripts/jgpt-smart.sh                    # с текущего пресета
@@ -137,12 +139,19 @@ jgpt_resolve_mvn_command() {
 
 # ─── Параметры smart-монитора ─────────────────────────────────
 PRESETS=("00-max-throughput" "01-aggressive" "02-stable" "03-recovery" "04-minimal")
-# Порог «стабильного прогресса»: число строк лога с улучшением best (см. EVAL_IMPROVEMENTS) для upgrade
+# Порог: сколько раз за сегмент eval зафиксировал НОВЫЙ (строго лучший) лучший loss — только если JGPT_SMART_UPGRADE=1
 STABLE_EVALS_FOR_UPGRADE=30
+# Авто-upgrade к более быстрому пресету (idx−1). По умолчанию выкл.: старый счётчик считал почти все строки [EVAL]
+# и давал качели только между 00 и 01 (с 00 upgrade не делается, с 01 через ~30 eval снова 00).
+JGPT_SMART_UPGRADE="${JGPT_SMART_UPGRADE:-0}"
+# Дублировать сообщения [SMART] в training_allbooks.log (раньше они были только в терминале).
+JGPT_SMART_LOG_TO_FILE="${JGPT_SMART_LOG_TO_FILE:-1}"
 OOM_THRESHOLD=1
 FP16_STUCK_THRESHOLD=8
 HANG_SECONDS=300
-PLATEAU_THRESHOLD=15
+# Подряд eval без улучшения best — не раньше PLATEAU_MIN_STEP_LINES строк [STEP] в сегменте (после длинной загрузки данных).
+PLATEAU_THRESHOLD=35
+PLATEAU_MIN_STEP_LINES="${PLATEAU_MIN_STEP_LINES:-5}"
 MONITOR_INTERVAL=30
 
 STATE_DIR="$ROOT/state"
@@ -159,6 +168,12 @@ for arg in "$@"; do
         --help|-h)
             echo "Использование: $0 [ПРЕСЕТ]"
             echo "Пресеты: ${PRESETS[*]}"
+            echo "После штатного завершения обучения пресет переключается по кругу (цикл бесконечный)."
+            echo "Остановить: Ctrl+C в этом терминале."
+            echo "JGPT_SMART_UPGRADE=1 — включить авто-upgrade к более быстрому пресету (порог: STABLE_EVALS_FOR_UPGRADE)."
+            echo "JGPT_SMART_LOG_TO_FILE=0 — не писать [SMART] в training_allbooks.log."
+            echo "JGPT_IF_STEP_BEYOND_PLAN — по умолчанию restart_schedule (см. README); для чистого skip: export перед запуском."
+            echo "PLATEAU_MIN_STEP_LINES — мин. число строк [STEP] в сегменте до проверки плато (по умолчанию $PLATEAU_MIN_STEP_LINES)."
             exit 0
             ;;
         --*) ;;
@@ -266,6 +281,35 @@ count_plateau_evals() {
     ' "$file" 2>/dev/null || echo 0
 }
 
+# Сколько раз в сегменте лога значение «лучший сохранённый» стало строго лучше (меньше), чем на предыдущем [EVAL].
+count_eval_best_improvements() {
+    local file="$1" start_line="$2"
+    awk -v start="$start_line" '
+        NR < start { next }
+        /\[EVAL\].*лучший сохранённый=/ {
+            n = split($0, b, /лучший сохранённый=/)
+            if (n < 2) next
+            best = b[2]
+            sub(/[^0-9.,].*/, "", best)
+            gsub(/,/, ".", best)
+            if (best == "" || best !~ /^[0-9]/) next
+            v = best + 0
+            if (has_prev && v < prev) imp++
+            prev = v
+            has_prev = 1
+        }
+        END { print imp+0 }
+    ' "$file" 2>/dev/null || echo 0
+}
+
+smart_sink() {
+    if [[ "${JGPT_SMART_LOG_TO_FILE:-1}" == "1" ]]; then
+        tee -a "$LOG_FILE"
+    else
+        cat
+    fi
+}
+
 # Секунды от полуночи до «сейчас» минус секунды от полуночи последней метки HH:MM:SS
 # в строке [STEP] или [PERF]…шаг N в сегменте лога (с start_line). Учёт перехода через полночь — грубый.
 last_step_time() {
@@ -315,7 +359,7 @@ stop_training() {
         return
     fi
     if kill -0 "$pid" 2>/dev/null; then
-        echo "  [SMART] Останавливаем обучение (PID $pid) — checkpoint будет сохранён..."
+        printf '%s\n' "  [SMART] Останавливаем обучение (PID $pid) — checkpoint будет сохранён..." | smart_sink
         kill -TERM "$pid" 2>/dev/null || true
         local _
         for _ in {1..30}; do
@@ -340,17 +384,20 @@ trap on_smart_interrupt INT TERM
 
 DOWNGRADE_COUNT=0
 UPGRADE_COUNT=0
+CYCLE_COUNT=0
 UPGRADE_STABLE_EVALS=0
 
 banner() {
-    echo ""
-    echo "════════════════════════════════════════════════════════════"
-    echo " JGPT Smart Training  |  $(date '+%Y-%m-%d %H:%M:%S')"
-    echo " Пресет    : ${PRESETS[$CURRENT_IDX]}  (idx=$CURRENT_IDX)"
-    echo " Downgrade : $DOWNGRADE_COUNT  |  Upgrade : $UPGRADE_COUNT"
-    echo " Лог       : $LOG_FILE"
-    echo "════════════════════════════════════════════════════════════"
-    echo ""
+    {
+        echo ""
+        echo "════════════════════════════════════════════════════════════"
+        echo " JGPT Smart Training  |  $(date '+%Y-%m-%d %H:%M:%S')"
+        echo " Пресет    : ${PRESETS[$CURRENT_IDX]}  (idx=$CURRENT_IDX)"
+        echo " Downgrade : $DOWNGRADE_COUNT  |  Upgrade : $UPGRADE_COUNT  |  auto_upgrade : ${JGPT_SMART_UPGRADE:-0}"
+        echo " Лог       : $LOG_FILE"
+        echo "════════════════════════════════════════════════════════════"
+        echo ""
+    } | smart_sink
 }
 
 while true; do
@@ -370,6 +417,8 @@ while true; do
         echo "$BASHPID" > "$PID_FILE"
         jgpt__maven_opts
         jgpt__export_train_env
+        # Смена пресета меняет totalTrainingSteps; без этого globalStep из чекпоина может быть > плана → мгновенный exit 0.
+        export JGPT_IF_STEP_BEYOND_PLAN="${JGPT_IF_STEP_BEYOND_PLAN:-restart_schedule}"
         jgpt_e2e_train_overrides
         jgpt_cmake_build_cuda
         jgpt_resolve_mvn_command e2e allbooks
@@ -386,7 +435,7 @@ while true; do
         break
     fi
     TRAIN_PID=$(tr -d ' \t\r\n' < "$PID_FILE")
-    echo "  [SMART] Обучение запущено (PID=$TRAIN_PID, пресет=$PRESET_NAME)"
+    printf '%s\n' "  [SMART] Обучение запущено (PID=$TRAIN_PID, пресет=$PRESET_NAME)" | smart_sink
 
     STOP_REASON=""
 
@@ -415,22 +464,20 @@ while true; do
             break
         fi
 
-        # Счётчик строк с «лучший сохранённый=…» в сегменте (как прокси «объёма» eval-улучшений для upgrade).
-        EVAL_IMPROVEMENTS=$(count_pattern_from_line "$LOG_FILE" \
-            "лучший сохранённый=[0-9]" "$LOG_START_LINE")
-        if [[ "$EVAL_IMPROVEMENTS" -ge 1 ]]; then
-            UPGRADE_STABLE_EVALS=$EVAL_IMPROVEMENTS
-        fi
-
+        STEP_LOG_COUNT=$(count_pattern_from_line "$LOG_FILE" "\\[STEP\\]" "$LOG_START_LINE")
         PLATEAU=$(count_plateau_evals "$LOG_FILE" "$LOG_START_LINE")
-        if [[ "$PLATEAU" -ge "$PLATEAU_THRESHOLD" ]]; then
+        if [[ "$STEP_LOG_COUNT" -ge "$PLATEAU_MIN_STEP_LINES" ]] \
+                && [[ "$PLATEAU" -ge "$PLATEAU_THRESHOLD" ]]; then
             STOP_REASON="Плато eval_loss ($PLATEAU eval подряд без улучшения)"
             break
         fi
 
-        if [[ "$UPGRADE_STABLE_EVALS" -ge "$STABLE_EVALS_FOR_UPGRADE" ]] && [[ "$CURRENT_IDX" -gt 0 ]]; then
-            STOP_REASON="UPGRADE"
-            break
+        if [[ "${JGPT_SMART_UPGRADE:-0}" == "1" ]] && [[ "$CURRENT_IDX" -gt 0 ]]; then
+            UPGRADE_STABLE_EVALS=$(count_eval_best_improvements "$LOG_FILE" "$LOG_START_LINE")
+            if [[ "$UPGRADE_STABLE_EVALS" -ge "$STABLE_EVALS_FOR_UPGRADE" ]]; then
+                STOP_REASON="UPGRADE"
+                break
+            fi
         fi
     done
 
@@ -451,34 +498,45 @@ while true; do
     fi
 
     if [[ -z "$STOP_REASON" ]] && [[ "$EXIT_CODE" -eq 0 ]]; then
-        echo ""
-        echo "  [SMART] ✓ Обучение завершено штатно (пресет=$PRESET_NAME)"
-        break
+        CYCLE_COUNT=$((CYCLE_COUNT + 1))
+        local_n=${#PRESETS[@]}
+        NEXT_IDX=$(( (CURRENT_IDX + 1) % local_n ))
+        {
+            echo ""
+            echo "  [SMART] ✓ Сегмент завершён штатно (пресет=$PRESET_NAME, лучший eval — см. лог AllBooksTrain)"
+            echo "  [SMART] ⟳ Круг #$CYCLE_COUNT: следующий пресет по кругу — ${PRESETS[$NEXT_IDX]} (idx=$NEXT_IDX), resume из checkpoint"
+        } | smart_sink
+        CURRENT_IDX=$NEXT_IDX
+        sleep 3
+        continue
     fi
 
     if [[ "$STOP_REASON" == "UPGRADE" ]]; then
         NEW_IDX=$((CURRENT_IDX - 1))
         UPGRADE_COUNT=$((UPGRADE_COUNT + 1))
-        echo ""
-        echo "  [SMART] ↑ Upgrade #$UPGRADE_COUNT: ${PRESETS[$CURRENT_IDX]} → ${PRESETS[$NEW_IDX]}"
-        echo "           Счётчик eval/улучшений в сегменте: $UPGRADE_STABLE_EVALS (порог: $STABLE_EVALS_FOR_UPGRADE)"
+        {
+            echo ""
+            echo "  [SMART] ↑ Upgrade #$UPGRADE_COUNT: ${PRESETS[$CURRENT_IDX]} → ${PRESETS[$NEW_IDX]}"
+            echo "           Число новых лучших eval в сегменте: $UPGRADE_STABLE_EVALS (порог: $STABLE_EVALS_FOR_UPGRADE)"
+        } | smart_sink
         CURRENT_IDX=$NEW_IDX
         sleep 3
         continue
     fi
 
     if [[ -n "$STOP_REASON" ]]; then
-        echo ""
-        echo "  [SMART] ⚠ Проблема обнаружена: $STOP_REASON"
+        {
+            echo ""
+            echo "  [SMART] ⚠ Проблема обнаружена: $STOP_REASON"
+        } | smart_sink
 
         NEW_IDX=$((CURRENT_IDX + 1))
         if [[ "$NEW_IDX" -ge "${#PRESETS[@]}" ]]; then
-            echo "  [SMART] ✗ Достигнут последний пресет (${PRESETS[$CURRENT_IDX]})"
-            echo "           Нужна ручная диагностика. Логи: $LOG_FILE"
-            exit 1
+            printf '%s\n' "  [SMART] Был последний пресет (${PRESETS[$CURRENT_IDX]}) — переход по кругу на ${PRESETS[0]}" | smart_sink
+            NEW_IDX=0
         fi
         DOWNGRADE_COUNT=$((DOWNGRADE_COUNT + 1))
-        echo "  [SMART] ↓ Downgrade #$DOWNGRADE_COUNT: ${PRESETS[$CURRENT_IDX]} → ${PRESETS[$NEW_IDX]}"
+        printf '%s\n' "  [SMART] ↓ Downgrade #$DOWNGRADE_COUNT: ${PRESETS[$CURRENT_IDX]} → ${PRESETS[$NEW_IDX]}" | smart_sink
         CURRENT_IDX=$NEW_IDX
         UPGRADE_STABLE_EVALS=0
         sleep 3
@@ -486,16 +544,18 @@ while true; do
     fi
 
     if [[ "$EXIT_CODE" -ne 0 ]]; then
-        echo "  [SMART] ✗ Процесс завершился с кодом $EXIT_CODE"
-        echo "  Последние строки лога:"
-        tail -5 "$LOG_FILE" 2>/dev/null | sed 's/^/    /' || true
+        {
+            echo "  [SMART] ✗ Процесс завершился с кодом $EXIT_CODE"
+            echo "  Последние строки лога:"
+            tail -5 "$LOG_FILE" 2>/dev/null | sed 's/^/    /' || true
+        } | smart_sink
         NEW_IDX=$((CURRENT_IDX + 1))
         if [[ "$NEW_IDX" -ge "${#PRESETS[@]}" ]]; then
-            echo "  [SMART] Достигнут последний пресет, остановка."
-            exit 1
+            printf '%s\n' "  [SMART] Был последний пресет — переход по кругу на ${PRESETS[0]}" | smart_sink
+            NEW_IDX=0
         fi
         DOWNGRADE_COUNT=$((DOWNGRADE_COUNT + 1))
-        echo "  [SMART] ↓ Downgrade #$DOWNGRADE_COUNT → ${PRESETS[$NEW_IDX]}"
+        printf '%s\n' "  [SMART] ↓ Downgrade #$DOWNGRADE_COUNT → ${PRESETS[$NEW_IDX]}" | smart_sink
         CURRENT_IDX=$NEW_IDX
         sleep 3
         continue
@@ -503,5 +563,5 @@ while true; do
 done
 
 echo ""
-echo "  [SMART] Downgrade: $DOWNGRADE_COUNT  |  Upgrade: $UPGRADE_COUNT"
+echo "  [SMART] Downgrade: $DOWNGRADE_COUNT  |  Upgrade: $UPGRADE_COUNT  |  Кругов штатного продолжения: $CYCLE_COUNT"
 echo "  [SMART] Финальный пресет: ${PRESETS[$CURRENT_IDX]}"

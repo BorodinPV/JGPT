@@ -221,6 +221,41 @@
     border-bottom: 1px solid var(--border);
   }
 
+  .chart-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 18px;
+    margin-bottom: 16px;
+    padding: 14px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .chart-toolbar label {
+    font-size: 12px;
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .chart-toolbar select,
+  .chart-toolbar input[type="datetime-local"] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  .chart-toolbar select { cursor: pointer; min-width: 160px; }
+  #chart-period-hint {
+    font-size: 12px;
+    color: var(--muted);
+    flex-basis: 100%;
+    margin-top: 2px;
+  }
+
   /* ── Scrollbar ── */
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: var(--bg); }
@@ -252,7 +287,7 @@
     <div class="card-title">Прогресс обучения</div>
     <div id="progress-info" style="display:flex;gap:24px;margin-bottom:8px;">
       <div><div class="stat-value cyan" id="p-step">—</div><div class="stat-sub">текущий шаг</div></div>
-      <div><div class="stat-value" id="p-epoch">—</div><div class="stat-sub">эпоха</div></div>
+      <div><div class="stat-value" id="p-epoch">—</div><div class="stat-sub">текущая / всего эпох</div></div>
       <div><div class="stat-value" id="p-eta">—</div><div class="stat-sub">ETA</div></div>
     </div>
     <div class="progress-wrap">
@@ -268,6 +303,24 @@
 
 <!-- ROW 3: Графики потерь -->
 <div class="section-title">Графики</div>
+<div class="chart-toolbar">
+  <label>Период
+    <select id="chart-period-preset" aria-label="Период графиков">
+      <option value="all">Весь доступный ряд</option>
+      <option value="15m">Последние 15 мин</option>
+      <option value="1h">Последний час</option>
+      <option value="6h">Последние 6 ч</option>
+      <option value="24h">Последние 24 ч</option>
+      <option value="7d">Последние 7 дней</option>
+      <option value="custom">Свой интервал…</option>
+    </select>
+  </label>
+  <span id="chart-custom-wrap" style="display:none;flex-wrap:wrap;gap:10px 16px;align-items:center;">
+    <label>с <input type="datetime-local" id="chart-custom-from" step="1"></label>
+    <label>по <input type="datetime-local" id="chart-custom-to" step="1"></label>
+  </span>
+  <span id="chart-period-hint"></span>
+</div>
 <div class="grid-2">
   <div class="card">
     <div class="card-title">Eval Loss</div>
@@ -280,7 +333,7 @@
 </div>
 <div class="grid-1">
   <div class="card">
-    <div class="card-title">Train Loss (каждые 50 шагов)</div>
+    <div class="card-title">Train Loss (каждый залогированный шаг)</div>
     <div class="chart-wrap"><canvas id="chart-train"></canvas></div>
   </div>
 </div>
@@ -354,7 +407,7 @@ function makeChart(id, labels, datasets, yLabel = '') {
           bodyColor: '#94a3b8',
           padding: 10,
           callbacks: {
-            title: items => 'шаг ' + items[0].label
+            title: items => (items[0] && items[0].label != null ? String(items[0].label) : '')
           }
         }
       },
@@ -380,15 +433,27 @@ function makeChart(id, labels, datasets, yLabel = '') {
 
 const chartInstances = {};
 
-function updateOrCreate(id, labels, datasets, yLabel) {
-  if (chartInstances[id]) {
-    const ch = chartInstances[id];
-    ch.data.labels = labels;
-    ch.data.datasets = datasets;
-    ch.update('active');
-  } else {
+function updateOrCreate(id, labels, datasets, yLabel, meta) {
+  const titleCb = (items) => {
+    if (!items || !items.length) return '';
+    const idx = items[0].dataIndex;
+    if (meta && meta.steps && meta.steps[idx] != null) {
+      let t = 'шаг ' + meta.steps[idx];
+      if (meta.times && meta.times[idx] != null && Number.isFinite(meta.times[idx]))
+        t += ' · ' + new Date(meta.times[idx]).toLocaleString('ru-RU');
+      return t;
+    }
+    const lab = items[0].label;
+    return lab != null ? String(lab) : '';
+  };
+  if (!chartInstances[id]) {
     chartInstances[id] = makeChart(id, labels, datasets, yLabel);
   }
+  const ch = chartInstances[id];
+  ch.data.labels = labels;
+  ch.data.datasets = datasets;
+  ch.options.plugins.tooltip.callbacks.title = titleCb;
+  ch.update('active');
 }
 
 // ─── Вспомогалки ─────────────────────────────────────────────
@@ -417,13 +482,204 @@ function statusItem(cls, dotCls, text) {
   </li>`;
 }
 
-// ─── Разрежаем массивы для читаемости графиков ───────────────
-function thin(xs, ys, maxPts = 150) {
-  if (xs.length <= maxPts) return { xs, ys };
-  const step = Math.ceil(xs.length / maxPts);
-  const rx = [], ry = [];
-  for (let i = 0; i < xs.length; i += step) { rx.push(xs[i]); ry.push(ys[i]); }
-  return { xs: rx, ys: ry };
+/** Разрежение с сохранением выравнивания steps / values / optional times (ms). */
+function thinAligned(steps, vals, times, maxPts = 150) {
+  const n = steps.length;
+  if (n <= maxPts) {
+    return { steps: steps.slice(), vals: vals.slice(), times: times && times.length === n ? times.slice() : null };
+  }
+  const step = Math.ceil(n / maxPts);
+  const rs = [], rv = [], rt = [];
+  for (let i = 0; i < n; i += step) {
+    rs.push(steps[i]);
+    rv.push(vals[i]);
+    if (times && times.length === n) rt.push(times[i]);
+  }
+  return { steps: rs, vals: rv, times: rt.length ? rt : (times && times.length === n ? times : null) };
+}
+
+function fmtChartAxisTime(ms) {
+  if (ms == null || !Number.isFinite(ms)) return '—';
+  return new Date(ms).toLocaleString('ru-RU', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function labelsForPoints(steps, times) {
+  if (times && times.length === steps.length)
+    return times.map(fmtChartAxisTime);
+  return steps.map(String);
+}
+
+/** null = без фильтра по времени */
+function getChartTimeRange() {
+  const sel = $('chart-period-preset');
+  if (!sel) return null;
+  const preset = sel.value || 'all';
+  if (preset === 'all') return null;
+  const now = Date.now();
+  if (preset === 'custom') {
+    const a = $('chart-custom-from') && $('chart-custom-from').value;
+    const b = $('chart-custom-to') && $('chart-custom-to').value;
+    if (!a && !b) return null;
+    const fromMs = a ? new Date(a).getTime() : 0;
+    const toMs = b ? new Date(b).getTime() : now;
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
+    return { fromMs: Math.min(fromMs, toMs), toMs: Math.max(fromMs, toMs) };
+  }
+  const dur = {
+    '15m': 15 * 60 * 1000,
+    '1h': 3600000,
+    '6h': 6 * 3600000,
+    '24h': 24 * 3600000,
+    '7d': 7 * 24 * 3600000
+  }[preset];
+  if (!dur) return null;
+  return { fromMs: now - dur, toMs: now };
+}
+
+function sliceByTimeRange(steps, vals, times, range) {
+  if (!steps || !steps.length) return { steps: [], vals: [], times: [], usedFilter: false, noTime: false };
+  const n = steps.length;
+  if (!vals || vals.length !== n) {
+    const m = Math.min(n, (vals || []).length);
+    if (m <= 0) return { steps: [], vals: [], times: [], usedFilter: false, noTime: false };
+    const ts = times && times.length === n ? times.slice(0, m) : [];
+    return sliceByTimeRange(steps.slice(0, m), vals.slice(0, m), ts, range);
+  }
+  if (!range)
+    return {
+      steps: steps.slice(),
+      vals: vals.slice(),
+      times: times && times.length === steps.length ? times.slice() : null,
+      usedFilter: false,
+      noTime: false
+    };
+  if (!times || times.length !== steps.length)
+    return {
+      steps: steps.slice(),
+      vals: vals.slice(),
+      times: times && times.length === steps.length ? times.slice() : null,
+      usedFilter: false,
+      noTime: true
+    };
+  const { fromMs, toMs } = range;
+  const s = [], v = [], t = [];
+  for (let i = 0; i < steps.length; i++) {
+    const tm = times[i];
+    if (tm >= fromMs && tm <= toMs) {
+      s.push(steps[i]);
+      v.push(vals[i]);
+      t.push(tm);
+    }
+  }
+  return { steps: s, vals: v, times: t, usedFilter: true, noTime: false };
+}
+
+const LS_CHART_PERIOD = 'jgpt.dashboard.chartPeriod';
+
+let cachedStats = null;
+
+function syncChartCustomVisibility() {
+  const sel = $('chart-period-preset');
+  const wrap = $('chart-custom-wrap');
+  if (!sel || !wrap) return;
+  wrap.style.display = sel.value === 'custom' ? 'inline-flex' : 'none';
+}
+
+function applyChartPeriodHint(d, sliceEval, sliceTrain, range) {
+  const hint = $('chart-period-hint');
+  if (!hint) return;
+  const parts = [];
+  if (range && sliceEval.noTime && (d.eval_steps || []).length)
+    parts.push('Eval: в JSON нет eval_time_ms (старый прогон) — показан весь ряд.');
+  if (range && sliceTrain.noTime && (d.train_steps || []).length)
+    parts.push('Train: нет train_time_ms — показан весь ряд.');
+  if (range && !sliceEval.noTime && sliceEval.usedFilter)
+    parts.push(`Eval: точек ${sliceEval.steps.length}.`);
+  if (range && !sliceTrain.noTime && sliceTrain.usedFilter)
+    parts.push(`Train: точек ${sliceTrain.steps.length}.`);
+  if (range && sliceEval.steps.length === 0 && (d.eval_steps || []).length)
+    parts.push('В выбранном окне нет eval-точек.');
+  if (range && sliceTrain.steps.length === 0 && (d.train_steps || []).length)
+    parts.push('В выбранном окне нет train-точек.');
+  hint.textContent = parts.join(' ');
+}
+
+function renderCharts(d) {
+  const range = getChartTimeRange();
+  const evalTimes = d.eval_time_ms || [];
+  const trainTimes = d.train_time_ms || [];
+
+  const sliceEval = sliceByTimeRange(d.eval_steps || [], d.eval_loss || [], evalTimes, range);
+  const slicePerp = sliceByTimeRange(d.eval_steps || [], d.perplexity || [], evalTimes, range);
+  const sliceTrain = sliceByTimeRange(d.train_steps || [], d.train_loss || [], trainTimes, range);
+  applyChartPeriodHint(d, sliceEval, sliceTrain, range);
+
+  const te = thinAligned(sliceEval.steps, sliceEval.vals, sliceEval.times, 150);
+  const tp = thinAligned(slicePerp.steps, slicePerp.vals, slicePerp.times, 150);
+  const tt = thinAligned(sliceTrain.steps, sliceTrain.vals, sliceTrain.times, 150);
+
+  const labEval = labelsForPoints(te.steps, te.times);
+  const labPerp = labelsForPoints(tp.steps, tp.times);
+  const labTrain = labelsForPoints(tt.steps, tt.times);
+
+  const metaEval = { steps: te.steps, times: te.times };
+  const metaPerp = { steps: tp.steps, times: tp.times };
+  const metaTrain = { steps: tt.steps, times: tt.times };
+
+  const ysEval = te.vals;
+  const bestLine = ysEval.length ? ysEval.map(() => d.best_loss) : [];
+
+  if (!ysEval.length) {
+    updateOrCreate('chart-eval', ['—'], [{
+      label: 'Нет точек', data: [0],
+      borderColor: '#64748b', backgroundColor: 'transparent', borderWidth: 1, pointRadius: 0
+    }], 'Loss', { steps: [null], times: [null] });
+  } else {
+    updateOrCreate('chart-eval', labEval,
+      [
+        {
+          label: 'Eval Loss', data: ysEval,
+          borderColor: COLORS.cyan, backgroundColor: 'rgba(6,182,212,.08)',
+          borderWidth: 2, pointRadius: 2, pointHoverRadius: 4, tension: 0.3, fill: true,
+        },
+        {
+          label: `Лучший (${d.best_loss.toFixed(4)})`, data: bestLine,
+          borderColor: COLORS.green, borderWidth: 1.5,
+          borderDash: [6, 3], pointRadius: 0, tension: 0,
+        }
+      ],
+      'Loss', metaEval);
+  }
+
+  if (!tp.vals.length) {
+    updateOrCreate('chart-perp', ['—'], [{
+      label: 'Нет точек', data: [0],
+      borderColor: '#64748b', backgroundColor: 'transparent', borderWidth: 1, pointRadius: 0
+    }], 'Перплексия', { steps: [null], times: [null] });
+  } else {
+    updateOrCreate('chart-perp', labPerp,
+      [{
+        label: 'Перплексия', data: tp.vals,
+        borderColor: COLORS.purple, backgroundColor: 'rgba(168,85,247,.08)',
+        borderWidth: 2, pointRadius: 2, pointHoverRadius: 4, tension: 0.3, fill: true,
+      }],
+      'Перплексия', metaPerp);
+  }
+
+  if (!tt.vals.length) {
+    updateOrCreate('chart-train', ['—'], [{
+      label: 'Нет точек', data: [0],
+      borderColor: '#64748b', backgroundColor: 'transparent', borderWidth: 1, pointRadius: 0
+    }], 'Loss', { steps: [null], times: [null] });
+  } else {
+    updateOrCreate('chart-train', labTrain,
+      [{
+        label: 'Train Loss', data: tt.vals,
+        borderColor: COLORS.blue, backgroundColor: 'rgba(59,130,246,.06)',
+        borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: true,
+      }],
+      'Loss', metaTrain);
+  }
 }
 
 // ─── Основная функция отрисовки ───────────────────────────────
@@ -432,7 +688,8 @@ function render(d) {
   $('updated').textContent = 'Обновлено: ' + d.updated;
 
   // ── Ключевые метрики (строка 1)
-  const pct = d.total_steps > 0 ? (d.current_step / d.total_steps * 100).toFixed(1) : 0;
+  const pctRaw = d.total_steps > 0 ? (d.current_step / d.total_steps * 100) : 0;
+  const pct = Math.min(100, Math.max(0, pctRaw)).toFixed(1);
   const lossColor = d.last_eval_loss <= d.best_loss + 0.02 ? 'green' :
                     d.last_eval_loss <= d.best_loss + 0.15 ? 'yellow' : 'red';
   $('row-stats').innerHTML =
@@ -445,12 +702,12 @@ function render(d) {
   $('p-step').textContent = d.current_step.toLocaleString('ru');
   $('p-epoch').textContent = d.current_epoch;
   // ETA грубо: оставшиеся шаги × ~0.93с/шаг (среднее)
-  const stepsLeft = d.total_steps - d.current_step;
+  const stepsLeft = Math.max(0, d.total_steps - d.current_step);
   const avgSecPerStep = 0.93;
   $('p-eta').textContent = stepsLeft > 0 ? fmtDuration(stepsLeft * avgSecPerStep) : '—';
   $('pb-pct').textContent = pct + '%';
   $('pb-steps').textContent = `${d.current_step.toLocaleString('ru')} / ${d.total_steps.toLocaleString('ru')}`;
-  $('pb-fill').style.width = Math.min(pct, 100) + '%';
+  $('pb-fill').style.width = Math.min(parseFloat(pct), 100) + '%';
 
   // ── Статус
   const statuses = [];
@@ -488,59 +745,7 @@ function render(d) {
 
   $('status-list').innerHTML = statuses.join('');
 
-  // ── График: Eval Loss
-  {
-    const { xs, ys } = thin(d.eval_steps, d.eval_loss);
-    const bestLine = ys.map(() => d.best_loss);
-    updateOrCreate('chart-eval',
-      xs.map(String),
-      [
-        {
-          label: 'Eval Loss', data: ys,
-          borderColor: COLORS.cyan, backgroundColor: 'rgba(6,182,212,.08)',
-          borderWidth: 2, pointRadius: 2, pointHoverRadius: 4, tension: 0.3, fill: true,
-        },
-        {
-          label: `Лучший (${d.best_loss.toFixed(4)})`, data: bestLine,
-          borderColor: COLORS.green, borderWidth: 1.5,
-          borderDash: [6,3], pointRadius: 0, tension: 0,
-        }
-      ],
-      'Loss'
-    );
-  }
-
-  // ── График: Перплексия
-  {
-    const { xs, ys } = thin(d.eval_steps, d.perplexity);
-    updateOrCreate('chart-perp',
-      xs.map(String),
-      [
-        {
-          label: 'Перплексия', data: ys,
-          borderColor: COLORS.purple, backgroundColor: 'rgba(168,85,247,.08)',
-          borderWidth: 2, pointRadius: 2, pointHoverRadius: 4, tension: 0.3, fill: true,
-        }
-      ],
-      'Перплексия'
-    );
-  }
-
-  // ── График: Train Loss
-  {
-    const { xs, ys } = thin(d.train_steps, d.train_loss);
-    updateOrCreate('chart-train',
-      xs.map(String),
-      [
-        {
-          label: 'Train Loss', data: ys,
-          borderColor: COLORS.blue, backgroundColor: 'rgba(59,130,246,.06)',
-          borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: true,
-        }
-      ],
-      'Loss'
-    );
-  }
+  renderCharts(d);
 
   // ── Стабильность
   const overflowColor = parseFloat(overflowPct) >= 3 ? 'yellow' : 'green';
@@ -554,6 +759,8 @@ function render(d) {
   $('cfg-preset').textContent = `${d.preset}  (индекс ${d.preset_idx})`;
   $('cfg-desc').textContent = c.description || '';
   $('cfg-grid').innerHTML = [
+    ['эпох (план)', c.epochs != null && c.epochs !== '' ? c.epochs : '—'],
+    ['слоёв',       c.num_layers != null && c.num_layers !== '' ? c.num_layers : '—'],
     ['seq_len',     c.seq_len],
     ['batch',       c.batch],
     ['ce_candidates', c.ce_candidates],
@@ -581,6 +788,7 @@ async function loadStats() {
     const resp = await fetch(url, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
+    cachedStats = data;
     render(data);
   } catch (e) {
     $('updated').textContent = 'Ошибка загрузки: ' + e.message;
@@ -596,6 +804,25 @@ function setupAuto() {
     autoTimer = setInterval(loadStats, AUTO_REFRESH_MS);
 }
 $('auto-chk').addEventListener('change', setupAuto);
+
+(function initChartPeriodUi() {
+  const sel = $('chart-period-preset');
+  if (!sel) return;
+  try {
+    const saved = localStorage.getItem(LS_CHART_PERIOD);
+    if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
+  } catch (e) { /* ignore */ }
+  syncChartCustomVisibility();
+  sel.addEventListener('change', () => {
+    try { localStorage.setItem(LS_CHART_PERIOD, sel.value); } catch (e) { /* ignore */ }
+    syncChartCustomVisibility();
+    if (cachedStats) renderCharts(cachedStats);
+  });
+  ['chart-custom-from', 'chart-custom-to'].forEach(id => {
+    const el = $(id);
+    if (el) el.addEventListener('change', () => { if (cachedStats) renderCharts(cachedStats); });
+  });
+})();
 
 loadStats();
 setupAuto();

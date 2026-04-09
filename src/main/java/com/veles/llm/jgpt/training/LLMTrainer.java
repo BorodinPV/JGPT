@@ -1253,6 +1253,12 @@ public final class LLMTrainer {
             pendingCheckpointDataLoaderIndex = 0;
             saveCheckpoint("epoch_" + (epoch + 1));
             dataLoader.reset();
+            /* После каждой эпохи сбрасываем async memory pool — иначе при большом batch (batch>1) пул
+             * накапливает фрагментацию между eval-вызовами: eval+trim происходит 1 раз в ~batch/1 эпох,
+             * а временные буферы forward/backward занимают пул между trimами. */
+            if (model.isGpuResident() && TensorOpsGPU.isGpuAvailable()) {
+                TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+            }
         }
 
         if (trainingStoppedEarly) {

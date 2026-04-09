@@ -10,7 +10,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 
@@ -24,7 +26,21 @@ public final class TrainingStatsWriter {
     private static final Logger log = LoggerFactory.getLogger(TrainingStatsWriter.class);
     private static final DateTimeFormatter DT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final int MAX_SAMPLES = 10;
-    private static final int MAX_SERIES  = 2000; // максимум точек в каждом ряду
+    /** Максимум точек в eval/train рядах в stats.json; переопределение: {@code JGPT_STATS_MAX_SERIES}. */
+    private static final int MAX_SERIES = resolveMaxSeries();
+
+    private static int resolveMaxSeries() {
+        String v = System.getenv("JGPT_STATS_MAX_SERIES");
+        if (v != null && !v.isBlank()) {
+            try {
+                int n = Integer.parseInt(v.trim());
+                return Math.max(10, Math.min(n, 500_000));
+            } catch (NumberFormatException ignored) {
+                // fall through
+            }
+        }
+        return 20_000;
+    }
 
     private final Path stateDir;
     private final Path outFile;
@@ -61,18 +77,18 @@ public final class TrainingStatsWriter {
     private String lastSample = "";
     private String lastSampleStep = "";
 
-    // Временны́е ряды
-    private final List<Integer> evalSteps    = new ArrayList<>();
-    private final List<Float>   evalLoss     = new ArrayList<>();
-    private final List<Float>   perplexity   = new ArrayList<>();
+    // Временны́е ряды (ArrayDeque: O(1) pollFirst вместо O(n) ArrayList.remove(0))
+    private final ArrayDeque<Integer> evalSteps    = new ArrayDeque<>();
+    private final ArrayDeque<Float>   evalLoss     = new ArrayDeque<>();
+    private final ArrayDeque<Float>   perplexity   = new ArrayDeque<>();
     /** Epoch millis на момент точки eval (для дашборда: фильтр по времени). */
-    private final List<Long>    evalTimeMs   = new ArrayList<>();
-    private final List<Integer> trainSteps   = new ArrayList<>();
-    private final List<Float>   trainLoss    = new ArrayList<>();
+    private final ArrayDeque<Long>    evalTimeMs   = new ArrayDeque<>();
+    private final ArrayDeque<Integer> trainSteps   = new ArrayDeque<>();
+    private final ArrayDeque<Float>   trainLoss    = new ArrayDeque<>();
     /** Epoch millis на момент залогированного train-шага. */
-    private final List<Long>    trainTimeMs  = new ArrayList<>();
-    private final List<Integer> overflowSteps = new ArrayList<>();
-    private final List<String>  samples      = new ArrayList<>();
+    private final ArrayDeque<Long>    trainTimeMs  = new ArrayDeque<>();
+    private final ArrayDeque<Integer> overflowSteps = new ArrayDeque<>();
+    private final List<String>        samples      = new ArrayList<>();
 
     public TrainingStatsWriter(Path stateDir) {
         this.stateDir = stateDir;
@@ -81,6 +97,11 @@ public final class TrainingStatsWriter {
     }
 
     // ── Инициализация конфига ─────────────────────────────────
+
+    /** Задать описание пресета (отображается в конфиг-блоке дашборда). Вызывать после {@link #setConfig}. */
+    public void setDescription(String description) {
+        this.cfgDescription = description != null ? description : "";
+    }
 
     public void setConfig(TrainingConfig cfg, int totalSteps, String preset, String presetIdx) {
         this.totalSteps = totalSteps;
@@ -144,7 +165,8 @@ public final class TrainingStatsWriter {
     /** Вызывать при пропуске шага из-за переполнения градиентов. */
     public void onOverflow(int step) {
         skippedSteps++;
-        if (overflowSteps.size() < MAX_SERIES) overflowSteps.add(step);
+        if (overflowSteps.size() >= MAX_SERIES) overflowSteps.pollFirst();
+        overflowSteps.addLast(step);
         write();
     }
 
@@ -183,6 +205,7 @@ public final class TrainingStatsWriter {
         StringBuilder sb = new StringBuilder(4096);
         sb.append("{\n");
         sb.append("  \"updated\": \"").append(LocalDateTime.now().format(DT)).append("\",\n");
+        sb.append("  \"updated_ms\": ").append(System.currentTimeMillis()).append(",\n");
         sb.append("  \"current_step\": ").append(currentStep).append(",\n");
         sb.append("  \"total_steps\": ").append(totalSteps).append(",\n");
         sb.append("  \"current_epoch\": \"").append(currentEpoch).append("\",\n");
@@ -198,6 +221,7 @@ public final class TrainingStatsWriter {
         sb.append("  \"fp16_stuck\": ").append(fp16StuckCount).append(",\n");
         sb.append("  \"preset\": \"").append(escape(preset)).append("\",\n");
         sb.append("  \"preset_idx\": \"").append(escape(presetIdx)).append("\",\n");
+        sb.append("  \"stats_max_series\": ").append(MAX_SERIES).append(",\n");
         sb.append("  \"config\": {\n");
         sb.append("    \"epochs\": \"").append(cfgEpochs).append("\",\n");
         sb.append("    \"num_layers\": \"").append(cfgNumLayers).append("\",\n");
@@ -233,8 +257,17 @@ public final class TrainingStatsWriter {
 
     private static String escape(String s) {
         if (s == null) return "";
-        return s.replace("\\", "\\\\").replace("\"", "\\\"")
-                .replace("\n", " ").replace("\r", "").replace("\t", " ");
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if      (c == '\\') sb.append("\\\\");
+            else if (c == '"')  sb.append("\\\"");
+            else if (c == '\n') sb.append(' ');
+            else if (c == '\t') sb.append(' ');
+            else if (c >= 0x20) sb.append(c);
+            // \r и остальные управляющие символы (< 0x20) пропускаются — невалидны в JSON-строке
+        }
+        return sb.toString();
     }
 
     private static String envOrDash(String key) {
@@ -246,55 +279,61 @@ public final class TrainingStatsWriter {
     private void addEvalSeries(int step, float loss, float perp) {
         long now = System.currentTimeMillis();
         if (evalSteps.size() >= MAX_SERIES) {
-            evalSteps.remove(0);
-            evalLoss.remove(0);
-            perplexity.remove(0);
-            evalTimeMs.remove(0);
+            evalSteps.pollFirst();
+            evalLoss.pollFirst();
+            perplexity.pollFirst();
+            evalTimeMs.pollFirst();
         }
-        evalSteps.add(step);
-        evalLoss.add(loss);
-        perplexity.add(perp);
-        evalTimeMs.add(now);
+        evalSteps.addLast(step);
+        evalLoss.addLast(loss);
+        perplexity.addLast(perp);
+        evalTimeMs.addLast(now);
     }
 
     private void addTrainSeries(int step, float loss) {
         long now = System.currentTimeMillis();
         if (trainSteps.size() >= MAX_SERIES) {
-            trainSteps.remove(0);
-            trainLoss.remove(0);
-            trainTimeMs.remove(0);
+            trainSteps.pollFirst();
+            trainLoss.pollFirst();
+            trainTimeMs.pollFirst();
         }
-        trainSteps.add(step);
-        trainLoss.add(loss);
-        trainTimeMs.add(now);
+        trainSteps.addLast(step);
+        trainLoss.addLast(loss);
+        trainTimeMs.addLast(now);
     }
 
-    private String intListToJson(List<Integer> list) {
-        if (list.isEmpty()) return "[]";
+    private String intListToJson(Collection<Integer> coll) {
+        if (coll.isEmpty()) return "[]";
         StringBuilder sb = new StringBuilder("[");
-        for (int i = 0; i < list.size(); i++) {
-            if (i > 0) sb.append(',');
-            sb.append(list.get(i));
-        }
-        return sb.append(']').toString();
-    }
-
-    private String longListToJson(List<Long> list) {
-        if (list.isEmpty()) return "[]";
-        StringBuilder sb = new StringBuilder("[");
-        for (int i = 0; i < list.size(); i++) {
-            if (i > 0) sb.append(',');
-            sb.append(list.get(i));
+        boolean first = true;
+        for (int v : coll) {
+            if (!first) sb.append(',');
+            sb.append(v);
+            first = false;
         }
         return sb.append(']').toString();
     }
 
-    private String floatListToJson(List<Float> list) {
-        if (list.isEmpty()) return "[]";
+    private String longListToJson(Collection<Long> coll) {
+        if (coll.isEmpty()) return "[]";
         StringBuilder sb = new StringBuilder("[");
-        for (int i = 0; i < list.size(); i++) {
-            if (i > 0) sb.append(',');
-            sb.append(fmt(list.get(i)));
+        boolean first = true;
+        for (long v : coll) {
+            if (!first) sb.append(',');
+            sb.append(v);
+            first = false;
+        }
+        return sb.append(']').toString();
+    }
+
+    private String floatListToJson(Collection<Float> coll) {
+        if (coll.isEmpty()) return "[]";
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (float v : coll) {
+            if (!first) sb.append(',');
+            sb.append(fmt(v));
+            first = false;
         }
         return sb.append(']').toString();
     }

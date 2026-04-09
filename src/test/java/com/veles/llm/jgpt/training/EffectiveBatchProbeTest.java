@@ -41,7 +41,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * а шаг оптимизатора строится из {@link LLMConfig#toTrainingConfig(String, int)} (LR, warmup, weight decay, клип,
  * косинусный LR и т.д.), с подставляемыми при зонде {@code batchSize} / {@code accumulationSteps}.
  *
- * <p>Опционально: {@code JGPT_PROBE_MODEL=nano|mini|small|small16m} переопределяет пресет модели;
+ * <p>Опционально: {@code JGPT_PROBE_MODEL=nano|mini|small|small16m|smart50m} переопределяет пресет модели;
+ * Для совпадения с {@code jgpt-smart.sh} задайте {@code JGPT_PROBE_TRAINING_ALIGNED=1} и те же env, что в
+ * {@code env/*.env} ({@code JGPT_BATCH_SIZE}, {@code JGPT_MAX_SEQ_LEN}, {@code JGPT_PRESET_NUM_LAYERS},
+ * {@code JGPT_ACCUMULATION_STEPS}).
  * {@code JGPT_PROBE_MAX_BATCH}, {@code JGPT_BATCH_PROBE_CPU=1}.
  *
  * <p>FP16 GEMM (Tensor Cores): статический блок ниже выставляет {@code jgpt.fp16.matmul=true} до первой
@@ -89,9 +92,33 @@ final class EffectiveBatchProbeTest {
                             case "mini" -> LLMConfig.mini();
                             case "small" -> LLMConfig.small();
                             case "small16m", "small16", "16m" -> LLMConfig.small16M();
+                            case "smart50m", "smart50", "50m" -> LLMConfig.smart50M();
                             default -> LLMConfig.small16M();
                         };
         return LLMConfig.applyBatchSizeOverrideFromEnv(base);
+    }
+
+    /**
+     * Как {@link com.veles.llm.jgpt.app.AllBooksTrain}: те же env-оверрайды batch / seq / слои / accumulation.
+     * Нужен для бенчмарка «как stable + smart50M» при {@code source env/02-stable.env}.
+     */
+    private static LLMConfig resolveProbeModelTrainingAligned() {
+        String raw = System.getenv("JGPT_PROBE_MODEL");
+        LLMConfig base =
+                raw == null || raw.isBlank()
+                        ? LLMConfig.small16M()
+                        : switch (raw.trim().toLowerCase(Locale.ROOT)) {
+                            case "nano" -> LLMConfig.nano();
+                            case "mini" -> LLMConfig.mini();
+                            case "small" -> LLMConfig.small();
+                            case "small16m", "small16", "16m" -> LLMConfig.small16M();
+                            case "smart50m", "smart50", "50m" -> LLMConfig.smart50M();
+                            default -> LLMConfig.small16M();
+                        };
+        return LLMConfig.applyAccumulationStepsOverrideFromEnv(
+                LLMConfig.applyPresetNumLayersOverrideFromEnv(
+                        LLMConfig.applySeqLenOverrideFromEnv(
+                                LLMConfig.applyBatchSizeOverrideFromEnv(base))));
     }
 
     /** Строка для сводки: эталонные batch/accum/LR/регуляризация как у полного обучения. */
@@ -280,7 +307,10 @@ final class EffectiveBatchProbeTest {
                     TensorOpsGPU.isGpuAvailable(), "Задайте JGPT_BATCH_PROBE_CPU=1 для прогона без GPU");
         }
 
-        LLMConfig lc = resolveProbeModel();
+        boolean trainingAligned =
+                "1".equals(System.getenv("JGPT_PROBE_TRAINING_ALIGNED"))
+                        || "true".equalsIgnoreCase(System.getenv("JGPT_PROBE_TRAINING_ALIGNED"));
+        LLMConfig lc = trainingAligned ? resolveProbeModelTrainingAligned() : resolveProbeModel();
         BPETokenizer tokenizer = createTokenizer(lc.vocabSize);
 
         int ceiling = probeMaxBatchCeiling();

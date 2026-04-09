@@ -146,6 +146,9 @@ STABLE_EVALS_FOR_UPGRADE=30
 JGPT_SMART_UPGRADE="${JGPT_SMART_UPGRADE:-0}"
 # Дублировать сообщения [SMART] в training_allbooks.log (раньше они были только в терминале).
 JGPT_SMART_LOG_TO_FILE="${JGPT_SMART_LOG_TO_FILE:-1}"
+# Если 1 — не переключать пресет автоматически (перезапускать тот же).
+# Можно задавать в env/<preset>.env, напр. в 02-stable.env.
+JGPT_SMART_STICKY_PRESET="${JGPT_SMART_STICKY_PRESET:-0}"
 OOM_THRESHOLD=1
 FP16_STUCK_THRESHOLD=8
 HANG_SECONDS=300
@@ -406,6 +409,10 @@ while true; do
     export JGPT_STATS_PRESET="${PRESETS[$CURRENT_IDX]}"
     export JGPT_STATS_PRESET_IDX="$CURRENT_IDX"
     UPGRADE_STABLE_EVALS=0
+    STICKY_ACTIVE=0
+    if [[ "${JGPT_SMART_STICKY_PRESET:-0}" == "1" ]]; then
+        STICKY_ACTIVE=1
+    fi
     banner
 
     smart_log_lines=$(log_file_line_count)
@@ -500,18 +507,34 @@ while true; do
     if [[ -z "$STOP_REASON" ]] && [[ "$EXIT_CODE" -eq 0 ]]; then
         CYCLE_COUNT=$((CYCLE_COUNT + 1))
         local_n=${#PRESETS[@]}
-        NEXT_IDX=$(( (CURRENT_IDX + 1) % local_n ))
-        {
-            echo ""
-            echo "  [SMART] ✓ Сегмент завершён штатно (пресет=$PRESET_NAME, лучший eval — см. лог AllBooksTrain)"
-            echo "  [SMART] ⟳ Круг #$CYCLE_COUNT: следующий пресет по кругу — ${PRESETS[$NEXT_IDX]} (idx=$NEXT_IDX), resume из checkpoint"
-        } | smart_sink
-        CURRENT_IDX=$NEXT_IDX
+        if [[ "$STICKY_ACTIVE" -eq 1 ]]; then
+            {
+                echo ""
+                echo "  [SMART] ✓ Сегмент завершён штатно (пресет=$PRESET_NAME, лучший eval — см. лог AllBooksTrain)"
+                echo "  [SMART] ↻ Sticky preset: перезапуск на том же пресете ${PRESETS[$CURRENT_IDX]} (idx=$CURRENT_IDX), без перехода по кругу"
+            } | smart_sink
+        else
+            NEXT_IDX=$(( (CURRENT_IDX + 1) % local_n ))
+            {
+                echo ""
+                echo "  [SMART] ✓ Сегмент завершён штатно (пресет=$PRESET_NAME, лучший eval — см. лог AllBooksTrain)"
+                echo "  [SMART] ⟳ Круг #$CYCLE_COUNT: следующий пресет по кругу — ${PRESETS[$NEXT_IDX]} (idx=$NEXT_IDX), resume из checkpoint"
+            } | smart_sink
+            CURRENT_IDX=$NEXT_IDX
+        fi
         sleep 3
         continue
     fi
 
     if [[ "$STOP_REASON" == "UPGRADE" ]]; then
+        if [[ "$STICKY_ACTIVE" -eq 1 ]]; then
+            {
+                echo ""
+                echo "  [SMART] ↻ Sticky preset: upgrade отключён, остаёмся на ${PRESETS[$CURRENT_IDX]} (idx=$CURRENT_IDX)"
+            } | smart_sink
+            sleep 3
+            continue
+        fi
         NEW_IDX=$((CURRENT_IDX - 1))
         UPGRADE_COUNT=$((UPGRADE_COUNT + 1))
         {
@@ -529,6 +552,13 @@ while true; do
             echo ""
             echo "  [SMART] ⚠ Проблема обнаружена: $STOP_REASON"
         } | smart_sink
+
+        if [[ "$STICKY_ACTIVE" -eq 1 ]]; then
+            printf '%s\n' "  [SMART] ↻ Sticky preset: downgrade отключён, перезапуск того же пресета ${PRESETS[$CURRENT_IDX]} (idx=$CURRENT_IDX)" | smart_sink
+            UPGRADE_STABLE_EVALS=0
+            sleep 3
+            continue
+        fi
 
         NEW_IDX=$((CURRENT_IDX + 1))
         if [[ "$NEW_IDX" -ge "${#PRESETS[@]}" ]]; then
@@ -549,6 +579,13 @@ while true; do
             echo "  Последние строки лога:"
             tail -5 "$LOG_FILE" 2>/dev/null | sed 's/^/    /' || true
         } | smart_sink
+
+        if [[ "$STICKY_ACTIVE" -eq 1 ]]; then
+            printf '%s\n' "  [SMART] ↻ Sticky preset: смена пресета отключена, повтор на ${PRESETS[$CURRENT_IDX]} (idx=$CURRENT_IDX)" | smart_sink
+            sleep 3
+            continue
+        fi
+
         NEW_IDX=$((CURRENT_IDX + 1))
         if [[ "$NEW_IDX" -ge "${#PRESETS[@]}" ]]; then
             printf '%s\n' "  [SMART] Был последний пресет — переход по кругу на ${PRESETS[0]}" | smart_sink

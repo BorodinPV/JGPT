@@ -1,8 +1,11 @@
 package com.veles.llm.jgpt.ops;
 
 import com.veles.llm.jgpt.GpuFloatBuffer;
+import com.veles.llm.jgpt.GpuHalfBuffer;
+import com.veles.llm.jgpt.GpuIntBuffer;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
+import com.veles.llm.jgpt.cuda.GpuTensor;
 
 import org.junit.jupiter.api.Test;
 
@@ -75,5 +78,46 @@ public class GpuFloatBufferTest {
                 assertEquals(ref.get(i, j), fused.get(i, j), 1e-3f);
             }
         }
+    }
+
+    @Test
+    public void drainLeakedAfterCloseDoesNotThrow() {
+        if (!TensorOpsGPU.isGpuAvailable()) {
+            return;
+        }
+        try (GpuFloatBuffer buf = GpuFloatBuffer.allocate(64)) {
+            buf.clear();
+        }
+        GpuFloatBuffer.drainLeaked();
+    }
+
+    @Test
+    public void drainLeakedProcessesPhantomAfterGcHint() throws Exception {
+        if (!TensorOpsGPU.isGpuAvailable()) {
+            return;
+        }
+        GpuFloatBuffer leaked = GpuFloatBuffer.allocate(128);
+        assertNotEquals(0L, leaked.devicePointer());
+        leaked = null;
+        for (int i = 0; i < 30; i++) {
+            System.gc();
+            GpuFloatBuffer.drainLeaked();
+            Thread.sleep(20L);
+        }
+    }
+
+    @Test
+    public void drainDeferredGpuBuffersAfterCloseDoesNotThrow() {
+        if (!TensorOpsGPU.isGpuAvailable()) {
+            return;
+        }
+        try (GpuHalfBuffer h = GpuHalfBuffer.allocate(32);
+                GpuIntBuffer ib = GpuIntBuffer.allocate(16);
+                GpuTensor t = GpuTensor.allocate(new int[]{4, 4})) {
+            assertNotEquals(0L, h.devicePointer());
+            ib.clear();
+            t.dataBuffer().clear();
+        }
+        TensorOpsGPU.drainDeferredGpuBuffers();
     }
 }

@@ -1,7 +1,9 @@
 package com.veles.llm.jgpt;
 
 import java.lang.foreign.MemorySegment;
-import java.lang.ref.Cleaner;
+import java.lang.ref.PhantomReference;
+import java.lang.ref.Reference;
+import java.lang.ref.ReferenceQueue;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.util.Objects;
@@ -10,8 +12,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Буфер float32 на GPU (opaque device pointer). Освобождать через {@link #close()} или try-with-resources.
  *
- * <p>При утечке ссылки без {@code close()} освобождение выполнит {@link Cleaner} (предупреждение в stderr только
- * если {@code close()} не вызывали).
+ * <p>Если ссылку на буфер потеряли без {@link #close()}, нативная память освобождается после того, как объект
+ * соберёт GC и запись попадёт в очередь — см. {@link #drainLeaked()}. В stderr выводится предупреждение только
+ * если {@link #close()} не вызывали. Явный {@link #close()} предпочтительнее: освобождение сразу, без ожидания GC.
+ *
+ * <p>Перед агрессивной очисткой пулов CUDA (например {@link TensorOpsGPU#cudaTrimDeviceMemoryPoolsBestEffort()})
+ * имеет смысл вызывать {@link #drainLeaked()}, чтобы обработать уже попавшие в очередь отложенные освобождения.
+ * Подсказка {@code System.gc()} для ускорения постановки в очередь — только для отладки, не в hot path обучения.
  *
  * <p>Передачи с хоста: JNI при возможности копирует через thread-local <b>pinned</b> staging
  * ({@code cudaHostAlloc}), затем {@code cudaMemcpyAsync} на поток TensorOpsGPU — быстрее, чем прямой
@@ -36,27 +43,23 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class GpuFloatBuffer implements AutoCloseable {
 
-    private static final Cleaner CLEANER = Cleaner.create();
+    private static final ReferenceQueue<GpuFloatBuffer> REF_QUEUE = new ReferenceQueue<>();
 
-    private static final class FreeAction implements Runnable {
-        private final long ptr;
-        private final AtomicBoolean closedNormally;
+    private static final class FloatBufferPhantom extends PhantomReference<GpuFloatBuffer> {
+        final long ptr;
+        final AtomicBoolean nativeFreed;
+        final AtomicBoolean closedExplicitly;
 
-        FreeAction(long ptr, AtomicBoolean closedNormally) {
+        FloatBufferPhantom(
+                GpuFloatBuffer referent,
+                ReferenceQueue<GpuFloatBuffer> q,
+                long ptr,
+                AtomicBoolean nativeFreed,
+                AtomicBoolean closedExplicitly) {
+            super(referent, q);
             this.ptr = ptr;
-            this.closedNormally = closedNormally;
-        }
-
-        @Override
-        public void run() {
-            if (ptr != 0L) {
-                if (!closedNormally.get()) {
-                    System.err.println(
-                            "[GpuFloatBuffer] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого буфера @0x"
-                                    + Long.toHexString(ptr));
-                }
-                nativeFree(ptr);
-            }
+            this.nativeFreed = nativeFreed;
+            this.closedExplicitly = closedExplicitly;
         }
     }
 
@@ -64,15 +67,49 @@ public final class GpuFloatBuffer implements AutoCloseable {
         TensorOpsGPU.isGpuAvailable();
     }
 
-    private final AtomicBoolean closedNormally = new AtomicBoolean(false);
-    private final Cleaner.Cleanable cleanable;
+    private final AtomicBoolean closedExplicitly = new AtomicBoolean(false);
+    private final AtomicBoolean nativeFreed = new AtomicBoolean(false);
     private long devicePtr;
     private final long numFloats;
 
     private GpuFloatBuffer(long devicePtr, long numFloats) {
         this.devicePtr = devicePtr;
         this.numFloats = numFloats;
-        this.cleanable = CLEANER.register(this, new FreeAction(devicePtr, closedNormally));
+        new FloatBufferPhantom(this, REF_QUEUE, devicePtr, nativeFreed, closedExplicitly);
+    }
+
+    /**
+     * Обрабатывает очередь отложенных освобождений (после GC объектов {@link GpuFloatBuffer} без {@link
+     * #close()}). Безопасно вызывать часто; пока соответствующие объекты не собраны GC, очередь может быть пуста.
+     *
+     * <p>Имеет смысл вызывать перед {@link TensorOpsGPU#cudaTrimDeviceMemoryPoolsBestEffort()} в известных точках
+     * синхронизации обучения.
+     */
+    public static void drainLeaked() {
+        Reference<?> r;
+        while ((r = REF_QUEUE.poll()) != null) {
+            if (r instanceof FloatBufferPhantom ph) {
+                releasePhantom(ph);
+            }
+        }
+    }
+
+    private static void releasePhantom(FloatBufferPhantom ph) {
+        try {
+            if (!ph.nativeFreed.compareAndSet(false, true)) {
+                return;
+            }
+            if (!ph.closedExplicitly.get()) {
+                System.err.println(
+                        "[GpuFloatBuffer] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого буфера @0x"
+                                + Long.toHexString(ph.ptr));
+            }
+            if (TensorOpsGPU.isGpuAvailable() && ph.ptr != 0L) {
+                nativeFree(ph.ptr);
+            }
+        } finally {
+            ph.clear();
+        }
     }
 
     /**
@@ -306,11 +343,14 @@ public final class GpuFloatBuffer implements AutoCloseable {
 
     @Override
     public void close() {
-        if (devicePtr != 0L) {
-            closedNormally.set(true);
-            cleanable.clean();
-            devicePtr = 0L;
+        if (devicePtr == 0L) {
+            return;
         }
+        closedExplicitly.set(true);
+        if (nativeFreed.compareAndSet(false, true)) {
+            nativeFree(devicePtr);
+        }
+        devicePtr = 0L;
     }
 
     @Override

@@ -1,6 +1,8 @@
 package com.veles.llm.jgpt;
 
-import java.lang.ref.Cleaner;
+import java.lang.ref.PhantomReference;
+import java.lang.ref.Reference;
+import java.lang.ref.ReferenceQueue;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -8,34 +10,30 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Буфер int32 на GPU (для CE targets и т.п.). Освобождать через {@link #close()} или try-with-resources.
  *
- * <p>При утечке ссылки без {@code close()} освобождение выполнит {@link Cleaner} (с предупреждением в stderr).
- * Класс не рассчитан на параллельные вызовы с одного объекта без внешней синхронизации.
+ * <p>Если ссылку потеряли без {@link #close()}, освобождение после GC — {@link #drainLeaked()}; в stderr —
+ * предупреждение. Класс не рассчитан на параллельные вызовы с одного объекта без внешней синхронизации.
  *
  * <p>Загрузка нативной библиотеки — при инициализации {@link TensorOpsGPU}.
  */
 public final class GpuIntBuffer implements AutoCloseable {
 
-    private static final Cleaner CLEANER = Cleaner.create();
+    private static final ReferenceQueue<GpuIntBuffer> REF_QUEUE = new ReferenceQueue<>();
 
-    private static final class FreeAction implements Runnable {
-        private final long ptr;
-        private final AtomicBoolean closedNormally;
+    private static final class IntBufferPhantom extends PhantomReference<GpuIntBuffer> {
+        final long ptr;
+        final AtomicBoolean nativeFreed;
+        final AtomicBoolean closedExplicitly;
 
-        FreeAction(long ptr, AtomicBoolean closedNormally) {
+        IntBufferPhantom(
+                GpuIntBuffer referent,
+                ReferenceQueue<GpuIntBuffer> q,
+                long ptr,
+                AtomicBoolean nativeFreed,
+                AtomicBoolean closedExplicitly) {
+            super(referent, q);
             this.ptr = ptr;
-            this.closedNormally = closedNormally;
-        }
-
-        @Override
-        public void run() {
-            if (ptr != 0L) {
-                if (!closedNormally.get()) {
-                    System.err.println(
-                            "[GpuIntBuffer] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого буфера @0x"
-                                    + Long.toHexString(ptr));
-                }
-                nativeFree(ptr);
-            }
+            this.nativeFreed = nativeFreed;
+            this.closedExplicitly = closedExplicitly;
         }
     }
 
@@ -43,15 +41,45 @@ public final class GpuIntBuffer implements AutoCloseable {
         TensorOpsGPU.isGpuAvailable();
     }
 
-    private final AtomicBoolean closedNormally = new AtomicBoolean(false);
-    private final Cleaner.Cleanable cleanable;
+    private final AtomicBoolean closedExplicitly = new AtomicBoolean(false);
+    private final AtomicBoolean nativeFreed = new AtomicBoolean(false);
     private long devicePtr;
     private final long numInts;
 
     private GpuIntBuffer(long devicePtr, long numInts) {
         this.devicePtr = devicePtr;
         this.numInts = numInts;
-        this.cleanable = CLEANER.register(this, new FreeAction(devicePtr, closedNormally));
+        new IntBufferPhantom(this, REF_QUEUE, devicePtr, nativeFreed, closedExplicitly);
+    }
+
+    /**
+     * Обрабатывает очередь отложенных освобождений (после GC без {@link #close()}). Безопасно вызывать часто.
+     */
+    public static void drainLeaked() {
+        Reference<?> r;
+        while ((r = REF_QUEUE.poll()) != null) {
+            if (r instanceof IntBufferPhantom ph) {
+                releasePhantom(ph);
+            }
+        }
+    }
+
+    private static void releasePhantom(IntBufferPhantom ph) {
+        try {
+            if (!ph.nativeFreed.compareAndSet(false, true)) {
+                return;
+            }
+            if (!ph.closedExplicitly.get()) {
+                System.err.println(
+                        "[GpuIntBuffer] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого буфера @0x"
+                                + Long.toHexString(ph.ptr));
+            }
+            if (TensorOpsGPU.isGpuAvailable() && ph.ptr != 0L) {
+                nativeFree(ph.ptr);
+            }
+        } finally {
+            ph.clear();
+        }
     }
 
     public static GpuIntBuffer allocate(long numInts) {
@@ -151,11 +179,14 @@ public final class GpuIntBuffer implements AutoCloseable {
 
     @Override
     public void close() {
-        if (devicePtr != 0L) {
-            closedNormally.set(true);
-            cleanable.clean();
-            devicePtr = 0L;
+        if (devicePtr == 0L) {
+            return;
         }
+        closedExplicitly.set(true);
+        if (nativeFreed.compareAndSet(false, true)) {
+            nativeFree(devicePtr);
+        }
+        devicePtr = 0L;
     }
 
     @Override

@@ -187,8 +187,9 @@ public final class TensorOpsGPU {
 
     /**
      * Закрывает thread-local scratch для путей host→GPU ({@code splitHeads}/{@code concatHeads}, SDPA с {@code float[]}
-     * на хосте). Без этого при {@link ThreadLocal#remove()} или завершении потока буферы освобождает только {@link
-     * java.lang.ref.Cleaner} у {@link GpuFloatBuffer} — в stderr уходит предупреждение «незакрытого буфера».
+     * на хосте). Без этого при {@link ThreadLocal#remove()} или завершении потока буферы освобождает только отложенный
+     * путь ({@link com.veles.llm.jgpt.GpuFloatBuffer#drainLeaked()} после GC) — в stderr уходит предупреждение
+     * «незакрытого буфера».
      *
      * <p>Вызывается из {@link com.veles.llm.jgpt.ops.GpuWorkspaceCleanup#releaseAllGpuWorkspacesThreadLocal()}.
      */
@@ -1646,6 +1647,20 @@ public final class TensorOpsGPU {
             return;
         }
         synchronizeDevice0();
+    }
+
+    /**
+     * Обрабатывает очереди отложенных освобождений VRAM ({@link GpuFloatBuffer#drainLeaked()},
+     * {@link GpuHalfBuffer#drainLeaked()}, {@link GpuIntBuffer#drainLeaked()}, {@link GpuTensor#drainLeaked()}) —
+     * записи появляются после GC, если не вызывали {@code close()}. Порядок: сначала «листовые» буферы, затем
+     * {@link GpuTensor} (закрывает вложенные {@link GpuFloatBuffer}). Имеет смысл вызывать перед
+     * {@link #cudaTrimDeviceMemoryPoolsBestEffort()} в известных точках синхронизации обучения.
+     */
+    public static void drainDeferredGpuBuffers() {
+        GpuFloatBuffer.drainLeaked();
+        GpuHalfBuffer.drainLeaked();
+        GpuIntBuffer.drainLeaked();
+        GpuTensor.drainLeaked();
     }
 
     /**

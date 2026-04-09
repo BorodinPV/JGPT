@@ -58,6 +58,8 @@ public final class TrainingStatsWriter {
     private String cfgFp16GrowInterval = "-";
     private String cfgEarlyStopPatience = "-";
     private String cfgCeCandidates = "-";
+    /** {@code validation} — hold-out из {@code JGPT_VAL_FRACTION}; иначе {@code train}. */
+    private String cfgEvalData = "train";
     private String cfgDescription = "";
 
     // Скаляры (обновляются по событиям)
@@ -117,6 +119,17 @@ public final class TrainingStatsWriter {
         this.cfgFp16Max           = envOrDash("JGPT_FP16_DYNAMIC_MAX");
         this.cfgFp16GrowInterval  = envOrDash("JGPT_FP16_DYNAMIC_GROWTH_INTERVAL");
         this.cfgCeCandidates      = envOrDash("JGPT_SAMPLED_CE_CANDIDATES");
+        write();
+    }
+
+    /**
+     * Источник метрик eval в логах/stats: {@code validation} (hold-out) или {@code train}.
+     * Вызывать после {@link #setConfig} при необходимости перезаписать авто-вывод из env.
+     */
+    public void setEvalDataSource(String source) {
+        if (source != null && !source.isBlank()) {
+            this.cfgEvalData = source.trim();
+        }
         write();
     }
 
@@ -231,6 +244,8 @@ public final class TrainingStatsWriter {
         sb.append("    \"fp16_grow_interval\": \"").append(cfgFp16GrowInterval).append("\",\n");
         sb.append("    \"early_stop_patience\": \"").append(cfgEarlyStopPatience).append("\",\n");
         sb.append("    \"ce_candidates\": \"").append(cfgCeCandidates).append("\",\n");
+        sb.append("    \"eval_data\": \"").append(escape(cfgEvalData)).append("\",\n");
+        sb.append("    \"val_fraction\": \"").append(envOrDash("JGPT_VAL_FRACTION")).append("\",\n");
         sb.append("    \"description\": \"").append(escape(cfgDescription)).append("\"\n");
         sb.append("  },\n");
         sb.append("  \"last_sample\": \"").append(escape(lastSample)).append("\",\n");

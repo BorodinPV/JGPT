@@ -12,6 +12,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.Random;
 
 import org.slf4j.Logger;
@@ -387,6 +389,90 @@ public final class DataLoader {
 
     public int numSequences() {
         return sequences.size();
+    }
+
+    public int getMaxSeqLen() {
+        return maxSeqLen;
+    }
+
+    public int getBatchSize() {
+        return batchSize;
+    }
+
+    /**
+     * Копия списка окон (те же {@code int[]} — без клонирования массивов), для разбиения train/val.
+     */
+    public List<int[]> copySequences() {
+        return new ArrayList<>(sequences);
+    }
+
+    /**
+     * Детерминированное разбиение на train и validation: перемешивание по {@code seed}, доля val —
+     * {@code valFraction} от числа окон. Исходный loader очищается (освобождает ссылки на окна).
+     *
+     * <p>Если окон слишком мало для хотя бы одного полного val-батча ({@code >= batchSize}), возвращается
+     * исходный loader как train и {@code validation == null}.
+     *
+     * @param valFraction доля окон под validation, {@code (0, 0.5]}
+     */
+    public static TrainValSplit splitTrainValidation(DataLoader source, double valFraction, long seed) {
+        Objects.requireNonNull(source, "source");
+        if (valFraction <= 0d || valFraction >= 0.5d) {
+            return new TrainValSplit(source, null);
+        }
+        List<int[]> all = source.copySequences();
+        source.clear();
+        int n = all.size();
+        int bs = source.batchSize;
+        if (n < 2 * bs) {
+            log.warn(
+                    "splitTrainValidation: окон {} < 2×batch ({}), hold-out отключён — всё в train",
+                    n,
+                    bs);
+            DataLoader train = fromSequencesTemplate(source, all);
+            return new TrainValSplit(train, null);
+        }
+        Collections.shuffle(all, new Random(seed));
+        int nVal = (int) Math.round(n * valFraction);
+        nVal = Math.min(nVal, n - bs);
+        if (nVal < bs) {
+            log.warn(
+                    "splitTrainValidation: после доли {} val-окон {} < batch {}, hold-out отключён",
+                    String.format(Locale.ROOT, "%.4f", valFraction),
+                    nVal,
+                    bs);
+            DataLoader train = fromSequencesTemplate(source, all);
+            return new TrainValSplit(train, null);
+        }
+        List<int[]> valSeq = new ArrayList<>(all.subList(0, nVal));
+        List<int[]> trainSeq = new ArrayList<>(all.subList(nVal, n));
+        DataLoader train = fromSequencesTemplate(source, trainSeq);
+        DataLoader val = fromSequencesTemplate(source, valSeq);
+        return new TrainValSplit(train, val);
+    }
+
+    private static DataLoader fromSequencesTemplate(DataLoader template, List<int[]> seqs) {
+        DataLoader d =
+                new DataLoader(
+                        template.getTokenizer(),
+                        template.getMaxSeqLen(),
+                        template.getBatchSize(),
+                        template.usesDirectBatchBuffers(),
+                        template.usesPinnedHostBatchBuffers());
+        d.sequences.addAll(seqs);
+        return d;
+    }
+
+    /** Результат {@link #splitTrainValidation(DataLoader, double, long)}. */
+    public static final class TrainValSplit {
+        public final DataLoader train;
+        /** {@code null}, если hold-out отключён или невозможен. */
+        public final DataLoader validation;
+
+        public TrainValSplit(DataLoader train, DataLoader validation) {
+            this.train = Objects.requireNonNull(train, "train");
+            this.validation = validation;
+        }
     }
 
     public BPETokenizer getTokenizer() {

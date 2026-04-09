@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -44,6 +45,8 @@ import org.slf4j.LoggerFactory;
  *   <li><b>JGPT_FINETUNE=1</b> — сбросить {@code globalStep} в 0; веса и Adam-состояние
  *       при этом сохраняются. Используйте, если добавили новые книги и хотите
  *       переобучить полный цикл эпох заново.</li>
+ *   <li><b>JGPT_VAL_FRACTION</b> — доля окон под hold-out validation (например {@code 0.05}); {@code JGPT_VAL_SEED}
+ *       — seed перемешивания (по умолчанию 42). Без env eval считается на train-потоке, как раньше.</li>
  *   <li><b>JGPT_IF_STEP_BEYOND_PLAN</b> — если из чекпоинта {@code globalStep} не меньше нового
  *       {@code totalTrainingSteps} (типично после смены пресета/батча): {@code skip} (по умолчанию вне smart),
  *       {@code restart_schedule} (сброс шага и LR-цикла, веса/Adam/best eval сохраняются;
@@ -183,6 +186,28 @@ public final class AllBooksTrain {
                     "Нет последовательностей — все тексты слишком короткие (нужно >" + llm.maxSeqLen + ")");
         }
 
+        double valFrac = readValFraction();
+        long valSeed = readValSeed();
+        DataLoader trainLoader = dataLoader;
+        DataLoader evalLoader = null;
+        if (valFrac > 0d) {
+            DataLoader.TrainValSplit split = DataLoader.splitTrainValidation(dataLoader, valFrac, valSeed);
+            trainLoader = split.train;
+            evalLoader = split.validation;
+            if (evalLoader != null) {
+                log.info(
+                        "[DATA] hold-out validation: fraction={}, seed={}, train_windows={}, val_windows={}",
+                        String.format(Locale.ROOT, "%.4f", valFrac),
+                        valSeed,
+                        trainLoader.numSequences(),
+                        evalLoader.numSequences());
+            } else {
+                log.info("[DATA] hold-out не создан (мало окон или доля) — полный корпус в train, eval на train-потоке");
+            }
+        } else {
+            log.info("[DATA] JGPT_VAL_FRACTION не задан — метрики eval на train-потоке (как без hold-out)");
+        }
+
         // --- модель ---
         boolean gpuResident = LLMConfig.effectiveGpuResidentTraining();
         GPTModel model = new GPTModel(vocabSize, llm.maxSeqLen, llm.dModel,
@@ -197,7 +222,7 @@ public final class AllBooksTrain {
         // --- тренировка ---
         boolean finetune = isFinetuneMode();
         TrainingConfig trainConfig = llm.toTrainingConfig(checkpointsDir.toString(), vocabSize);
-        LLMTrainer trainer = new LLMTrainer(model, trainConfig, dataLoader);
+        LLMTrainer trainer = new LLMTrainer(model, trainConfig, trainLoader, evalLoader);
 
         // Ищем чекпоинт для resume: сначала checkpoint_final.bin, затем последний checkpoint_epoch_N.bin
         Optional<Path> resumeCkpt = findResumeCheckpoint(checkpointsDir);
@@ -306,6 +331,42 @@ public final class AllBooksTrain {
                     .filter(p -> p.getFileName().toString().endsWith(".txt"))
                     .sorted(Comparator.comparing(Path::toString))
                     .collect(Collectors.toCollection(ArrayList::new));
+        }
+    }
+
+    /**
+     * Доля окон под hold-out validation: env {@code JGPT_VAL_FRACTION} в {@code (0, 0.5)}; {@code 0} или не задано —
+     * без отдельного val.
+     */
+    static double readValFraction() {
+        String e = System.getenv("JGPT_VAL_FRACTION");
+        if (e == null || e.isBlank()) {
+            return 0d;
+        }
+        try {
+            double v = Double.parseDouble(e.trim().replace(',', '.'));
+            if (v <= 0d || v >= 0.5d) {
+                log.warn("[CFG] JGPT_VAL_FRACTION={} вне (0; 0.5) — hold-out отключён", e.trim());
+                return 0d;
+            }
+            return v;
+        } catch (NumberFormatException ex) {
+            log.warn("[CFG] JGPT_VAL_FRACTION: не число — hold-out отключён");
+            return 0d;
+        }
+    }
+
+    /** Seed для {@link DataLoader#splitTrainValidation}; env {@code JGPT_VAL_SEED}, иначе 42. */
+    static long readValSeed() {
+        String e = System.getenv("JGPT_VAL_SEED");
+        if (e == null || e.isBlank()) {
+            return 42L;
+        }
+        try {
+            return Long.parseLong(e.trim());
+        } catch (NumberFormatException ex) {
+            log.warn("[CFG] JGPT_VAL_SEED: не число — используем 42");
+            return 42L;
         }
     }
 }

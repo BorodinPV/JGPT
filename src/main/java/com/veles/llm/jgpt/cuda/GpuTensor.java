@@ -4,7 +4,9 @@ import com.veles.llm.jgpt.GpuFloatBuffer;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
 
-import java.lang.ref.Cleaner;
+import java.lang.ref.PhantomReference;
+import java.lang.ref.Reference;
+import java.lang.ref.ReferenceQueue;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -16,9 +18,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>Ожидаемый цикл: {@link #allocate(int[])} / {@link #fromHostTensor(Tensor)} → при необходимости
  * {@link #zeroGrad()} перед backward → ядра пишут в {@link #gradDevicePointer()} → обновление весов на device
- * (например AdamW) → {@link #close()} или try-with-resources. Если не закрыть явно, {@link Cleaner} освободит
- * буферы при сборке мусора (в stderr — предупреждение). В пулах потоков всё равно вызывайте {@code close()} по
- * завершении задачи.
+ * (например AdamW) → {@link #close()} или try-with-resources. Если не закрыть явно, отложенное освобождение
+ * через {@link #drainLeaked()} после GC (в stderr — предупреждение). В пулах потоков всё равно вызывайте
+ * {@code close()} по завершении задачи.
  *
  * <p>Градиент (опционально): ленивый второй буфер того же размера — {@link #zeroGrad()}, {@link #gradDevicePointer()}.
  *
@@ -26,43 +28,29 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class GpuTensor implements AutoCloseable {
 
-    private static final Cleaner CLEANER = Cleaner.create();
+    private static final ReferenceQueue<GpuTensor> REF_QUEUE = new ReferenceQueue<>();
 
-    /** Поля обновляются конструктором и {@link #zeroGrad()}; cleaner читает актуальные ссылки. */
+    /** Поля обновляются конструктором и {@link #zeroGrad()}; phantom читает актуальные ссылки. */
     private static final class BufferPair {
         GpuFloatBuffer data;
         GpuFloatBuffer grad;
     }
 
-    private static final class FreeAction implements Runnable {
-        private final BufferPair pair;
-        private final AtomicBoolean closedNormally;
+    private static final class TensorPhantom extends PhantomReference<GpuTensor> {
+        final BufferPair pair;
+        final AtomicBoolean closedExplicitly;
+        final AtomicBoolean released;
 
-        FreeAction(BufferPair pair, AtomicBoolean closedNormally) {
+        TensorPhantom(
+                GpuTensor referent,
+                ReferenceQueue<GpuTensor> q,
+                BufferPair pair,
+                AtomicBoolean closedExplicitly,
+                AtomicBoolean released) {
+            super(referent, q);
             this.pair = pair;
-            this.closedNormally = closedNormally;
-        }
-
-        @Override
-        public void run() {
-            GpuFloatBuffer d = pair.data;
-            GpuFloatBuffer g = pair.grad;
-            if (d != null || g != null) {
-                if (!closedNormally.get()) {
-                    System.err.println(
-                            "[GpuTensor] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого тензора (data ptr=0x"
-                                    + Long.toHexString(d != null ? d.devicePointer() : 0L)
-                                    + ")");
-                }
-                if (d != null) {
-                    d.close();
-                }
-                if (g != null) {
-                    g.close();
-                }
-                pair.data = null;
-                pair.grad = null;
-            }
+            this.closedExplicitly = closedExplicitly;
+            this.released = released;
         }
     }
 
@@ -70,8 +58,9 @@ public final class GpuTensor implements AutoCloseable {
     private final int size;
     private final int[] strides;
     private final BufferPair buf;
-    private final AtomicBoolean closedNormally = new AtomicBoolean(false);
-    private final Cleaner.Cleanable cleanable;
+    private final AtomicBoolean closedExplicitly = new AtomicBoolean(false);
+    /** Один раз освободили вложенные буферы (явно или из phantom). */
+    private final AtomicBoolean released = new AtomicBoolean(false);
 
     private GpuTensor(int[] shape, int size, int[] strides, GpuFloatBuffer data) {
         this.shape = shape.clone();
@@ -79,7 +68,49 @@ public final class GpuTensor implements AutoCloseable {
         this.strides = strides.clone();
         this.buf = new BufferPair();
         this.buf.data = Objects.requireNonNull(data, "data");
-        this.cleanable = CLEANER.register(this, new FreeAction(buf, closedNormally));
+        new TensorPhantom(this, REF_QUEUE, buf, closedExplicitly, released);
+    }
+
+    /**
+     * Обрабатывает очередь отложенных освобождений (после GC без {@link #close()}). Безопасно вызывать часто.
+     */
+    public static void drainLeaked() {
+        Reference<?> r;
+        while ((r = REF_QUEUE.poll()) != null) {
+            if (r instanceof TensorPhantom ph) {
+                releasePhantom(ph);
+            }
+        }
+    }
+
+    private static void releasePhantom(TensorPhantom ph) {
+        try {
+            if (!ph.released.compareAndSet(false, true)) {
+                return;
+            }
+            BufferPair pair = ph.pair;
+            GpuFloatBuffer d = pair.data;
+            GpuFloatBuffer g = pair.grad;
+            if (d == null && g == null) {
+                return;
+            }
+            if (!ph.closedExplicitly.get()) {
+                System.err.println(
+                        "[GpuTensor] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого тензора (data ptr=0x"
+                                + Long.toHexString(d != null ? d.devicePointer() : 0L)
+                                + ")");
+            }
+            if (d != null) {
+                d.close();
+            }
+            if (g != null) {
+                g.close();
+            }
+            pair.data = null;
+            pair.grad = null;
+        } finally {
+            ph.clear();
+        }
     }
 
     /**
@@ -235,9 +266,21 @@ public final class GpuTensor implements AutoCloseable {
 
     @Override
     public void close() {
-        if (buf.data != null || buf.grad != null) {
-            closedNormally.set(true);
-            cleanable.clean();
+        if (buf.data == null && buf.grad == null) {
+            return;
+        }
+        closedExplicitly.set(true);
+        if (released.compareAndSet(false, true)) {
+            GpuFloatBuffer d = buf.data;
+            GpuFloatBuffer g = buf.grad;
+            if (d != null) {
+                d.close();
+            }
+            if (g != null) {
+                g.close();
+            }
+            buf.data = null;
+            buf.grad = null;
         }
     }
 

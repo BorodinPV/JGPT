@@ -139,6 +139,7 @@ public final class LLMTrainer {
         GpuPendingGradients.clearAllPendingGpuBuffers();
         GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
         TensorOpsGPU.synchronizeStream();
+        TensorOpsGPU.drainDeferredGpuBuffers();
         /* После eval/sample infer: trim async memory pools — иначе фрагментация и задержка возврата блоков после
          * cudaFreeAsync часто дают ложный OOM на следующем cudaMallocAsync/cudaMalloc. */
         TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
@@ -213,6 +214,7 @@ public final class LLMTrainer {
         model.closeGpuResidentWeights();
         if (TensorOpsGPU.isGpuAvailable()) {
             TensorOpsGPU.synchronizeStream();
+            TensorOpsGPU.drainDeferredGpuBuffers();
             TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
             TensorOpsGPU.cleanupCudaThreadResources();
         }
@@ -228,6 +230,11 @@ public final class LLMTrainer {
     private final GPTModel model;
     private final TrainingConfig config;
     private final DataLoader dataLoader;
+    /**
+     * Отдельный hold-out для {@link #evaluate()}; {@code null} — как раньше, eval идёт по батчам train-loader
+     * (с сохранением/восстановлением индекса).
+     */
+    private final DataLoader evalDataLoader;
     private final AdamOptimizer optimizer;
     private int globalStep;
     private float bestLoss;
@@ -350,7 +357,14 @@ public final class LLMTrainer {
     private volatile boolean exitedDueToSupervisorRequest;
 
     public LLMTrainer(GPTModel model, TrainingConfig config, DataLoader dataLoader) {
-        this(model, config, dataLoader, null, null);
+        this(model, config, dataLoader, null, null, null);
+    }
+
+    /**
+     * @param evalDataLoader hold-out для метрик eval; {@code null} — eval на train-потоке (прежнее поведение).
+     */
+    public LLMTrainer(GPTModel model, TrainingConfig config, DataLoader dataLoader, DataLoader evalDataLoader) {
+        this(model, config, dataLoader, evalDataLoader, null, null);
     }
 
     /**
@@ -365,11 +379,25 @@ public final class LLMTrainer {
             DataLoader dataLoader,
             TrainingEventCallback trainingEventCallback,
             DynamicLossScaler lossScalerOverride) {
+        this(model, config, dataLoader, null, trainingEventCallback, lossScalerOverride);
+    }
+
+    /**
+     * Полный конструктор: опциональный {@code evalDataLoader} для hold-out validation.
+     */
+    public LLMTrainer(
+            GPTModel model,
+            TrainingConfig config,
+            DataLoader dataLoader,
+            DataLoader evalDataLoader,
+            TrainingEventCallback trainingEventCallback,
+            DynamicLossScaler lossScalerOverride) {
         TensorOpsGPU.requireCuda("LLMTrainer");
         this.exitedDueToSupervisorRequest = false;
         this.model = model;
         this.config = config;
         this.dataLoader = dataLoader;
+        this.evalDataLoader = evalDataLoader;
         this.trainingEventCallback =
                 trainingEventCallback != null ? trainingEventCallback : TrainingEventCallback.NOOP;
         this.supervisedStopRequested = false;
@@ -391,6 +419,7 @@ public final class LLMTrainer {
                     totalTrainingSteps,
                     envTrimOrDefault("JGPT_STATS_PRESET", "-"),
                     envTrimOrDefault("JGPT_STATS_PRESET_IDX", "-"));
+            trainingStatsWriter.setEvalDataSource(evalDataLoader != null ? "validation" : "train");
         }
         float wr = config.warmupRatio;
         if (wr > 0f) {
@@ -645,6 +674,41 @@ public final class LLMTrainer {
         return "(задан)";
     }
 
+    /**
+     * Сводка для сопоставимости экспериментов: эффективный batch в токенах, шаги оптимизатора на эпоху, интервал eval
+     * в «эпохах», источник eval (train / hold-out).
+     */
+    private void logExperimentScheduleSummary() {
+        int batches = Math.max(1, dataLoader.numBatches());
+        int acc = Math.max(1, config.accumulationSteps);
+        int optPerEpoch = (batches + acc - 1) / acc;
+        long tokensPerOpt = (long) config.batchSize * (long) acc * (long) config.maxSeqLen;
+        double evalEveryEpochs =
+                optPerEpoch > 0 ? (double) config.evalEverySteps / (double) optPerEpoch : 0d;
+        log.info(
+                "{} эффективный batch: {} токенов на шаг оптимизатора (batch×accum×seq)",
+                LogFmt.badge("EXP"),
+                tokensPerOpt);
+        log.info(
+                "{} ~{} шагов оптимизатора на эпоху; eval каждые {} шагов ≈ каждые {} эпох; базовый LR={}",
+                LogFmt.badge("EXP"),
+                optPerEpoch,
+                config.evalEverySteps,
+                String.format(Locale.ROOT, "%.3f", evalEveryEpochs),
+                String.format(Locale.ROOT, "%.4g", config.learningRate));
+        if (evalDataLoader != null) {
+            log.info(
+                    "{} eval: отдельная валидация — {} окон, до {} полных батчей за проход (train не пересекается)",
+                    LogFmt.badge("EXP"),
+                    evalDataLoader.numSequences(),
+                    evalDataLoader.numBatches());
+        } else {
+            log.info(
+                    "{} eval: по train-потоку (индекс батча сохраняется). Hold-out: задайте JGPT_VAL_FRACTION в AllBooksTrain",
+                    LogFmt.badge("EXP"));
+        }
+    }
+
     public void train() throws IOException {
         exitedDueToSupervisorRequest = false;
         supervisedStopRequested = false;
@@ -671,6 +735,7 @@ public final class LLMTrainer {
                 dataLoader.numSequences(),
                 dataLoader.numBatches(),
                 totalTrainingSteps);
+        logExperimentScheduleSummary();
         if (config.useGpuResident) {
             log.info(
                     config.fullGpuTrainStep
@@ -1162,13 +1227,23 @@ public final class LLMTrainer {
                         }
                         lastEvalLossSnapshot = evalLoss;
                         lastTrainAtEval = avgMicroLoss;
-                        log.info(
-                                "{} эпоха {}/{}: loss={} (лучший сохранённый={})",
-                                LogFmt.badge("EVAL"),
-                                epoch + 1,
-                                config.epochs,
-                                String.format(Locale.ROOT, "%.4f", evalLoss),
-                                formatEvalBestLossForLog(bestLoss));
+                        if (evalDataLoader != null) {
+                            log.info(
+                                    "{} эпоха {}/{}: val_loss={} (лучший по val={})",
+                                    LogFmt.badge("EVAL"),
+                                    epoch + 1,
+                                    config.epochs,
+                                    String.format(Locale.ROOT, "%.4f", evalLoss),
+                                    formatEvalBestLossForLog(bestLoss));
+                        } else {
+                            log.info(
+                                    "{} эпоха {}/{}: eval_loss={} (лучший сохранённый={})",
+                                    LogFmt.badge("EVAL"),
+                                    epoch + 1,
+                                    config.epochs,
+                                    String.format(Locale.ROOT, "%.4f", evalLoss),
+                                    formatEvalBestLossForLog(bestLoss));
+                        }
                         trainingEventCallback.onEvalCompleted(
                                 epoch + 1, evalLoss, bestLoss, improvedBest);
                         if (trainingStatsWriter != null) {
@@ -1257,6 +1332,7 @@ public final class LLMTrainer {
              * накапливает фрагментацию между eval-вызовами: eval+trim происходит 1 раз в ~batch/1 эпох,
              * а временные буферы forward/backward занимают пул между trimами. */
             if (model.isGpuResident() && TensorOpsGPU.isGpuAvailable()) {
+                TensorOpsGPU.drainDeferredGpuBuffers();
                 TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
             }
         }
@@ -1294,6 +1370,7 @@ public final class LLMTrainer {
             GpuPendingGradients.cleanupThreadLocal();
             if (TensorOpsGPU.isGpuAvailable()) {
                 TensorOpsGPU.synchronizeStream();
+                TensorOpsGPU.drainDeferredGpuBuffers();
                 TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
                 TensorOpsGPU.cleanupCudaThreadResources();
             }
@@ -2170,13 +2247,14 @@ public final class LLMTrainer {
      * скаляра loss).
      */
     private float evaluate() {
-        int saved = dataLoader.getCurrentIndex();
+        DataLoader evalLoader = evalDataLoader != null ? evalDataLoader : dataLoader;
+        int saved = evalLoader.getCurrentIndex();
         float total = 0f;
         int n = 0;
-        int maxBatches = Math.min(64, dataLoader.numBatches());
+        int maxBatches = Math.min(64, evalLoader.numBatches());
         boolean deviceLogitsEval = false;
-        for (int i = 0; i < maxBatches && dataLoader.hasMore(); i++) {
-            DataLoader.Batch batch = dataLoader.nextBatch();
+        for (int i = 0; i < maxBatches && evalLoader.hasMore(); i++) {
+            DataLoader.Batch batch = evalLoader.nextBatch();
             int[] inSh = batch.input.getShape();
             int batchSize = inSh[0];
             int seqLen = inSh[1];
@@ -2196,7 +2274,7 @@ public final class LLMTrainer {
             }
             n++;
         }
-        dataLoader.setCurrentIndex(saved);
+        evalLoader.setCurrentIndex(saved);
         if (deviceLogitsEval && n > 0 && TensorOpsGPU.isGpuAvailable()) {
             TensorOpsGPU.synchronizeStream();
         }
@@ -2204,12 +2282,16 @@ public final class LLMTrainer {
             log.warn(
                     "{} ни одного eval-батча (hasMore={}) — не обновляем best/patience early-stop",
                     LogFmt.badge("EVAL"),
-                    dataLoader.hasMore());
+                    evalLoader.hasMore());
             return Float.NaN;
         }
         float loss = total / n;
         float perplexity = (float) Math.exp(loss);
-        log.info("{} перплексия: {}", LogFmt.badge("EVAL"), String.format("%.2f", perplexity));
+        log.info(
+                "{} перплексия: {} ({})",
+                LogFmt.badge("EVAL"),
+                String.format("%.2f", perplexity),
+                evalDataLoader != null ? "hold-out val" : "train stream");
         return loss;
     }
 

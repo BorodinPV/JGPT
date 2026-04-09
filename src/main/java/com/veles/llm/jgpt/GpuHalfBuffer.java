@@ -1,36 +1,37 @@
 package com.veles.llm.jgpt;
 
-import java.lang.ref.Cleaner;
+import java.lang.ref.PhantomReference;
+import java.lang.ref.Reference;
+import java.lang.ref.ReferenceQueue;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Буфер FP16 (half) на GPU: {@code numHalfs} элементов по 2 байта. Используется для кэша активаций при
  * {@code JGPT_ACTIVATION_CACHE_FP16=1}.
+ *
+ * <p>Отложенное освобождение без {@link #close()} — см. {@link #drainLeaked()} (после GC). Предупреждение в stderr,
+ * если {@link #close()} не вызывали.
  */
 public final class GpuHalfBuffer implements AutoCloseable {
 
-    private static final Cleaner CLEANER = Cleaner.create();
+    private static final ReferenceQueue<GpuHalfBuffer> REF_QUEUE = new ReferenceQueue<>();
 
-    private static final class FreeAction implements Runnable {
-        private final long ptr;
-        private final AtomicBoolean closedNormally;
+    private static final class HalfBufferPhantom extends PhantomReference<GpuHalfBuffer> {
+        final long ptr;
+        final AtomicBoolean nativeFreed;
+        final AtomicBoolean closedExplicitly;
 
-        FreeAction(long ptr, AtomicBoolean closedNormally) {
+        HalfBufferPhantom(
+                GpuHalfBuffer referent,
+                ReferenceQueue<GpuHalfBuffer> q,
+                long ptr,
+                AtomicBoolean nativeFreed,
+                AtomicBoolean closedExplicitly) {
+            super(referent, q);
             this.ptr = ptr;
-            this.closedNormally = closedNormally;
-        }
-
-        @Override
-        public void run() {
-            if (ptr != 0L) {
-                if (!closedNormally.get()) {
-                    System.err.println(
-                            "[GpuHalfBuffer] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого буфера @0x"
-                                    + Long.toHexString(ptr));
-                }
-                nativeFree(ptr);
-            }
+            this.nativeFreed = nativeFreed;
+            this.closedExplicitly = closedExplicitly;
         }
     }
 
@@ -38,15 +39,45 @@ public final class GpuHalfBuffer implements AutoCloseable {
         TensorOpsGPU.isGpuAvailable();
     }
 
-    private final AtomicBoolean closedNormally = new AtomicBoolean(false);
-    private final Cleaner.Cleanable cleanable;
+    private final AtomicBoolean closedExplicitly = new AtomicBoolean(false);
+    private final AtomicBoolean nativeFreed = new AtomicBoolean(false);
     private long devicePtr;
     private final long numHalfs;
 
     private GpuHalfBuffer(long devicePtr, long numHalfs) {
         this.devicePtr = devicePtr;
         this.numHalfs = numHalfs;
-        this.cleanable = CLEANER.register(this, new FreeAction(devicePtr, closedNormally));
+        new HalfBufferPhantom(this, REF_QUEUE, devicePtr, nativeFreed, closedExplicitly);
+    }
+
+    /**
+     * Обрабатывает очередь отложенных освобождений (после GC без {@link #close()}). Безопасно вызывать часто.
+     */
+    public static void drainLeaked() {
+        Reference<?> r;
+        while ((r = REF_QUEUE.poll()) != null) {
+            if (r instanceof HalfBufferPhantom ph) {
+                releasePhantom(ph);
+            }
+        }
+    }
+
+    private static void releasePhantom(HalfBufferPhantom ph) {
+        try {
+            if (!ph.nativeFreed.compareAndSet(false, true)) {
+                return;
+            }
+            if (!ph.closedExplicitly.get()) {
+                System.err.println(
+                        "[GpuHalfBuffer] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого буфера @0x"
+                                + Long.toHexString(ph.ptr));
+            }
+            if (TensorOpsGPU.isGpuAvailable() && ph.ptr != 0L) {
+                nativeFree(ph.ptr);
+            }
+        } finally {
+            ph.clear();
+        }
     }
 
     public static GpuHalfBuffer allocate(long numHalfs) {
@@ -84,11 +115,14 @@ public final class GpuHalfBuffer implements AutoCloseable {
 
     @Override
     public void close() {
-        if (devicePtr != 0L) {
-            closedNormally.set(true);
-            cleanable.clean();
-            devicePtr = 0L;
+        if (devicePtr == 0L) {
+            return;
         }
+        closedExplicitly.set(true);
+        if (nativeFreed.compareAndSet(false, true)) {
+            nativeFree(devicePtr);
+        }
+        devicePtr = 0L;
     }
 
     void checkOpen() {

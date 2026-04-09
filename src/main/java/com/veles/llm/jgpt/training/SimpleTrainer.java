@@ -94,6 +94,10 @@ public final class SimpleTrainer {
                 W.get(0, 0),
                 W.get(1, 0),
                 b.get(0));
+
+        TensorOpsGPU.synchronizeStream();
+        TensorOpsGPU.drainDeferredGpuBuffers();
+        TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
     }
 
     /** yPred[i,j] = yLin[i,j] + b[j] */

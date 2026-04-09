@@ -586,6 +586,19 @@ public final class GPTModel {
     }
 
     /**
+     * Отложенные освобождения Java GPU-буферов ({@link TensorOpsGPU#drainDeferredGpuBuffers()}), затем trim async
+     * memory pools — тот же порядок, что в {@link com.veles.llm.jgpt.training.LLMTrainer} перед
+     * {@link TensorOpsGPU#cudaTrimDeviceMemoryPoolsBestEffort()}.
+     */
+    private void drainDeferredGpuBuffersThenTrimPools() {
+        if (!TensorOpsGPU.isGpuAvailable()) {
+            return;
+        }
+        TensorOpsGPU.drainDeferredGpuBuffers();
+        TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+    }
+
+    /**
      * После {@link #destroyDecoderLayerCudaGraphs()} при смене ключа захвата: полная синхронизация устройства и trim
      * memory pools — иначе graph memory pool (CUDA 12+) может давать монотонный рост «использованной» VRAM в
      * {@code cudaMemGetInfo} до отложенного reclaim.
@@ -595,7 +608,7 @@ public final class GPTModel {
             return;
         }
         TensorOpsGPU.synchronizeDevice();
-        TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+        drainDeferredGpuBuffersThenTrimPools();
     }
 
     /** Уничтожает handle'ы в очереди pending без trim (см. {@link #flushPendingDecoderGraphExecDestroy}). */
@@ -1078,7 +1091,7 @@ public final class GPTModel {
                                             freeF,
                                             minFreeB));
                             // #endregion
-                            TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+                            drainDeferredGpuBuffersThenTrimPools();
                         }
                     }
                 }
@@ -1135,7 +1148,7 @@ public final class GPTModel {
                                 }
                                 int cachesReleasedStaging = releaseTransientFloatStagingForAllCaches(cachesPerLayer);
                                 TensorOpsGPU.synchronizeDevice();
-                                TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+                                drainDeferredGpuBuffersThenTrimPools();
                                 // #region agent log
                                 {
                                     long uTrim = TensorOpsGPU.getGpuMemoryAllocated();
@@ -1289,7 +1302,7 @@ public final class GPTModel {
                                             int cachesReleasedStaging =
                                                     releaseTransientFloatStagingForAllCaches(cachesPerLayer);
                                             TensorOpsGPU.synchronizeDevice();
-                                            TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+                                            drainDeferredGpuBuffersThenTrimPools();
                                             // #region agent log
                                             {
                                                 long uTrim = TensorOpsGPU.getGpuMemoryAllocated();

@@ -4,27 +4,24 @@
     <option name="autoReloadType" value="NONE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Добавил материалы для обучения и обновил пресет">
+    <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="refactor(gpu): единый drain отложенных аллокаций в точках синхронизации обучения">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/dashboard.html" beforeDir="false" afterPath="$PROJECT_DIR$/dashboard.html" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.mvn/jvm.config" beforeDir="false" afterPath="$PROJECT_DIR$/.mvn/jvm.config" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/env/02-stable.env" beforeDir="false" afterPath="$PROJECT_DIR$/env/02-stable.env" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/GpuFloatBuffer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/GpuFloatBuffer.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/TensorOpsGPU.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/TensorOpsGPU.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pom.xml" beforeDir="false" afterPath="$PROJECT_DIR$/pom.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/download-lib-ru-library.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/download-lib-ru-library.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/jgpt-smart.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/jgpt-smart.sh" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/AllBooksTrain.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/data/DataLoader.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/data/DataLoader.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/InferChat.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/InferChat.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/LlmTextGeneration.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/app/LlmTextGeneration.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/cuda/GPUTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/cuda/GPUTest.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/GPTModel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/GPTModel.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/TrainingStatsWriter.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/TrainingStatsWriter.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/ops/GpuFloatBufferTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/com/veles/llm/jgpt/ops/GpuFloatBufferTest.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/test/resources/jgpt-training-env-keys.txt" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/resources/jgpt-training-env-keys.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LrRangeFinder.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LrRangeFinder.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/SimpleTrainer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/SimpleTrainer.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/last_step.txt" beforeDir="false" afterPath="$PROJECT_DIR$/state/last_step.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/state/libru_download_tmp/all_links.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/state/libru_download_tmp/failed_links.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/state/libru_download_tmp/index.html" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/state/libru_download_tmp/norm_links.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/state/libru_download_tmp/skipped_links.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/state/libru_download_tmp/text_links.txt" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/state/stats.json" beforeDir="false" afterPath="$PROJECT_DIR$/state/stats.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/state/training.pid" beforeDir="false" afterPath="$PROJECT_DIR$/state/training.pid" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/state/training.pid" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -35,7 +32,7 @@
     <option name="formatViaClangd" value="false" />
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="1439" />
+    <option name="cachedIndexableFilesCount" value="3596" />
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -80,9 +77,10 @@
     &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1&quot;: &quot;true&quot;,
     &quot;dart.analysis.tool.window.visible&quot;: &quot;false&quot;,
     &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;ignore.preview.features.used&quot;: &quot;true&quot;,
     &quot;junie.onboarding.icon.badge.shown&quot;: &quot;true&quot;,
     &quot;kotlin-language-version-configured&quot;: &quot;true&quot;,
-    &quot;last_opened_file_path&quot;: &quot;/home/pavel/Рабочий стол/JGPT&quot;,
+    &quot;last_opened_file_path&quot;: &quot;/home/pavel/Рабочий стол/game-3d&quot;,
     &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
     &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
     &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
@@ -120,7 +118,11 @@
       <workItem from="1775596296264" duration="15097000" />
       <workItem from="1775632547872" duration="6872000" />
       <workItem from="1775699094968" duration="3979000" />
-      <workItem from="1775703505536" duration="5431000" />
+      <workItem from="1775703505536" duration="8759000" />
+      <workItem from="1775713865079" duration="30000" />
+      <workItem from="1775714162175" duration="69000" />
+      <workItem from="1775729466703" duration="2332000" />
+      <workItem from="1775734672020" duration="2568000" />
     </task>
     <task id="LOCAL-00001" summary="Переработка для gpu">
       <option name="closed" value="true" />
@@ -330,7 +332,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775705969132</updated>
     </task>
-    <option name="localTasksCounter" value="27" />
+    <task id="LOCAL-00027" summary="refactor(gpu): единый drain отложенных аллокаций в точках синхронизации обучения">
+      <option name="closed" value="true" />
+      <created>1775709168491</created>
+      <option name="number" value="00027" />
+      <option name="presentableId" value="LOCAL-00027" />
+      <option name="project" value="LOCAL" />
+      <updated>1775709168491</updated>
+    </task>
+    <option name="localTasksCounter" value="28" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -364,7 +374,8 @@
     <MESSAGE value="Имзенил пресеты" />
     <MESSAGE value="Обновил пресеты" />
     <MESSAGE value="Добавил материалы для обучения и обновил пресет" />
-    <option name="LAST_COMMIT_MESSAGE" value="Добавил материалы для обучения и обновил пресет" />
+    <MESSAGE value="refactor(gpu): единый drain отложенных аллокаций в точках синхронизации обучения" />
+    <option name="LAST_COMMIT_MESSAGE" value="refactor(gpu): единый drain отложенных аллокаций в точках синхронизации обучения" />
   </component>
   <component name="XSLT-Support.FileAssociations.UIState">
     <expand />

@@ -2358,12 +2358,26 @@ public final class LLMTrainer {
                                     writeModelWeightsFromSnapshot(name, weightSnap);
                                 } catch (IOException e) {
                                     log.error("Асинхронная запись весов чекпоинта не удалась: {}", name, e);
+                                    return;
+                                }
+                                try {
+                                    CheckpointPruner.pruneAfterSave(dir, name);
+                                } catch (IOException e) {
+                                    log.warn(
+                                            "{} не удалось удалить устаревшие чекпоинты: {}",
+                                            LogFmt.badge("CKPT"),
+                                            e.toString());
                                 }
                             },
                             checkpointIoExecutor);
             log.info("{} веса checkpoint '{}' поставлены в очередь асинхронной записи", LogFmt.badge("CKPT"), name);
         } else {
             saveModelWeights(name);
+            try {
+                CheckpointPruner.pruneAfterSave(dir, name);
+            } catch (IOException e) {
+                log.warn("{} не удалось удалить устаревшие чекпоинты: {}", LogFmt.badge("CKPT"), e.toString());
+            }
         }
     }
 

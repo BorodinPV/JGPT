@@ -69,6 +69,9 @@ public class GPUTest {
                 return;
             }
             runGpuMatmulSanityTiming(warmup, runs, itersPerRun);
+            TensorOpsGPU.synchronizeStream();
+            TensorOpsGPU.drainDeferredGpuBuffers();
+            TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
         }
     }
 

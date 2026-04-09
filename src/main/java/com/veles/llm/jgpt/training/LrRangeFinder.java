@@ -199,6 +199,11 @@ public final class LrRangeFinder {
             if (backup != null) {
                 restoreParameters(parameters, backup);
             }
+            if (TensorOpsGPU.isGpuAvailable()) {
+                TensorOpsGPU.synchronizeStream();
+                TensorOpsGPU.drainDeferredGpuBuffers();
+                TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+            }
         }
 
         float suggested = suggestLr(lrs, losses, lrStart, lrEnd);

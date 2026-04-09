@@ -120,18 +120,28 @@ jgpt_resolve_mvn_command() {
         shift
     done
 
+    # Каталог с .txt для AllBooksTrain (рекурсивно). Пример: JGPT_DATA_DIR=data/books/libru_txt
+    local train_args="--boo ."
+    if [[ -n "${JGPT_DATA_DIR:-}" ]]; then
+        train_args+=" --data-dir ${JGPT_DATA_DIR}"
+    fi
+
     local -a cmd
     if [[ $# -gt 0 ]]; then
+        local user_args="$*"
+        if [[ -n "${JGPT_DATA_DIR:-}" ]]; then
+            user_args+=" --data-dir ${JGPT_DATA_DIR}"
+        fi
         cmd=(
             mvn -q compile exec:java
             -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain
-            "-Dexec.args=$*"
+            "-Dexec.args=${user_args}"
         )
     else
         cmd=(
             mvn -q compile exec:java
             -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain
-            '-Dexec.args=--boo .'
+            "-Dexec.args=${train_args}"
         )
     fi
     JGPT_EXEC_CMD=("${cmd[@]}")
@@ -175,6 +185,7 @@ for arg in "$@"; do
             echo "Остановить: Ctrl+C в этом терминале."
             echo "JGPT_SMART_UPGRADE=1 — включить авто-upgrade к более быстрому пресету (порог: STABLE_EVALS_FOR_UPGRADE)."
             echo "JGPT_SMART_LOG_TO_FILE=0 — не писать [SMART] в training_allbooks.log."
+            echo "JGPT_DATA_DIR=<каталог> — AllBooksTrain: откуда брать .txt (рекурсивно), эквивалент --data-dir."
             echo "JGPT_IF_STEP_BEYOND_PLAN — по умолчанию restart_schedule (см. README); для чистого skip: export перед запуском."
             echo "PLATEAU_MIN_STEP_LINES — мин. число строк [STEP] в сегменте до проверки плато (по умолчанию $PLATEAU_MIN_STEP_LINES)."
             exit 0

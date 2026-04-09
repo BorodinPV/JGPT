@@ -156,7 +156,8 @@
         <profile>
             <id>gc-zgc</id>
             <properties>
-                <jvm.gc.extra>-XX:+UseZGC</jvm.gc.extra>
+<!--                <jvm.gc.extra>-XX:+UseZGC</jvm.gc.extra>-->
+                <jvm.gc.extra>-XX:+UseG1GC</jvm.gc.extra>
             </properties>
         </profile>
 

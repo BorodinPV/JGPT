@@ -21,6 +21,10 @@ PREPARE_TXT="1"
 TXT_OUT_DIR="$ROOT/data/books/libru_txt"
 TXT_MIN_CHARS="500"
 RUSSIAN_ONLY="1"
+# Пусто = скачать все найденные ссылки (их тысячи — прогон может занять много часов).
+MAX_FILES=""
+# Исключить URL, содержащие подстроку (например ".ENG." — англ. издания на зеркале).
+EXCLUDE_URL_SUBSTRS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -40,8 +44,20 @@ while [[ $# -gt 0 ]]; do
       TIMEOUT_SEC="$2"
       shift 2
       ;;
+    --max-files)
+      MAX_FILES="$2"
+      shift 2
+      ;;
+    --exclude-url-substr)
+      EXCLUDE_URL_SUBSTRS+=("$2")
+      shift 2
+      ;;
     --help|-h)
-      echo "Usage: $0 [--out REL_PATH] [--delay SEC] [--retries N] [--timeout SEC] [--extract-zip 0|1] [--extract-dir REL_PATH] [--prepare-txt 0|1] [--txt-out REL_PATH] [--txt-min-chars N] [--russian-only 0|1]"
+      echo "Usage: $0 [--out REL_PATH] [--delay SEC] [--retries N] [--timeout SEC] [--max-files N]"
+      echo "          [--exclude-url-substr SUB] ...  (исключить URL с подстрокой; повторяемый флаг)"
+      echo "          [--extract-zip 0|1] [--extract-dir REL_PATH] [--prepare-txt 0|1] [--txt-out REL_PATH]"
+      echo "          [--txt-min-chars N] [--russian-only 0|1]"
+      echo "Имена .txt при prepare: короткий вид «книга.fb2__…» (без префикса artefact…/books/автор/), без дубликатов одной книги."
       exit 0
       ;;
     --extract-zip)
@@ -219,6 +235,23 @@ with open(outp, "w", encoding="utf-8") as f:
         f.write(n + "\n")
 PY
 
+if ((${#EXCLUDE_URL_SUBSTRS[@]})); then
+  tmp_ex="$NORM_LINKS.excl"
+  cp "$NORM_LINKS" "$tmp_ex"
+  for sub in "${EXCLUDE_URL_SUBSTRS[@]}"; do
+    echo "[libru] Excluding URLs containing: $sub"
+    grep -Fv -- "$sub" "$tmp_ex" > "${tmp_ex}.2" || true
+    mv "${tmp_ex}.2" "$tmp_ex"
+  done
+  mv "$tmp_ex" "$NORM_LINKS"
+fi
+
+if [[ -n "$MAX_FILES" ]]; then
+  head -n "$MAX_FILES" "$NORM_LINKS" > "${NORM_LINKS}.cap"
+  mv "${NORM_LINKS}.cap" "$NORM_LINKS"
+  echo "[libru] Capped download list to first $MAX_FILES URLs (--max-files)."
+fi
+
 : > "$FAILED_LINKS"
 : > "$SKIPPED_LINKS"
 
@@ -289,13 +322,14 @@ echo "[libru] Output dir: $OUT_DIR"
 echo "[libru] Failed links: $FAILED_LINKS"
 
 if [[ "$PREPARE_TXT" == "1" ]]; then
-  SRC_FOR_TXT="$OUT_DIR"
-  if [[ "$EXTRACT_ZIP" == "1" ]]; then
-    SRC_FOR_TXT="$EXTRACT_DIR"
+  # Include both raw downloads (.fb2/.txt) and extracted archives; otherwise zips-only mode skips loose files.
+  PREP_ROOTS=("$OUT_DIR")
+  if [[ "$EXTRACT_ZIP" == "1" && -d "$EXTRACT_DIR" ]]; then
+    PREP_ROOTS+=("$EXTRACT_DIR")
   fi
+  echo "[libru] Preparing training txt from: ${PREP_ROOTS[*]}"
 
-  echo "[libru] Preparing training txt from: $SRC_FOR_TXT"
-  python3 - <<'PY' "$SRC_FOR_TXT" "$TXT_OUT_DIR" "$TXT_MIN_CHARS" "$RUSSIAN_ONLY"
+  python3 - <<'PY' "${PREP_ROOTS[@]}" "$TXT_OUT_DIR" "$TXT_MIN_CHARS" "$RUSSIAN_ONLY"
 import html
 import re
 import sys
@@ -303,13 +337,14 @@ import unicodedata as ud
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-in_dir = Path(sys.argv[1])
-out_dir = Path(sys.argv[2])
-min_chars = int(sys.argv[3])
-russian_only = sys.argv[4] == "1"
+argv = sys.argv[1:]
+russian_only = argv.pop() == "1"
+min_chars = int(argv.pop())
+out_dir = Path(argv.pop())
+in_dirs = [Path(p) for p in argv if Path(p).is_dir()]
 
-if not in_dir.exists():
-    print(f"[prep] Input directory does not exist: {in_dir}")
+if not in_dirs:
+    print("[prep] No input directories.")
     sys.exit(0)
 
 text_exts = {".txt", ".text"}
@@ -392,12 +427,30 @@ def is_probably_russian(text: str, declared_lang: str) -> bool:
 def safe_name(path: Path, root: Path) -> str:
     rel = str(path.relative_to(root).with_suffix(""))
     rel = rel.replace("/", "__")
+    # Один канонический вид имени: «книга.fb2__…», без префикса зеркала в пути —
+    # иначе один и тот же fb2 из архива и из плоского пути попадал в корпус дважды.
+    if "__books__" in rel:
+        tail = rel.split("__books__", 1)[1]
+        if "__" in tail:
+            _author, rest = tail.split("__", 1)
+            rel = rest
     rel = re.sub(r"[^A-Za-z0-9._\-А-Яа-яЁё]+", "_", rel)
     if not rel:
         rel = path.stem
     return rel + ".txt"
 
-files = [p for p in in_dir.rglob("*") if p.is_file()]
+def root_for(path: Path) -> Path:
+    for d in in_dirs:
+        try:
+            path.relative_to(d)
+            return d
+        except ValueError:
+            continue
+    return in_dirs[0]
+
+files = []
+for d in in_dirs:
+    files.extend(p for p in d.rglob("*") if p.is_file())
 written = 0
 skipped_ext = 0
 skipped_short = 0
@@ -419,7 +472,7 @@ for path in files:
         if russian_only and not is_probably_russian(out_text, declared_lang):
             skipped_non_ru += 1
             continue
-        out_path = out_dir / safe_name(path, in_dir)
+        out_path = out_dir / safe_name(path, root_for(path))
         out_path.write_text(out_text + "\n", encoding="utf-8")
         written += 1
     except Exception:

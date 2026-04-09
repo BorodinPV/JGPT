@@ -122,51 +122,61 @@ public final class InferChat {
                         gpuResident);
         model.loadWeights(modelPath.toString());
 
-        if (singlePrompt != null) {
-            String out = LlmTextGeneration.generateText(model, tokenizer, singlePrompt, maxNewTokens, temperature, topK);
-            System.out.println(out);
-            return;
-        }
-
-        java.io.Console console = System.console();
-        if (console == null) {
-            log.error("Нет консоли (System.console() == null). Задайте --prompt \"...\" или запустите из терминала.");
-            System.exit(1);
-        }
-
-        console.printf(
-                "JGPT InferChat — max_new_tokens=%d temperature=%.2f top_k=%d%n"
-                        + "Пустая строка — выход. Команды: quit | exit%n",
-                maxNewTokens,
-                temperature,
-                topK);
-        BufferedReader stdin =
-                new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-        while (true) {
-            console.printf("> ");
-            console.flush();
-            String line = stdin.readLine();
-            if (line == null) {
-                break;
-            }
-            String trimmed = line.trim();
-            if (trimmed.isEmpty()) {
-                break;
-            }
-            if ("quit".equalsIgnoreCase(trimmed) || "exit".equalsIgnoreCase(trimmed)) {
-                break;
-            }
-            try {
+        try {
+            if (singlePrompt != null) {
                 String out =
                         LlmTextGeneration.generateText(
-                                model, tokenizer, trimmed, maxNewTokens, temperature, topK);
+                                model, tokenizer, singlePrompt, maxNewTokens, temperature, topK);
                 System.out.println(out);
-                System.out.println();
-            } catch (Exception e) {
-                log.warn("Генерация: {}", e.getMessage());
+                return;
+            }
+
+            java.io.Console console = System.console();
+            if (console == null) {
+                log.error("Нет консоли (System.console() == null). Задайте --prompt \"...\" или запустите из терминала.");
+                System.exit(1);
+            }
+
+            console.printf(
+                    "JGPT InferChat — max_new_tokens=%d temperature=%.2f top_k=%d%n"
+                            + "Пустая строка — выход. Команды: quit | exit%n",
+                    maxNewTokens,
+                    temperature,
+                    topK);
+            BufferedReader stdin =
+                    new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+            while (true) {
+                console.printf("> ");
+                console.flush();
+                String line = stdin.readLine();
+                if (line == null) {
+                    break;
+                }
+                String trimmed = line.trim();
+                if (trimmed.isEmpty()) {
+                    break;
+                }
+                if ("quit".equalsIgnoreCase(trimmed) || "exit".equalsIgnoreCase(trimmed)) {
+                    break;
+                }
+                try {
+                    String out =
+                            LlmTextGeneration.generateText(
+                                    model, tokenizer, trimmed, maxNewTokens, temperature, topK);
+                    System.out.println(out);
+                    System.out.println();
+                } catch (Exception e) {
+                    log.warn("Генерация: {}", e.getMessage());
+                }
+            }
+            log.info("Выход.");
+        } finally {
+            if (TensorOpsGPU.isGpuAvailable()) {
+                TensorOpsGPU.synchronizeStream();
+                TensorOpsGPU.drainDeferredGpuBuffers();
+                TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
             }
         }
-        log.info("Выход.");
     }
 
     private static LLMConfig geometryFromEnvAndOverrides(int seqLenOverride, int layersOverride) {

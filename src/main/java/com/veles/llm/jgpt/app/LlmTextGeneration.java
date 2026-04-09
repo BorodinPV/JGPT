@@ -13,8 +13,9 @@ import com.veles.llm.jgpt.model.GPTModel;
  * тогда всегда {@link GPTModel#generate} (host {@link com.veles.llm.jgpt.model.KvCache}).
  * <p>
  * Границы GPU: {@link GPTModel#generateGpuKv} вызывает {@link TensorOpsGPU#synchronizeStream()} перед закрытием KV (не
- * {@code cudaDeviceSynchronize} по всему устройству). Для host-KV после генерации — один {@code synchronizeStream},
- * чтобы отложенные кернелы не пересекались со следующим train; при пути {@code generateGpuKv} дополнительного sync нет.
+ * {@code cudaDeviceSynchronize} по всему устройству). После генерации — {@link TensorOpsGPU#synchronizeStream()} (для
+ * host-KV обязателен; для GPU-KV — дополнительная граница перед drain) и
+ * {@link TensorOpsGPU#drainDeferredGpuBuffers()}, чтобы очереди отложенных освобождений VRAM не копились между вызовами.
  */
 public final class LlmTextGeneration {
 
@@ -52,8 +53,9 @@ public final class LlmTextGeneration {
                 gpuKv
                         ? model.generateGpuKv(input, maxNewTokens, temperature, topK)
                         : model.generate(input, maxNewTokens, temperature, topK);
-        if (TensorOpsGPU.isGpuAvailable() && !gpuKv) {
+        if (TensorOpsGPU.isGpuAvailable()) {
             TensorOpsGPU.synchronizeStream();
+            TensorOpsGPU.drainDeferredGpuBuffers();
         }
         float[] buf = generated.internalBuffer();
         int n = buf.length;

@@ -4,6 +4,7 @@ import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.data.BPETokenizer;
 import com.veles.llm.jgpt.data.DataLoader;
 import com.veles.llm.jgpt.model.GPTModel;
+import com.veles.llm.jgpt.training.CheckpointPruner;
 import com.veles.llm.jgpt.training.LLMConfig;
 import com.veles.llm.jgpt.training.LLMTrainer;
 import com.veles.llm.jgpt.training.TrainingConfig;
@@ -51,6 +52,10 @@ import org.slf4j.LoggerFactory;
  *       {@code totalTrainingSteps} (типично после смены пресета/батча): {@code skip} (по умолчанию вне smart),
  *       {@code restart_schedule} (сброс шага и LR-цикла, веса/Adam/best eval сохраняются;
  *       задаётся по умолчанию в {@code scripts/jgpt-smart.sh}), {@code fail} — выход с кодом 2.</li>
+ *   <li><b>JGPT_CKPT_PRUNE</b> — автоматическое удаление старых {@code checkpoint_step_*}/{@code model_step_*}
+ *       и эпоховых снимков (см. {@link CheckpointPruner}); {@code 0} — выключить.
+ *       {@code JGPT_CKPT_KEEP_STEP_SNAPSHOTS} (по умолчанию 2), {@code JGPT_CKPT_KEEP_EPOCH_SNAPSHOTS}
+ *       (по умолчанию 2); {@code 0} = не трогать соответствующий вид файлов.</li>
  * </ul>
  *
  * <p>Пример дообучения после добавления новых книг:
@@ -267,17 +272,40 @@ public final class AllBooksTrain {
             }
         }, "shutdown-ckpt"));
 
-        log.info("=".repeat(60));
-        try {
-            trainer.train();
-        } catch (TrainingPlanExhaustedException e) {
-            log.error("[ALL-BOOKS] {}", e.getMessage());
-            System.exit(2);
+        if (CheckpointPruner.pruningEnabled()) {
+            try {
+                int ks = CheckpointPruner.keepStepSnapshots();
+                if (ks > 0) {
+                    CheckpointPruner.pruneStepTriples(checkpointsDir, ks);
+                }
+                int ke = CheckpointPruner.keepEpochSnapshots();
+                if (ke > 0) {
+                    CheckpointPruner.pruneEpochTriples(checkpointsDir, ke);
+                }
+            } catch (IOException e) {
+                log.warn("[CKPT] не удалось подчистить старые снимки перед обучением: {}", e.getMessage());
+            }
         }
 
-        trainer.saveCheckpoint("final");
-        log.info("[ALL-BOOKS] обучение завершено. Лучший eval loss: {}",
-                String.format("%.4f", trainer.getBestLoss()));
+        log.info("=".repeat(60));
+        try {
+            try {
+                trainer.train();
+            } catch (TrainingPlanExhaustedException e) {
+                log.error("[ALL-BOOKS] {}", e.getMessage());
+                System.exit(2);
+            }
+
+            trainer.saveCheckpoint("final");
+            log.info("[ALL-BOOKS] обучение завершено. Лучший eval loss: {}",
+                    String.format("%.4f", trainer.getBestLoss()));
+        } finally {
+            if (TensorOpsGPU.isGpuAvailable()) {
+                TensorOpsGPU.synchronizeStream();
+                TensorOpsGPU.drainDeferredGpuBuffers();
+                TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+            }
+        }
     }
 
 

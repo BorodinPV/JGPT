@@ -80,7 +80,7 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.2</version>
                 <configuration>
-                    <argLine>${jvm.gc.extra} ${jvm.check.jni} --add-modules=jdk.incubator.vector --enable-preview --sun-misc-unsafe-memory-access=allow -Dtensor.allow.no.gpu=true</argLine>
+                    <argLine>${jvm.gc.extra} ${jvm.check.jni} --add-modules=jdk.incubator.vector --enable-preview --sun-misc-unsafe-memory-access=allow -Djgpt.allow.no.gpu=true</argLine>
                     <!-- Новый JVM на каждый тест-класс: один CUDA-stream + JNI static — иначе классы «трогают» GPU
                          после многопоточного matmul / графов и ломают последующие VRAM-тесты. -->
                     <reuseForks>false</reuseForks>

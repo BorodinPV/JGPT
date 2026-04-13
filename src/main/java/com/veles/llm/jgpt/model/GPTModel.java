@@ -32,9 +32,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.PriorityQueue;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
@@ -52,135 +49,21 @@ public final class GPTModel {
 
     private static final Logger log = LoggerFactory.getLogger(GPTModel.class);
 
-    private static void agentLogB39372LayerGrad(int layer, int flat) {
-        DebugGpuTrain.appendJsonLine(
-                "{\"sessionId\":\"b39372\",\"hypothesisId\":\"H_layer_grad\",\"location\":\"GPTModel.backwardDecoderLayersDevice\",\"message\":\"nonfinite_grad_after_block\",\"data\":{\"layer\":"
-                        + layer
-                        + ",\"flat\":"
-                        + flat
-                        + "},\"timestamp\":"
-                        + System.currentTimeMillis()
-                        + "}");
-    }
-
-    private static void agentLogB39372RmsBuf(
-            String hypothesisId, String location, String message, float a, float b, float c, float d, long n) {
-        DebugGpuTrain.appendJsonLine(
-                "{\"sessionId\":\"b39372\",\"hypothesisId\":\""
-                        + hypothesisId
-                        + "\",\"location\":\""
-                        + location
-                        + "\",\"message\":\""
-                        + message
-                        + "\",\"data\":{\"n\":"
-                        + n
-                        + ",\"s0\":"
-                        + a
-                        + ",\"s1\":"
-                        + b
-                        + ",\"s2\":"
-                        + c
-                        + ",\"s3\":"
-                        + d
-                        + "},\"timestamp\":"
-                        + System.currentTimeMillis()
-                        + "}");
-    }
-
-    /**
-     * mask: b0..b4 = bwdPing,bwdPong,chainPing,chainPong,lmFwdScratch; b5..b8 = lastHidden,xBeforeNorm,lastLogits,
-     * lastLogitsGrad (1 if cleared).
-     */
-    private static void agentLogB39372ScratchHandoff(int mask) {
-        DebugGpuTrain.appendJsonLine(
-                "{\"sessionId\":\"b39372\",\"hypothesisId\":\"H_scratch_handoff\",\"location\":\"GPTModel.clearGpuResidentDecoderScratchForTrainHandoff\",\"message\":\"cleared_resident_scratch\",\"data\":{\"mask\":"
-                        + mask
-                        + "},\"timestamp\":"
-                        + System.currentTimeMillis()
-                        + "}");
-    }
-
-    private static final AtomicBoolean FUSED_LM_HEAD_FAILURE_LOGGED = new AtomicBoolean();
-
-    /** Env {@code JGPT_FUSED_LM_HEAD}: один JNI RMSNorm + matmul на LM-head (см. {@link TensorOpsGPU#rmsNormMatmulLmHeadGpuDevice}). */
-    private static boolean fusedLmHeadFromEnv() {
-        String e = System.getenv("JGPT_FUSED_LM_HEAD");
-        if (e == null) {
-            return false;
-        }
-        String t = e.trim();
-        return "1".equals(t) || "true".equalsIgnoreCase(t);
-    }
-
-    private static void applyLmHeadSplitOps(
-            GpuFloatBuffer xBeforeNorm,
-            GpuFloatBuffer gamma,
-            float eps,
-            GpuFloatBuffer normScratch,
-            GpuFloatBuffer w,
-            GpuFloatBuffer logitsOut,
-            int rows,
-            int dModel,
-            int vocab) {
-        TensorOpsGPU.rmsNormGpuDevice(xBeforeNorm, gamma, eps, normScratch, rows, dModel);
-        TensorOpsGPU.matmulGpuDevice(normScratch, w, logitsOut, rows, dModel, vocab);
-    }
-
-    /**
-     * Предпочитает fused JNI при {@link #fusedLmHeadFromEnv()}; при {@link Throwable} — один раз в лог и откат на
-     * раздельный путь (ядро/линковка/JNI).
-     */
-    private void applyLmHeadFusedPreferredThenSplit(
-            GpuFloatBuffer xBeforeNorm,
-            GpuFloatBuffer gamma,
-            float eps,
-            GpuFloatBuffer normScratch,
-            GpuFloatBuffer w,
-            GpuFloatBuffer logitsOut,
-            int rows,
-            int dModel,
-            int vocab) {
-        if (!fusedLmHeadFromEnv()) {
-            applyLmHeadSplitOps(xBeforeNorm, gamma, eps, normScratch, w, logitsOut, rows, dModel, vocab);
-            return;
-        }
-        try {
-            TensorOpsGPU.rmsNormMatmulLmHeadGpuDevice(
-                    xBeforeNorm,
-                    gamma,
-                    eps,
-                    normScratch,
-                    w,
-                    logitsOut,
-                    rows,
-                    dModel,
-                    vocab,
-                    TensorOpsGPU.useFp16Matmul());
-        } catch (Throwable t) {
-            if (FUSED_LM_HEAD_FAILURE_LOGGED.compareAndSet(false, true)) {
-                log.warn(
-                        "JGPT_FUSED_LM_HEAD: fused LM head недоступен или выбросил исключение; откат на RMSNorm+matmul ({})",
-                        t.toString());
-            }
-            applyLmHeadSplitOps(xBeforeNorm, gamma, eps, normScratch, w, logitsOut, rows, dModel, vocab);
-        }
-    }
-
     /** Бинарный формат {@link com.veles.llm.jgpt.training.LLMTrainer#saveModelWeights(String)} (UTF-тег + raw float). */
     public static final String MODEL_WEIGHTS_FORMAT_V1 = "veles.weights.v1";
 
-    private final int vocabSize;
-    private final int maxSeqLen;
-    private final int dModel;
-    private final int numHeads;
-    private final int numLayers;
-    private final int dIntermediate;
+    final int vocabSize;
+    final int maxSeqLen;
+    final int dModel;
+    final int numHeads;
+    final int numLayers;
+    final int dIntermediate;
 
-    private final TokenEmbedding tokenEmbedding;
-    private final PositionEmbedding positionEmbedding;
-    private final DecoderBlock[] blocks;
-    private final Tensor layerNormFinal;
-    private final Tensor lmHead;
+    final TokenEmbedding tokenEmbedding;
+    final PositionEmbedding positionEmbedding;
+    final DecoderBlock[] blocks;
+    final Tensor layerNormFinal;
+    final Tensor lmHead;
 
     /**
      * При {@code true} (и доступной CUDA) дубликаты {@link #layerNormFinal} и {@link #lmHead} лежат в
@@ -191,7 +74,7 @@ public final class GPTModel {
     private final GptGpuWeights gpuResidentHead;
 
     /** VRAM-копии весов декодер-слоя (pre-norm + Q/K/V/O + FFN); без H2D весов в fused/attention путях. */
-    private final GptGpuDecoderLayerGpuWeights[] gpuDecoderLayer;
+    final GptGpuDecoderLayerGpuWeights[] gpuDecoderLayer;
 
     /**
      * {@code true} если GPU-резидентно и decoder-pipeline разрешён (env {@code JGPT_DECODER_GPU_PIPELINE=1}
@@ -202,36 +85,34 @@ public final class GPTModel {
     /**
      * Запрошен env {@code JGPT_DECODER_LAYER_CUDA_GRAPH}: при успешном захвате — один graph exec на слой (MHA+FFN).
      */
-    private final boolean decoderLayerCudaGraphWanted;
+    final boolean decoderLayerCudaGraphWanted;
 
     /** native {@code cudaGraphExec_t} на слой; {@code 0} — ещё не захвачен или сброшен. */
-    private final long[] decoderLayerGraphExec;
+    final long[] decoderLayerGraphExec;
 
-    private int decoderLayerGraphCaptureKey = Integer.MIN_VALUE;
+    int decoderLayerGraphCaptureKey = Integer.MIN_VALUE;
 
-    private boolean decoderLayerGraphRuntimeDisabled;
+    boolean decoderLayerGraphRuntimeDisabled;
 
     /**
      * Env {@code JGPT_DECODER_LAYER_CUDA_GRAPH_LOG=1}: логи указателей и сравнение снимка с момента capture (см.
      * {@link LLMConfig#decoderLayerCudaGraphDebugLogFromEnvOrProp()}).
      */
-    private final boolean decoderLayerCudaGraphDebugLog;
+    final boolean decoderLayerCudaGraphDebugLog;
 
     /**
      * При debug: числовой снимок device pointer'ов после успешного {@code cudaStreamEndCapture} для слоя; иначе
      * {@code null}.
      */
-    private long[][] decoderLayerGraphDebugCaptureSnapshot;
+    long[][] decoderLayerGraphDebugCaptureSnapshot;
 
     /**
      * Exec-объекты промежуточных слоёв, отложенные до конца {@link #runDecoderStackLayers}: один batched destroy +
      * trim в {@link #flushPendingDecoderGraphExecDestroy()}.
      */
-    private long[] decoderLayerGraphExecPendingDestroy;
+    long[] decoderLayerGraphExecPendingDestroy;
 
-    private int decoderLayerGraphExecPendingDestroyCount;
-
-    private static final int DECODER_GRAPH_DEVICE_SNAPSHOT_LEN = 15;
+    int decoderLayerGraphExecPendingDestroyCount;
 
     /** Счётчик вызовов {@link #forwardGpuDecoder} для {@link LLMConfig#trainVramStepProbeFromEnvOrProp()}. */
     private static final AtomicLong trainDecoderVramProbeSeq = new AtomicLong();
@@ -240,7 +121,7 @@ public final class GPTModel {
     private boolean deviceLogitsEnabled;
 
     /** Decoder backward на VRAM; включается через {@link #setDeviceDecoderBackward(boolean)}. */
-    private boolean deviceDecoderBackward;
+    boolean deviceDecoderBackward;
 
     /** Скрытое состояние перед LM head (после финального RMSNorm); для backward последнего слоя. */
     private Tensor lastHidden;
@@ -252,7 +133,7 @@ public final class GPTModel {
     private volatile BlockActivationCache[] blockCaches;
 
     /** Device-копии активаций по слоям для полного decoder backward без host round-trip. */
-    private volatile BlockActivationCacheDevice[] blockCachesDevice;
+    volatile BlockActivationCacheDevice[] blockCachesDevice;
 
     /**
      * Сохранять активации блока в FP16 в {@link BlockActivationCache} (env {@code
@@ -263,7 +144,7 @@ public final class GPTModel {
     /** Последний вызов {@link #forward(Tensor, boolean)}: было ли {@code training=true}. */
     private boolean lastForwardWasTraining;
 
-    private Tensor lastMask;
+    Tensor lastMask;
     private Tensor cachedCausalMask;
     private int cachedCausalMaskSeqLen = -1;
     private Tensor cachedLmHeadTranspose;
@@ -272,7 +153,7 @@ public final class GPTModel {
     /** Кэш {@link #gpuTensorByTrainableParameter()}: пересоздаётся только при явном сбросе. */
     private Map<Tensor, GpuTensor> cachedGpuParamMap;
     private boolean cachedGpuParamMapValid;
-    private Tensor lastInputTokens;
+    Tensor lastInputTokens;
     private int lastSeqLen;
     private Tensor backwardGradHidden;
     private Tensor backwardGradBeforeNorm;
@@ -289,8 +170,8 @@ public final class GPTModel {
     private int lastSampledCandidateCount;
 
     /** Ping-pong ∂L/∂x между decoder-слоями на VRAM при {@link #deviceDecoderBackward}. */
-    private GpuFloatBuffer decoderBwdGradPing;
-    private GpuFloatBuffer decoderBwdGradPong;
+    GpuFloatBuffer decoderBwdGradPing;
+    GpuFloatBuffer decoderBwdGradPong;
 
     /**
      * [batch, seq, d_model] на VRAM: gather токенов + позиции без D2H между ними (см. {@link #ensureEmbeddingScratchGpu}).
@@ -301,17 +182,17 @@ public final class GPTModel {
     private int embeddingScratchSeqLen = -1;
 
     /** Цепочка decoder: ping-pong на VRAM без D2H между слоями ({@link #forwardGpuDecoder}). */
-    private GpuFloatBuffer decoderChainPing;
+    GpuFloatBuffer decoderChainPing;
 
-    private GpuFloatBuffer decoderChainPong;
+    GpuFloatBuffer decoderChainPong;
 
     /**
      * Strided-batched QKV/FFN pack на VRAM при {@link #decoderLayerCudaGraphWanted}: фиксированные указатели для
      * {@link TensorOpsGPU#setStridedBatchedPackOverride} на время {@link #runDecoderStackLayers} (инвариант CUDA graph).
      */
-    private GpuFloatBuffer decoderGraphStridedPackW;
+    GpuFloatBuffer decoderGraphStridedPackW;
 
-    private GpuFloatBuffer decoderGraphStridedPackC;
+    GpuFloatBuffer decoderGraphStridedPackC;
 
     /** RMSNorm перед LM head на VRAM ({@link #forwardGpuLmHeadFromDevice}). */
     private GpuFloatBuffer lmHeadNormScratchGpu;
@@ -322,20 +203,20 @@ public final class GPTModel {
      */
     private float[] logitsShapeStub;
 
-    /** Одна строка логитов для {@link #sampleNextToken} без порчи буфера logits. */
-    private float[] sampleLogitsScratch;
+    /** Одна строка логитов для {@link GptAutoregressiveGenerator#sampleNextToken} без порчи буфера logits. */
+    float[] sampleLogitsScratch;
 
     /** Маска «входит в top-k» при сэмплинге; совпадает с порогом стабильной сортировки по (logit↓, индекс↑). */
-    private boolean[] sampleTopKMember;
+    boolean[] sampleTopKMember;
 
     /** Переиспользование {@code [1,1]} в {@link #generate} (декодирование одного токена). */
-    private Tensor reusableDecodeOneToken;
+    Tensor reusableDecodeOneToken;
 
     /**
      * Слайс токенов {@code [1, sliceLen]} при скользящем KV-окне: один экземпляр на ту же длину {@code sliceLen},
      * чтобы не аллоцировать тензор на каждом срабатывании (длина может меняться между шагами).
      */
-    private Tensor reusableSlidingPrefillInput;
+    Tensor reusableSlidingPrefillInput;
 
     public GPTModel(
             int vocabSize,
@@ -545,11 +426,13 @@ public final class GPTModel {
             return cachedGpuParamMap;
         }
         Map<Tensor, GpuTensor> map = new IdentityHashMap<>();
-        if (tokenEmbedding.weightsGpu != null) {
-            map.put(tokenEmbedding.weights, tokenEmbedding.weightsGpu);
+        GpuTensor tokEmbGpu = tokenEmbedding.deviceWeightsOrNull();
+        if (tokEmbGpu != null) {
+            map.put(tokenEmbedding.hostWeights(), tokEmbGpu);
         }
-        if (positionEmbedding.weightsGpu != null) {
-            map.put(positionEmbedding.weights, positionEmbedding.weightsGpu);
+        GpuTensor posEmbGpu = positionEmbedding.deviceWeightsOrNull();
+        if (posEmbGpu != null) {
+            map.put(positionEmbedding.hostWeights(), posEmbGpu);
         }
         for (int i = 0; i < numLayers; i++) {
             gpuDecoderLayer[i].collectMapping(map);
@@ -570,394 +453,9 @@ public final class GPTModel {
     }
 
     private void destroyDecoderLayerCudaGraphs() {
-        destroyPendingDecoderGraphExecQueuedHandles();
-        if (decoderLayerGraphExec == null) {
-            return;
-        }
-        for (int i = 0; i < decoderLayerGraphExec.length; i++) {
-            if (decoderLayerGraphExec[i] != 0L) {
-                TensorOpsGPU.cudaGraphExecDestroy(decoderLayerGraphExec[i]);
-                decoderLayerGraphExec[i] = 0L;
-            }
-        }
-        if (decoderLayerGraphDebugCaptureSnapshot != null) {
-            Arrays.fill(decoderLayerGraphDebugCaptureSnapshot, null);
-        }
+        GptDecoderStackRunner.destroyDecoderLayerCudaGraphs(this);
     }
 
-    /**
-     * Отложенные освобождения Java GPU-буферов ({@link TensorOpsGPU#drainDeferredGpuBuffers()}), затем trim async
-     * memory pools — тот же порядок, что в {@link com.veles.llm.jgpt.training.LLMTrainer} перед
-     * {@link TensorOpsGPU#cudaTrimDeviceMemoryPoolsBestEffort()}.
-     */
-    private void drainDeferredGpuBuffersThenTrimPools() {
-        if (!TensorOpsGPU.isGpuAvailable()) {
-            return;
-        }
-        TensorOpsGPU.drainDeferredGpuBuffers();
-        TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
-    }
-
-    /**
-     * После {@link #destroyDecoderLayerCudaGraphs()} при смене ключа захвата: полная синхронизация устройства и trim
-     * memory pools — иначе graph memory pool (CUDA 12+) может давать монотонный рост «использованной» VRAM в
-     * {@code cudaMemGetInfo} до отложенного reclaim.
-     */
-    private void trimDecoderGraphMemoryAfterExecDestroy() {
-        if (!TensorOpsGPU.isGpuAvailable()) {
-            return;
-        }
-        TensorOpsGPU.synchronizeDevice();
-        drainDeferredGpuBuffersThenTrimPools();
-    }
-
-    /** Уничтожает handle'ы в очереди pending без trim (см. {@link #flushPendingDecoderGraphExecDestroy}). */
-    private void destroyPendingDecoderGraphExecQueuedHandles() {
-        if (decoderLayerGraphExecPendingDestroyCount == 0) {
-            return;
-        }
-        for (int i = 0; i < decoderLayerGraphExecPendingDestroyCount; i++) {
-            long ex = decoderLayerGraphExecPendingDestroy[i];
-            if (ex != 0L) {
-                TensorOpsGPU.cudaGraphExecDestroy(ex);
-            }
-            decoderLayerGraphExecPendingDestroy[i] = 0L;
-        }
-        decoderLayerGraphExecPendingDestroyCount = 0;
-    }
-
-    /**
-     * Откладывает destroy exec текущего слоя до конца forward: все накопленные exec уничтожаются одним блоком в
-     * {@link #flushPendingDecoderGraphExecDestroy()} с одним trim вместо N отдельных.
-     */
-    private void scheduleDecoderGraphExecDestroyIfNotLast(int layerIndex, int numLayers) {
-        if (decoderLayerGraphExec == null || layerIndex >= numLayers - 1) {
-            return;
-        }
-        long ex = decoderLayerGraphExec[layerIndex];
-        if (ex == 0L) {
-            return;
-        }
-        if (decoderLayerGraphExecPendingDestroy == null
-                || decoderLayerGraphExecPendingDestroy.length < numLayers) {
-            decoderLayerGraphExecPendingDestroy = new long[numLayers];
-        }
-        decoderLayerGraphExecPendingDestroy[decoderLayerGraphExecPendingDestroyCount++] = ex;
-        decoderLayerGraphExec[layerIndex] = 0L;
-        if (decoderLayerGraphDebugCaptureSnapshot != null) {
-            decoderLayerGraphDebugCaptureSnapshot[layerIndex] = null;
-        }
-    }
-
-    /**
-     * Уничтожает все exec, накопленные за этот forward, и делает один trim — вместо N отдельных synchronize + trim
-     * после каждого слоя.
-     */
-    private void flushPendingDecoderGraphExecDestroy() {
-        if (decoderLayerGraphExecPendingDestroyCount == 0) {
-            return;
-        }
-        destroyPendingDecoderGraphExecQueuedHandles();
-        trimDecoderGraphMemoryAfterExecDestroy();
-    }
-
-    /** Сколько кэшей реально освободили staging; см. {@link BlockActivationCacheDevice#releaseTransientFloatStagingBuffers()}. */
-    private static int releaseTransientFloatStagingForAllCaches(BlockActivationCacheDevice[] caches) {
-        int n = 0;
-        if (caches == null) {
-            return 0;
-        }
-        for (BlockActivationCacheDevice c : caches) {
-            if (c != null && c.releaseTransientFloatStagingBuffers()) {
-                n++;
-            }
-        }
-        return n;
-    }
-
-    private static boolean decoderGraphDeviceSnapshotsEqual(long[] a, long[] b) {
-        if (a == null || b == null || a.length != b.length) {
-            return false;
-        }
-        return Arrays.equals(a, b);
-    }
-
-    private long[] computeDecoderGraphDeviceSnapshot(
-            GpuFloatBuffer cur,
-            GpuFloatBuffer attnOut,
-            GpuFloatBuffer blockOut,
-            BlockActivationCacheDevice layerCache) {
-        long[] nat = TensorOpsGPU.decoderGraphDebugNativeAuxSnapshot();
-        long[] s = new long[DECODER_GRAPH_DEVICE_SNAPSHOT_LEN];
-        s[0] = decoderGraphStridedPackW != null && !decoderGraphStridedPackW.isClosed()
-                ? decoderGraphStridedPackW.devicePointer()
-                : 0L;
-        s[1] = decoderGraphStridedPackC != null && !decoderGraphStridedPackC.isClosed()
-                ? decoderGraphStridedPackC.devicePointer()
-                : 0L;
-        s[2] = decoderChainPing != null && !decoderChainPing.isClosed() ? decoderChainPing.devicePointer() : 0L;
-        s[3] = decoderChainPong != null && !decoderChainPong.isClosed() ? decoderChainPong.devicePointer() : 0L;
-        s[4] = cur != null && !cur.isClosed() ? cur.devicePointer() : 0L;
-        s[5] = attnOut != null && !attnOut.isClosed() ? attnOut.devicePointer() : 0L;
-        s[6] = blockOut != null && !blockOut.isClosed() ? blockOut.devicePointer() : 0L;
-        s[7] = layerCache != null ? layerCache.graphCaptureGeneration() : 0L;
-        s[8] = 0L;
-        s[9] = 0L;
-        s[10] = 0L;
-        if (layerCache != null) {
-            layerCache.fillDecoderGraphDebugSnapshotSlots(s);
-        }
-        s[11] = nat[0];
-        s[12] = nat[1];
-        s[13] = nat[2];
-        s[14] = nat[3];
-        return s;
-    }
-
-    private String formatDecoderGraphPointerLine(
-            String phase,
-            int layer,
-            long exec,
-            GpuFloatBuffer cur,
-            GpuFloatBuffer attnOut,
-            GpuFloatBuffer blockOut,
-            BlockActivationCacheDevice layerCache) {
-        StringBuilder sb = new StringBuilder(320);
-        sb.append(phase)
-                .append(" layer=")
-                .append(layer)
-                .append(" exec=0x")
-                .append(Long.toHexString(exec))
-                .append(" captureKey=")
-                .append(decoderLayerGraphCaptureKey);
-        if (decoderGraphStridedPackW != null && !decoderGraphStridedPackW.isClosed()) {
-            sb.append(" packW=0x").append(Long.toHexString(decoderGraphStridedPackW.devicePointer()));
-        }
-        if (decoderGraphStridedPackC != null && !decoderGraphStridedPackC.isClosed()) {
-            sb.append(" packC=0x").append(Long.toHexString(decoderGraphStridedPackC.devicePointer()));
-        }
-        if (decoderChainPing != null && !decoderChainPing.isClosed()) {
-            sb.append(" ping=0x").append(Long.toHexString(decoderChainPing.devicePointer()));
-        }
-        if (decoderChainPong != null && !decoderChainPong.isClosed()) {
-            sb.append(" pong=0x").append(Long.toHexString(decoderChainPong.devicePointer()));
-        }
-        if (cur != null && !cur.isClosed()) {
-            sb.append(" cur=0x").append(Long.toHexString(cur.devicePointer()));
-        }
-        if (attnOut != null && !attnOut.isClosed()) {
-            sb.append(" attnOut=0x").append(Long.toHexString(attnOut.devicePointer()));
-        }
-        if (blockOut != null && !blockOut.isClosed()) {
-            sb.append(" blockOut=0x").append(Long.toHexString(blockOut.devicePointer()));
-        }
-        if (layerCache != null) {
-            sb.append(' ');
-            layerCache.appendDecoderGraphDevicePointers(sb);
-        }
-        long[] na = TensorOpsGPU.decoderGraphDebugNativeAuxSnapshot();
-        sb.append(" nativeAuxNonGraph=0x")
-                .append(Long.toHexString(na[0]))
-                .append(" sz=")
-                .append(na[2])
-                .append(" nativeAuxGraph=0x")
-                .append(Long.toHexString(na[1]))
-                .append(" sz=")
-                .append(na[3]);
-        return sb.toString();
-    }
-
-    // #region agent log
-    private void logDecoderGraphB39372Failure(String phase, int layer, long exec, int batch, int seqLen) {
-        long[] pr = TensorOpsGPU.decoderGraphLaunchProbe(exec);
-        long[] na = TensorOpsGPU.decoderGraphDebugNativeAuxSnapshot();
-        CursorDebugB39372.appendJson(
-                "H5",
-                "GPTModel.runDecoderStackLayers",
-                "graphLaunchFailed",
-                String.format(
-                        Locale.ROOT,
-                        "\"phase\":\"%s\",\"layer\":%d,\"batch\":%d,\"seqLen\":%d,\"exec\":%d,\"captureKey\":%d,"
-                                + "\"threadId\":%d,\"flash\":%b,\"probeDev\":%d,\"probeCap\":%d,\"probeQuery\":%d,"
-                                + "\"probeNoPreSyncEnv\":%d,\"probeDriver\":%d,\"probeRuntime\":%d,\"probeExecFlags\":%d,"
-                                + "\"probeStream\":%d,\"nativeAuxNonGraph\":%d,\"nativeAuxGraph\":%d,"
-                                + "\"nativeAuxNonGraphSz\":%d,\"nativeAuxGraphSz\":%d",
-                        phase,
-                        layer,
-                        batch,
-                        seqLen,
-                        exec,
-                        decoderLayerGraphCaptureKey,
-                        Thread.currentThread().threadId(),
-                        TensorOpsGPU.FLASH_ATTENTION,
-                        pr.length > 0 ? pr[0] : -1L,
-                        pr.length > 1 ? pr[1] : -1L,
-                        pr.length > 2 ? pr[2] : -1L,
-                        pr.length > 3 ? pr[3] : -1L,
-                        pr.length > 4 ? pr[4] : -1L,
-                        pr.length > 5 ? pr[5] : -1L,
-                        pr.length > 6 ? pr[6] : -1L,
-                        pr.length > 7 ? pr[7] : -1L,
-                        na.length > 0 ? na[0] : -1L,
-                        na.length > 1 ? na[1] : -1L,
-                        na.length > 2 ? na[2] : -1L,
-                        na.length > 3 ? na[3] : -1L));
-    }
-
-    private void logDecoderGraphB39372PreLaunch(int layer, long exec, int batch, int seqLen) {
-        if (!CursorDebugB39372.verboseDecoderGraph()) {
-            return;
-        }
-        long[] pr = TensorOpsGPU.decoderGraphLaunchProbe(exec);
-        CursorDebugB39372.appendJson(
-                "H2",
-                "GPTModel.runDecoderStackLayers",
-                "preGraphLaunch",
-                String.format(
-                        Locale.ROOT,
-                        "\"layer\":%d,\"batch\":%d,\"seqLen\":%d,\"exec\":%d,\"captureKey\":%d,\"probeDev\":%d,"
-                                + "\"probeCap\":%d,\"probeQuery\":%d,\"probeNoPreSyncEnv\":%d,\"probeDriver\":%d,"
-                                + "\"probeRuntime\":%d,\"probeExecFlags\":%d,\"probeStream\":%d",
-                        layer,
-                        batch,
-                        seqLen,
-                        exec,
-                        decoderLayerGraphCaptureKey,
-                        pr.length > 0 ? pr[0] : -1L,
-                        pr.length > 1 ? pr[1] : -1L,
-                        pr.length > 2 ? pr[2] : -1L,
-                        pr.length > 3 ? pr[3] : -1L,
-                        pr.length > 4 ? pr[4] : -1L,
-                        pr.length > 5 ? pr[5] : -1L,
-                        pr.length > 6 ? pr[6] : -1L,
-                        pr.length > 7 ? pr[7] : -1L));
-    }
-    // #endregion
-
-    private void disableDecoderLayerCudaGraph(String reason) {
-        if (decoderLayerGraphRuntimeDisabled) {
-            return;
-        }
-        decoderLayerGraphRuntimeDisabled = true;
-        destroyDecoderLayerCudaGraphs();
-        decoderLayerGraphCaptureKey = Integer.MIN_VALUE;
-        if (decoderLayerCudaGraphWanted) {
-            log.warn("JGPT_DECODER_LAYER_CUDA_GRAPH: отключён ({}).", reason);
-        }
-    }
-
-    private int decoderLayerGraphKey(
-            Tensor mask, boolean trainingStep, int batch, int seqLen, long decoderStackInputDevicePtr) {
-        int fp16Mm = TensorOpsGPU.useFp16Matmul() ? 1 : 0;
-        int maskId = mask == null ? 0 : System.identityHashCode(mask);
-        int cacheFp16 = 0;
-        long cacheGen = 0L;
-        if (trainingStep && blockCachesDevice != null && blockCachesDevice.length > 0) {
-            if (blockCachesDevice[0] != null) {
-                cacheFp16 = blockCachesDevice[0].isFp16ActivationStorage() ? 1 : 0;
-            }
-            for (BlockActivationCacheDevice c : blockCachesDevice) {
-                if (c != null) {
-                    cacheGen = cacheGen * 31L + c.graphCaptureGeneration();
-                }
-            }
-        }
-        /*
-         * Обязательно различать training vs infer в ключе: при cacheFp16==0 (нет FP16-хранения в кэше) и одинаковых
-         * batch/seq/mask ключ совпадал бы с {@link #forwardGpuDecoderInfer} (layerCache=null), и следующий train-step
-         * мог бы replay графа без записи активаций в {@link BlockActivationCacheDevice} → битый backward / non-finite.
-         *
-         * cacheGen + flash: при перевыделении VRAM-слотов / LSE+O_heads (Flash) или пуле кэша указатели в графе
-         * устаревают — ключ должен измениться до cudaGraphExecLaunch.
-         *
-         * decoderStackInputDevicePtr: для слоя 0 в граф попадает {@code cur} = вход стека (выход
-         * {@link #forwardGpuEmbeddings} / {@link #ensureEmbeddingScratchGpu}). При смене batch/seq буфер
-         * эмбеддинга перевыделяется — тот же (batch,seq,…) давал бы stale pointers и cudaGraphLaunch invalid argument.
-         *
-         * <p>Native thread-local буферы (SDPA graph aux, prewarm {@code tl_graph_sdpa_warmup}, Flash {@code tl_fa_D},
-         * QKV pack override/TL — см. {@link TensorOpsGPU#decoderGraphNativeStabilityToken()}): при перевыделении указатели
-         * в {@code cudaGraphExec} устаревают. Пересчёт ключа после {@link TensorOps#primeDecoderGraphLayerWorkspaces}.
-         */
-        int trainMode = trainingStep ? 1 : 0;
-        int flash = TensorOpsGPU.FLASH_ATTENTION ? 1 : 0;
-        long nativeGraphAuxToken = TensorOpsGPU.decoderGraphNativeStabilityToken();
-        return Objects.hash(
-                batch,
-                seqLen,
-                dModel,
-                numHeads,
-                maskId,
-                fp16Mm,
-                cacheFp16,
-                trainMode,
-                flash,
-                cacheGen,
-                decoderStackInputDevicePtr,
-                nativeGraphAuxToken);
-    }
-
-    /**
-     * Гарантирует pack-буферы под decoder CUDA graph; при росте — сбрасывает exec (новые указатели).
-     */
-    private void ensureDecoderGraphStridedPacks(long rows) {
-        long[] need = TensorOpsGPU.stridedBatchedPackNeed(rows, dModel, dIntermediate);
-        long wNeed = need[0];
-        long cNeed = need[1];
-        boolean needGrow =
-                decoderGraphStridedPackW == null
-                        || decoderGraphStridedPackW.isClosed()
-                        || decoderGraphStridedPackW.numFloats() < wNeed
-                        || decoderGraphStridedPackC == null
-                        || decoderGraphStridedPackC.isClosed()
-                        || decoderGraphStridedPackC.numFloats() < cNeed;
-        if (!needGrow) {
-            return;
-        }
-        destroyDecoderLayerCudaGraphs();
-        /* Не сбрасывать decoderLayerGraphCaptureKey: он уже совпадает с текущим nk из runDecoderStackLayers;
-         * иначе на следующем forward сработает ложное «ключ изменился» и графы пересоздадутся дважды подряд. */
-        decoderGraphStridedPackW = closeGpuBuffer(decoderGraphStridedPackW);
-        decoderGraphStridedPackC = closeGpuBuffer(decoderGraphStridedPackC);
-        decoderGraphStridedPackW = GpuFloatBuffer.allocate(wNeed);
-        decoderGraphStridedPackC = GpuFloatBuffer.allocate(cNeed);
-    }
-
-    private boolean runDecoderLayerResidentEager(
-            int layer,
-            GpuFloatBuffer cur,
-            GpuFloatBuffer attnOut,
-            GpuFloatBuffer blockOut,
-            Tensor mask,
-            int batch,
-            int seqLen,
-            BlockActivationCacheDevice devCache) {
-        if (!TensorOps.multiHeadAttentionResidentDeviceToDevice(
-                cur,
-                attnOut,
-                TensorOpsGPU.rmsNormEps(),
-                gpuDecoderLayer[layer].attnBuffers(),
-                batch,
-                seqLen,
-                dModel,
-                numHeads,
-                mask,
-                true,
-                devCache)) {
-            return false;
-        }
-        return TensorOps.fusedNormResidualSwiGLUResidentDeviceToDevice(
-                attnOut,
-                blockOut,
-                gpuDecoderLayer[layer].ffnBuffers(),
-                batch,
-                seqLen,
-                dModel,
-                devCache);
-    }
-
-    /**
-     * @return активации после последнего блока (planar на GPU)
-     */
     private GpuFloatBuffer runDecoderStackLayers(
             GpuFloatBuffer xDevice,
             Tensor mask,
@@ -965,424 +463,10 @@ public final class GPTModel {
             int seqLen,
             boolean trainingStep,
             BlockActivationCacheDevice[] cachesPerLayer) {
-        long planeLong = (long) batch * seqLen * dModel;
-        int plane = (int) planeLong;
-        decoderChainPing = ensureGpuBuffer(decoderChainPing, plane);
-        decoderChainPong = ensureGpuBuffer(decoderChainPong, plane);
-
-        boolean wantGraph =
-                decoderLayerCudaGraphWanted
-                        && !decoderLayerGraphRuntimeDisabled
-                        && decoderLayerGraphExec != null
-                        && TensorOpsGPU.isGpuAvailable();
-        if (wantGraph) {
-            long inPtr =
-                    xDevice != null && !xDevice.isClosed() ? xDevice.devicePointer() : 0L;
-            int nk = decoderLayerGraphKey(mask, trainingStep, batch, seqLen, inPtr);
-            if (decoderLayerGraphCaptureKey != nk) {
-                destroyDecoderLayerCudaGraphs();
-                trimDecoderGraphMemoryAfterExecDestroy();
-                decoderLayerGraphCaptureKey = nk;
-            }
-        }
-
-        boolean stridedPackOverride = false;
-        if (wantGraph) {
-            ensureDecoderGraphStridedPacks((long) batch * seqLen);
-            TensorOpsGPU.setStridedBatchedPackOverride(
-                    decoderGraphStridedPackW.devicePointer(),
-                    decoderGraphStridedPackC.devicePointer(),
-                    decoderGraphStridedPackW.numFloats(),
-                    decoderGraphStridedPackC.numFloats());
-            stridedPackOverride = true;
-        }
-        try {
-            GpuFloatBuffer cur = xDevice;
-            if (wantGraph && mask != null) {
-                /*
-                 * Один H2D маски на весь decoder-stack: при replay граф не содержит upload; при capture skip H2D
-                 * внутри графа полагается на уже заполненный maskDev (см. TensorOps).
-                 */
-                TensorOps.primeDecoderGraphAttentionMaskDevice(mask, seqLen);
-            }
-            if (wantGraph && !decoderLayerGraphRuntimeDisabled) {
-                /*
-                 * Один проход prime до всех launch/capture: иначе prime только перед слоем с ex==0 перевыделяет
-                 * thread-local / нативные aux под SDPA, и уже захваченные графы других слоёв получают stale pointers.
-                 */
-                TensorOpsGPU.ensureStridedBatchedPackScratch((long) batch * seqLen, dModel, dIntermediate);
-                TensorOps.primeDecoderGraphLayerWorkspaces(
-                        batch, seqLen, dModel, numHeads, dIntermediate, mask, cachesPerLayer);
-                /*
-                 * Ключ до prime не видит перевыделение tl_attn_fwd_graph_aux → иначе replay с устаревшими указателями
-                 * (cudaGraphLaunch cudaErrorInvalidValue при Flash).
-                 */
-                long inPtrPost =
-                        xDevice != null && !xDevice.isClosed() ? xDevice.devicePointer() : 0L;
-                int nkPost = decoderLayerGraphKey(mask, trainingStep, batch, seqLen, inPtrPost);
-                if (decoderLayerGraphCaptureKey != nkPost) {
-                    // #region agent log
-                    CursorDebugB39372.appendJson(
-                            "postPrimeKey",
-                            "GPTModel.runDecoderStackLayers",
-                            "invalidateGraphsAfterPrimeNativeAux",
-                            String.format(
-                                    Locale.ROOT,
-                                    "\"prevCaptureKey\":%d,\"nkPost\":%d,\"hadExecLayer0\":%b,\"nativeStabilityToken\":%d",
-                                    decoderLayerGraphCaptureKey,
-                                    nkPost,
-                                    decoderLayerGraphExec[0] != 0L,
-                                    TensorOpsGPU.decoderGraphNativeStabilityToken()));
-                    // #endregion
-                    destroyDecoderLayerCudaGraphs();
-                    trimDecoderGraphMemoryAfterExecDestroy();
-                    decoderLayerGraphCaptureKey = nkPost;
-                }
-            }
-            if (wantGraph
-                    && !decoderLayerGraphRuntimeDisabled
-                    && LLMConfig.decoderCudaGraphMemLogFromEnvOrProp()) {
-                long used = TensorOpsGPU.getGpuMemoryAllocated();
-                long tot = TensorOpsGPU.getGpuMemoryReserved();
-                log.info(
-                        "[DECODER_CUDA_GRAPH] VRAM перед циклом слоёв (graph): used≈{} MiB / total≈{} MiB",
-                        used / (1024L * 1024L),
-                        tot / (1024L * 1024L));
-            }
-            /*
-             * После OOM на cudaGraphLaunch дальнейшие попытки capture+instantiate на каждом слое (при уже низком
-             * cudaMemGetInfo free) в логах дают идентичные сбои 12–19 и лишь нагружают контекст; до конца этого
-             * forward используем только eager. Глобально graph не выключаем — следующий вызов runDecoderStackLayers
-             * снова попробует graph.
-             */
-            boolean decoderGraphSkipUntilEndOfForward = false;
-            for (int i = 0; i < numLayers; i++) {
-                GpuFloatBuffer attnOut = decoderScratchOther(cur, decoderChainPing, decoderChainPong);
-                GpuFloatBuffer blockOut = decoderScratchOther(attnOut, decoderChainPing, decoderChainPong);
-                BlockActivationCacheDevice layerCache = cachesPerLayer != null ? cachesPerLayer[i] : null;
-
-                boolean executed = false;
-                boolean graphAllowedThisLayer =
-                        wantGraph && !decoderLayerGraphRuntimeDisabled && !decoderGraphSkipUntilEndOfForward;
-                if (graphAllowedThisLayer) {
-                    long minFreeB = LLMConfig.decoderGraphMinFreeBytesFromEnvOrProp();
-                    if (minFreeB > 0L) {
-                        TensorOpsGPU.synchronizeDevice();
-                        long totF = TensorOpsGPU.getGpuMemoryReserved();
-                        long usedF = TensorOpsGPU.getGpuMemoryAllocated();
-                        long freeF = totF - usedF;
-                        if (freeF < minFreeB) {
-                            decoderGraphSkipUntilEndOfForward = true;
-                            graphAllowedThisLayer = false;
-                            log.warn(
-                                    "JGPT_DECODER_LAYER_CUDA_GRAPH: cudaMemGetInfo free={} B < JGPT_DECODER_GRAPH_MIN_FREE_MIB ({} MiB); "
-                                            + "graph отключён до конца forward (проактивно).",
-                                    freeF,
-                                    LLMConfig.decoderGraphMinFreeMibFromEnvOrProp());
-                            // #region agent log
-                            CursorDebugB39372.appendJson(
-                                    "H-proactiveGraphSkipLowFree",
-                                    "GPTModel.runDecoderStackLayers",
-                                    "beforeLayer",
-                                    String.format(
-                                            Locale.ROOT,
-                                            "\"layer\":%d,\"free\":%d,\"minFree\":%d",
-                                            i,
-                                            freeF,
-                                            minFreeB));
-                            // #endregion
-                            drainDeferredGpuBuffersThenTrimPools();
-                        }
-                    }
-                }
-                if (graphAllowedThisLayer) {
-                    long ex = decoderLayerGraphExec[i];
-                    if (ex != 0L) {
-                        if (decoderLayerCudaGraphDebugLog) {
-                            long[] now =
-                                    computeDecoderGraphDeviceSnapshot(cur, attnOut, blockOut, layerCache);
-                            long[] cap = decoderLayerGraphDebugCaptureSnapshot[i];
-                            log.info(
-                                    "[DECODER_CUDA_GRAPH] {}",
-                                    formatDecoderGraphPointerLine(
-                                            "preLaunch", i, ex, cur, attnOut, blockOut, layerCache));
-                            if (cap != null && !decoderGraphDeviceSnapshotsEqual(cap, now)) {
-                                log.warn(
-                                        "[DECODER_CUDA_GRAPH] layer {} snapshot mismatch capture vs preLaunch\ncapture={}\nnow    ={}",
-                                        i,
-                                        Arrays.toString(cap),
-                                        Arrays.toString(now));
-                            }
-                        }
-                        logDecoderGraphB39372PreLaunch(i, ex, batch, seqLen);
-                        if (TensorOpsGPU.cudaGraphExecLaunch(ex)) {
-                            executed = true;
-                            TensorOpsGPU.synchronizeDevice();
-                            scheduleDecoderGraphExecDestroyIfNotLast(i, numLayers);
-                        } else {
-                            logDecoderGraphB39372Failure("replay", i, ex, batch, seqLen);
-                            log.warn(
-                                    "[DECODER_CUDA_GRAPH] cudaGraphExecLaunch failed {}",
-                                    formatDecoderGraphPointerLine(
-                                            "launchFailed", i, ex, cur, attnOut, blockOut, layerCache));
-                            int lastErr = TensorOpsGPU.decoderGraphExecLaunchLastCudaError();
-                            if (lastErr == TensorOpsGPU.CUDA_ERROR_MEMORY_ALLOCATION) {
-                                /*
-                                 * Накопленные cudaGraphExec нижних слоёв держат заметный VRAM; сбрасываем все exec —
-                                 * текущий forward для слоёв > i пойдёт через capture/eager без старых графов.
-                                 */
-                                log.warn(
-                                        "JGPT_DECODER_LAYER_CUDA_GRAPH: слой {} — OOM при replay; уничтожаем все decoder graph exec "
-                                                + "(освобождение VRAM), этот шаг — eager для оставшихся слоёв.",
-                                        i);
-                                // #region agent log
-                                CursorDebugB39372.appendJson(
-                                        "H8-destroyAllDecoderGraphsOnOOM",
-                                        "GPTModel.runDecoderStackLayers",
-                                        "replayOOM",
-                                        String.format(Locale.ROOT, "\"layer\":%d", i));
-                                // #endregion
-                                destroyDecoderLayerCudaGraphs();
-                                if (decoderLayerGraphDebugCaptureSnapshot != null) {
-                                    Arrays.fill(decoderLayerGraphDebugCaptureSnapshot, null);
-                                }
-                                int cachesReleasedStaging = releaseTransientFloatStagingForAllCaches(cachesPerLayer);
-                                TensorOpsGPU.synchronizeDevice();
-                                drainDeferredGpuBuffersThenTrimPools();
-                                // #region agent log
-                                {
-                                    long uTrim = TensorOpsGPU.getGpuMemoryAllocated();
-                                    long tTrim = TensorOpsGPU.getGpuMemoryReserved();
-                                    CursorDebugB39372.appendJson(
-                                            "H14-releaseStagingAfterGraphOOM",
-                                            "GPTModel.runDecoderStackLayers",
-                                            "afterReplayOOM",
-                                            String.format(
-                                                    Locale.ROOT,
-                                                    "\"layer\":%d,\"cachesReleasedStaging\":%d,\"used\":%d,\"total\":%d,\"free\":%d",
-                                                    i,
-                                                    cachesReleasedStaging,
-                                                    uTrim,
-                                                    tTrim,
-                                                    tTrim - uTrim));
-                                    CursorDebugB39372.appendJson(
-                                            "H9-trimAfterGraphOOM",
-                                            "GPTModel.runDecoderStackLayers",
-                                            "afterReplayOOMTrim",
-                                            String.format(
-                                                    Locale.ROOT,
-                                                    "\"layer\":%d,\"used\":%d,\"total\":%d,\"free\":%d",
-                                                    i,
-                                                    uTrim,
-                                                    tTrim,
-                                                    tTrim - uTrim));
-                                }
-                                // #endregion
-                                decoderGraphSkipUntilEndOfForward = true;
-                                log.warn(
-                                        "JGPT_DECODER_LAYER_CUDA_GRAPH: до конца этого forward graph отключён (только eager); "
-                                                + "следующий forward снова попробует replay/capture.");
-                                // #region agent log
-                                CursorDebugB39372.appendJson(
-                                        "H-skipGraphRestOfForward",
-                                        "GPTModel.runDecoderStackLayers",
-                                        "afterReplayOOM",
-                                        String.format(Locale.ROOT, "\"layer\":%d", i));
-                                // #endregion
-                                executed = false;
-                            } else {
-                                disableDecoderLayerCudaGraph("cudaGraphLaunch failed");
-                                /*
-                                 * После ошибки запуска графа (часто illegal memory) дальнейшие kernel'ы в этом процессе
-                                 * ненадёжны; eager-fallback лишь множит ошибки (cuBLAS 14, FFN и т.д.). Требуется новый JVM.
-                                 */
-                                throw new IllegalStateException(
-                                        "cudaGraphLaunch не удался — контекст CUDA считается недействительным. "
-                                                + "Перезапустите JVM. Чтобы не использовать decoder CUDA graph: не задавайте "
-                                                + "JGPT_DECODER_LAYER_CUDA_GRAPH=1 (графы включаются только явно).");
-                            }
-                        }
-                    } else {
-                        /*
-                         * Перед захватом нового слоя: pending exec предыдущих слоёв + trim — иначе graph memory pool
-                         * всё ещё держит aux до {@link #flushPendingDecoderGraphExecDestroy()} в finally (слишком поздно для
-                         * следующего {@code cudaStreamEndCaptureAndInstantiate}).
-                         */
-                        flushPendingDecoderGraphExecDestroy();
-                        /*
-                         * Полная синхронизация устройства перед захватом: снижает пик VRAM при цепочке
-                         * capture→instantiate→launch по слоям (OOM на поздних слоях при stream-only sync).
-                         */
-                        TensorOpsGPU.synchronizeDevice();
-                        if (!TensorOpsGPU.cudaStreamBeginCapture()) {
-                            disableDecoderLayerCudaGraph("cudaStreamBeginCapture failed");
-                        } else {
-                            TensorOps.setDecoderGraphCaptureSkipAttentionMaskHostUpload(true);
-                            boolean captureStillActive = true;
-                            try {
-                                boolean ok =
-                                        runDecoderLayerResidentEager(
-                                                i, cur, attnOut, blockOut, mask, batch, seqLen, layerCache);
-                                long nexec = TensorOpsGPU.cudaStreamEndCaptureAndInstantiate();
-                                captureStillActive = false;
-                                if (!ok) {
-                                    disableDecoderLayerCudaGraph("layer forward failed during capture");
-                                    TensorOpsGPU.synchronizeStream();
-                                    throw new IllegalStateException(
-                                            "decoder layer " + i + " during CUDA graph capture");
-                                }
-                                if (nexec == 0L) {
-                                    disableDecoderLayerCudaGraph("cudaStreamEndCapture/instantiate failed");
-                                    TensorOpsGPU.synchronizeStream();
-                                    /* граф не создан — захват не исполнял слой; нужен eager */
-                                    executed = false;
-                                } else {
-                                    decoderLayerGraphExec[i] = nexec;
-                                    if (decoderLayerCudaGraphDebugLog) {
-                                        decoderLayerGraphDebugCaptureSnapshot[i] =
-                                                computeDecoderGraphDeviceSnapshot(
-                                                        cur, attnOut, blockOut, layerCache);
-                                        log.info(
-                                                "[DECODER_CUDA_GRAPH] captureOk {} arraysnap={}",
-                                                formatDecoderGraphPointerLine(
-                                                        "captureOk", i, nexec, cur, attnOut, blockOut, layerCache),
-                                                Arrays.toString(decoderLayerGraphDebugCaptureSnapshot[i]));
-                                    }
-                                    /* Захват только записывает ядра, не исполняет их.
-                                     * Немедленно запускаем только что захваченный граф,
-                                     * чтобы blockOut был заполнен реальными данными. */
-                                    logDecoderGraphB39372PreLaunch(i, nexec, batch, seqLen);
-                                    if (TensorOpsGPU.cudaGraphExecLaunch(nexec)) {
-                                        executed = true;
-                                        /*
-                                         * Завершить отложенные free/аллокации графа до захвата следующего слоя —
-                                         * иначе OOM на поздних слоях при том же объёме модели.
-                                         */
-                                        TensorOpsGPU.synchronizeDevice();
-                                        if (LLMConfig.decoderCudaGraphMemLogFromEnvOrProp()) {
-                                            long u = TensorOpsGPU.getGpuMemoryAllocated();
-                                            long t = TensorOpsGPU.getGpuMemoryReserved();
-                                            log.info(
-                                                    "[DECODER_CUDA_GRAPH] VRAM после первого launch графа слоя {}: used≈{} MiB / total≈{} MiB",
-                                                    i,
-                                                    u / (1024L * 1024L),
-                                                    t / (1024L * 1024L));
-                                        }
-                                        scheduleDecoderGraphExecDestroyIfNotLast(i, numLayers);
-                                    } else {
-                                        logDecoderGraphB39372Failure("postCapture", i, nexec, batch, seqLen);
-                                        log.warn(
-                                                "[DECODER_CUDA_GRAPH] postCapture launch failed {}",
-                                                formatDecoderGraphPointerLine(
-                                                        "postCaptureLaunchFailed",
-                                                        i,
-                                                        nexec,
-                                                        cur,
-                                                        attnOut,
-                                                        blockOut,
-                                                        layerCache));
-                                        int lastErr = TensorOpsGPU.decoderGraphExecLaunchLastCudaError();
-                                        if (lastErr == TensorOpsGPU.CUDA_ERROR_MEMORY_ALLOCATION) {
-                                            log.warn(
-                                                    "JGPT_DECODER_LAYER_CUDA_GRAPH: слой {} — OOM при первом launch после capture; "
-                                                            + "уничтожаем все decoder graph exec (нижние слои держали VRAM). "
-                                                            + "Дальше в этом forward — только eager (повторный capture отключён).",
-                                                    i);
-                                            // #region agent log
-                                            CursorDebugB39372.appendJson(
-                                                    "H8-destroyAllDecoderGraphsOnOOM",
-                                                    "GPTModel.runDecoderStackLayers",
-                                                    "postCaptureOOM",
-                                                    String.format(Locale.ROOT, "\"layer\":%d", i));
-                                            // #endregion
-                                            destroyDecoderLayerCudaGraphs();
-                                            if (decoderLayerGraphDebugCaptureSnapshot != null) {
-                                                Arrays.fill(decoderLayerGraphDebugCaptureSnapshot, null);
-                                            }
-                                            int cachesReleasedStaging =
-                                                    releaseTransientFloatStagingForAllCaches(cachesPerLayer);
-                                            TensorOpsGPU.synchronizeDevice();
-                                            drainDeferredGpuBuffersThenTrimPools();
-                                            // #region agent log
-                                            {
-                                                long uTrim = TensorOpsGPU.getGpuMemoryAllocated();
-                                                long tTrim = TensorOpsGPU.getGpuMemoryReserved();
-                                                CursorDebugB39372.appendJson(
-                                                        "H14-releaseStagingAfterGraphOOM",
-                                                        "GPTModel.runDecoderStackLayers",
-                                                        "afterPostCaptureOOM",
-                                                        String.format(
-                                                                Locale.ROOT,
-                                                                "\"layer\":%d,\"cachesReleasedStaging\":%d,\"used\":%d,\"total\":%d,\"free\":%d",
-                                                                i,
-                                                                cachesReleasedStaging,
-                                                                uTrim,
-                                                                tTrim,
-                                                                tTrim - uTrim));
-                                                CursorDebugB39372.appendJson(
-                                                        "H9-trimAfterGraphOOM",
-                                                        "GPTModel.runDecoderStackLayers",
-                                                        "afterPostCaptureOOMTrim",
-                                                        String.format(
-                                                                Locale.ROOT,
-                                                                "\"layer\":%d,\"used\":%d,\"total\":%d,\"free\":%d",
-                                                                i,
-                                                                uTrim,
-                                                                tTrim,
-                                                                tTrim - uTrim));
-                                            }
-                                            // #endregion
-                                            decoderGraphSkipUntilEndOfForward = true;
-                                            log.warn(
-                                                    "JGPT_DECODER_LAYER_CUDA_GRAPH: до конца этого forward graph отключён (только eager); "
-                                                            + "следующий forward снова попробует capture.");
-                                            // #region agent log
-                                            CursorDebugB39372.appendJson(
-                                                    "H-skipGraphRestOfForward",
-                                                    "GPTModel.runDecoderStackLayers",
-                                                    "afterPostCaptureOOM",
-                                                    String.format(Locale.ROOT, "\"layer\":%d", i));
-                                            // #endregion
-                                        } else {
-                                            TensorOpsGPU.cudaGraphExecDestroy(nexec);
-                                            decoderLayerGraphExec[i] = 0L;
-                                            if (decoderLayerGraphDebugCaptureSnapshot != null) {
-                                                decoderLayerGraphDebugCaptureSnapshot[i] = null;
-                                            }
-                                            disableDecoderLayerCudaGraph("cudaGraphLaunch failed on capture step");
-                                        }
-                                        executed = false;
-                                    }
-                                }
-                            } finally {
-                                TensorOps.setDecoderGraphCaptureSkipAttentionMaskHostUpload(false);
-                                if (captureStillActive) {
-                                    TensorOpsGPU.abortCudaStreamCaptureIfActive();
-                                }
-                            }
-                        }
-                    }
-                }
-                if (!executed) {
-                    if (!runDecoderLayerResidentEager(i, cur, attnOut, blockOut, mask, batch, seqLen, layerCache)) {
-                        throw new IllegalStateException("decoder layer " + i + " (eager path)");
-                    }
-                }
-                cur = blockOut;
-            }
-            return cur;
-        } finally {
-            if (stridedPackOverride) {
-                TensorOpsGPU.clearStridedBatchedPackOverride();
-            }
-            flushPendingDecoderGraphExecDestroy();
-        }
+        return GptDecoderStackRunner.runDecoderStackLayers(
+                this, xDevice, mask, batch, seqLen, trainingStep, cachesPerLayer);
     }
 
-    /**
-     * Обновляет GpuTensor с CPU после {@link #loadWeights(String)} или ручной правки {@link #getLmHead()} /
-     * {@link #getLayerNormFinal()}.
-     */
     public void syncGpuResidentWeightsFromHost() {
         if (gpuResident) {
             tokenEmbedding.syncGpuWeightsFromHost();
@@ -1535,17 +619,17 @@ public final class GPTModel {
             lastLogitsGradGpu.clear();
             m |= 256;
         }
-        agentLogB39372ScratchHandoff(m);
+        GptModelDebugLog.scratchHandoff(m);
     }
 
-    private static GpuFloatBuffer closeGpuBuffer(GpuFloatBuffer buf) {
+    static GpuFloatBuffer closeGpuBuffer(GpuFloatBuffer buf) {
         if (buf != null && !buf.isClosed()) {
             buf.close();
         }
         return null;
     }
 
-    private static GpuFloatBuffer ensureGpuBuffer(GpuFloatBuffer buf, long size) {
+    static GpuFloatBuffer ensureGpuBuffer(GpuFloatBuffer buf, long size) {
         if (buf != null && !buf.isClosed() && buf.numFloats() >= size) {
             return buf;
         }
@@ -1770,7 +854,7 @@ public final class GPTModel {
         return runDecoderStackLayers(xDevice, mask, batch, seqLen, false, null);
     }
 
-    private static GpuFloatBuffer decoderScratchOther(GpuFloatBuffer cur, GpuFloatBuffer a, GpuFloatBuffer b) {
+    static GpuFloatBuffer decoderScratchOther(GpuFloatBuffer cur, GpuFloatBuffer a, GpuFloatBuffer b) {
         return cur != a ? a : b;
     }
 
@@ -1797,7 +881,7 @@ public final class GPTModel {
         float eps = TensorOpsGPU.rmsNormEps();
         lmHeadNormScratchGpu = ensureGpuBuffer(lmHeadNormScratchGpu, flat);
         lastLogitsGpu = ensureGpuBuffer(lastLogitsGpu, logitsFlatElems);
-        applyLmHeadFusedPreferredThenSplit(
+        GptLmHeadGpu.applyFusedPreferredThenSplit(
                 xBeforeNormDevice,
                 gpuResidentHead.layerNormGammaGpu().dataBuffer(),
                 eps,
@@ -1926,7 +1010,7 @@ public final class GPTModel {
         float eps = TensorOpsGPU.rmsNormEps();
         lmHeadNormScratchGpu = ensureGpuBuffer(lmHeadNormScratchGpu, flat);
         try (GpuFloatBuffer logitsFlat = GpuFloatBuffer.allocate(logitsFlatElems)) {
-            applyLmHeadFusedPreferredThenSplit(
+            GptLmHeadGpu.applyFusedPreferredThenSplit(
                     xBeforeNormDevice,
                     gpuResidentHead.layerNormGammaGpu().dataBuffer(),
                     eps,
@@ -1987,7 +1071,7 @@ public final class GPTModel {
             TensorOpsGPU.synchronizeStream();
             float[] preGx = new float[4];
             dGradBeforeNorm.copyTo(preGx, 0, Math.min(4, rows * dModel));
-            agentLogB39372RmsBuf(
+            GptModelDebugLog.rmsBuf(
                     "H_uninit",
                     "GPTModel.backwardFromDeviceLogits",
                     "dGradBeforeNorm_before_clear",
@@ -1998,7 +1082,7 @@ public final class GPTModel {
                     (long) rows * dModel);
             float[] preGg = new float[1];
             dGGamma.copyTo(preGg, 0, 1);
-            agentLogB39372RmsBuf(
+            GptModelDebugLog.rmsBuf(
                     "H_uninit",
                     "GPTModel.backwardFromDeviceLogits",
                     "dGGamma_before_clear",
@@ -2424,36 +1508,7 @@ public final class GPTModel {
      * @return logits {@code [1, seq_len, vocab_size]}
      */
     public Tensor forwardPrefill(Tensor inputTokens, KvCache cache, int ropeOffset) {
-        int[] inputShape = inputTokens.getShape();
-        if (inputShape[0] != 1) {
-            throw new IllegalArgumentException("forwardPrefill supports batch_size=1 only");
-        }
-        int seqLen = inputShape[1];
-        if (seqLen > maxSeqLen) {
-            throw new IllegalArgumentException("seq_len " + seqLen + " > max_seq_len " + maxSeqLen);
-        }
-        if (cache.numLayers() != numLayers) {
-            throw new IllegalArgumentException("KvCache layer count mismatch");
-        }
-
-        Tensor x = tokenEmbedding.forward(inputTokens);
-        positionEmbedding.addToActivationsInPlace(x, seqLen, ropeOffset);
-
-        Tensor mask = TensorOps.createCausalMask(seqLen);
-        for (int i = 0; i < numLayers; i++) {
-            TensorOps.GpuFfnResidentBuffers ffnResident =
-                    gpuDecoderLayer != null ? gpuDecoderLayer[i].ffnBuffers() : null;
-            TensorOps.GpuAttnResidentBuffers attnResident =
-                    gpuDecoderLayer != null ? gpuDecoderLayer[i].attnBuffers() : null;
-            x = blocks[i].forwardKvPrefill(
-                    x, mask, null, cache.getK(i), cache.getV(i), ropeOffset, ffnResident, attnResident);
-        }
-
-        x = TensorOps.rmsNorm(x, layerNormFinal, TensorOpsGPU.rmsNormEps());
-        Tensor logits = new Tensor(new int[]{1, seqLen, vocabSize});
-        copyBatchPlane(logits, TensorOps.matmul(sliceBatch3D(x, 0), lmHead), 0);
-        cache.setLength(seqLen);
-        return logits;
+        return GptKvForward.forwardPrefillHost(this, inputTokens, cache, ropeOffset);
     }
 
     /**
@@ -2462,48 +1517,7 @@ public final class GPTModel {
      * @see #forwardPrefill(Tensor, KvCache, int)
      */
     public Tensor forwardPrefill(Tensor inputTokens, KvCacheGpu cache, int ropeOffset) {
-        int[] inputShape = inputTokens.getShape();
-        if (inputShape[0] != 1) {
-            throw new IllegalArgumentException("forwardPrefill supports batch_size=1 only");
-        }
-        int seqLen = inputShape[1];
-        if (seqLen > maxSeqLen) {
-            throw new IllegalArgumentException("seq_len " + seqLen + " > max_seq_len " + maxSeqLen);
-        }
-        if (cache.numLayers() != numLayers) {
-            throw new IllegalArgumentException("KvCacheGpu layer count mismatch");
-        }
-        if (seqLen > cache.maxSeqLen()) {
-            throw new IllegalArgumentException("seq_len " + seqLen + " > KvCacheGpu.maxSeqLen " + cache.maxSeqLen());
-        }
-
-        Tensor x = tokenEmbedding.forward(inputTokens);
-        positionEmbedding.addToActivationsInPlace(x, seqLen, ropeOffset);
-
-        Tensor mask = TensorOps.createCausalMask(seqLen);
-        for (int i = 0; i < numLayers; i++) {
-            TensorOps.GpuFfnResidentBuffers ffnResident =
-                    gpuDecoderLayer != null ? gpuDecoderLayer[i].ffnBuffers() : null;
-            TensorOps.GpuAttnResidentBuffers attnResident =
-                    gpuDecoderLayer != null ? gpuDecoderLayer[i].attnBuffers() : null;
-            x =
-                    blocks[i].forwardKvPrefillVram(
-                            x,
-                            mask,
-                            null,
-                            cache.getK(i),
-                            cache.getV(i),
-                            cache.maxSeqLen(),
-                            ropeOffset,
-                            ffnResident,
-                            attnResident);
-        }
-
-        x = TensorOps.rmsNorm(x, layerNormFinal, TensorOpsGPU.rmsNormEps());
-        Tensor logits = new Tensor(new int[] {1, seqLen, vocabSize});
-        copyBatchPlane(logits, TensorOps.matmul(sliceBatch3D(x, 0), lmHead), 0);
-        cache.setLength(seqLen);
-        return logits;
+        return GptKvForward.forwardPrefillGpu(this, inputTokens, cache, ropeOffset);
     }
 
     /**
@@ -2514,39 +1528,7 @@ public final class GPTModel {
      * @return logits {@code [1, 1, vocab_size]}
      */
     public Tensor forwardDecode(Tensor inputTokens, KvCache cache, int cacheLenBefore, int ropePosition) {
-        int[] inputShape = inputTokens.getShape();
-        if (inputShape[0] != 1 || inputShape[1] != 1) {
-            throw new IllegalArgumentException("forwardDecode expects [1, 1] token indices");
-        }
-        if (cache.length() != cacheLenBefore) {
-            throw new IllegalStateException(
-                    "KV cache length " + cache.length() + " != cacheLenBefore " + cacheLenBefore);
-        }
-
-        Tensor x = tokenEmbedding.forward(inputTokens);
-        positionEmbedding.addToActivationsInPlace(x, 1, ropePosition);
-
-        for (int i = 0; i < numLayers; i++) {
-            TensorOps.GpuFfnResidentBuffers ffnResident =
-                    gpuDecoderLayer != null ? gpuDecoderLayer[i].ffnBuffers() : null;
-            TensorOps.GpuAttnResidentBuffers attnResident =
-                    gpuDecoderLayer != null ? gpuDecoderLayer[i].attnBuffers() : null;
-            x = blocks[i].forwardKvDecode(
-                    x,
-                    null,
-                    cache.getK(i),
-                    cache.getV(i),
-                    cacheLenBefore,
-                    ropePosition,
-                    ffnResident,
-                    attnResident);
-        }
-
-        x = TensorOps.rmsNorm(x, layerNormFinal, TensorOpsGPU.rmsNormEps());
-        Tensor logits = new Tensor(new int[]{1, 1, vocabSize});
-        copyBatchPlane(logits, TensorOps.matmul(sliceBatch3D(x, 0), lmHead), 0);
-        cache.setLength(cacheLenBefore + 1);
-        return logits;
+        return GptKvForward.forwardDecodeHost(this, inputTokens, cache, cacheLenBefore, ropePosition);
     }
 
     /**
@@ -2555,44 +1537,7 @@ public final class GPTModel {
      * @see #forwardDecode(Tensor, KvCache, int, int)
      */
     public Tensor forwardDecode(Tensor inputTokens, KvCacheGpu cache, int cacheLenBefore, int ropePosition) {
-        int[] inputShape = inputTokens.getShape();
-        if (inputShape[0] != 1 || inputShape[1] != 1) {
-            throw new IllegalArgumentException("forwardDecode expects [1, 1] token indices");
-        }
-        if (cache.length() != cacheLenBefore) {
-            throw new IllegalStateException(
-                    "KV cache length " + cache.length() + " != cacheLenBefore " + cacheLenBefore);
-        }
-        if (cacheLenBefore >= cache.maxSeqLen()) {
-            throw new IllegalStateException("KV cache full (cacheLenBefore " + cacheLenBefore + ")");
-        }
-
-        Tensor x = tokenEmbedding.forward(inputTokens);
-        positionEmbedding.addToActivationsInPlace(x, 1, ropePosition);
-
-        for (int i = 0; i < numLayers; i++) {
-            TensorOps.GpuFfnResidentBuffers ffnResident =
-                    gpuDecoderLayer != null ? gpuDecoderLayer[i].ffnBuffers() : null;
-            TensorOps.GpuAttnResidentBuffers attnResident =
-                    gpuDecoderLayer != null ? gpuDecoderLayer[i].attnBuffers() : null;
-            x =
-                    blocks[i].forwardKvDecodeVram(
-                            x,
-                            null,
-                            cache.getK(i),
-                            cache.getV(i),
-                            cache.maxSeqLen(),
-                            cacheLenBefore,
-                            ropePosition,
-                            ffnResident,
-                            attnResident);
-        }
-
-        x = TensorOps.rmsNorm(x, layerNormFinal, TensorOpsGPU.rmsNormEps());
-        Tensor logits = new Tensor(new int[] {1, 1, vocabSize});
-        copyBatchPlane(logits, TensorOps.matmul(sliceBatch3D(x, 0), lmHead), 0);
-        cache.setLength(cacheLenBefore + 1);
-        return logits;
+        return GptKvForward.forwardDecodeGpu(this, inputTokens, cache, cacheLenBefore, ropePosition);
     }
 
     /**
@@ -2697,7 +1642,7 @@ public final class GPTModel {
         if (deviceDecoderBackward && gpuDecoderLayer != null) {
             try (GpuFloatBuffer dGradBeforeNorm = GpuFloatBuffer.allocate((long) batch * seqLen * dModel)) {
                 dGradBeforeNorm.copyFrom(gradBeforeNorm.gradBuffer(), 0, batch * seqLen * dModel);
-                backwardDecoderLayersDevice(dGradBeforeNorm, batch, seqLen, zeroParamGrads);
+                GptDecoderBackward.backwardDecoderLayersDevice(this, dGradBeforeNorm, batch, seqLen, zeroParamGrads);
             }
         } else {
             if (gpuResident && TensorOpsGPU.isGpuAvailable()) {
@@ -2750,7 +1695,7 @@ public final class GPTModel {
                             "device logits backward requires deviceDecoderBackward, gpuDecoderLayer and "
                                     + "BlockActivationCacheDevice from forward(training=true); check TrainingConfig / LLMConfig.");
                 }
-                backwardDecoderLayersDevice(dGradBeforeNorm, batch, seqLen, zeroParamGrads);
+                GptDecoderBackward.backwardDecoderLayersDevice(this, dGradBeforeNorm, batch, seqLen, zeroParamGrads);
             } finally {
                 closeGpuBuffer(tmpNormedHidden);
                 closeGpuBuffer(tmpXBeforeNorm);
@@ -2789,7 +1734,7 @@ public final class GPTModel {
                             "device logits backward requires deviceDecoderBackward, gpuDecoderLayer and "
                                     + "BlockActivationCacheDevice from forward(training=true); check TrainingConfig / LLMConfig.");
                 }
-                backwardDecoderLayersDevice(dGradBeforeNorm, batch, seqLen, zeroParamGrads);
+                GptDecoderBackward.backwardDecoderLayersDevice(this, dGradBeforeNorm, batch, seqLen, zeroParamGrads);
             }
         } finally {
             closeGpuBuffer(tmpLogitsGrad);
@@ -2888,92 +1833,6 @@ public final class GPTModel {
         positionEmbedding.backwardAccumulate(gradX, seqLen);
     }
 
-    /**
-     * Decoder layers backward with gradient ping-pong on device.
-     * Эмбеддинги: backward на device по градиенту без D2H {@code [B,S,d]}.
-     */
-    private void backwardDecoderLayersDevice(GpuFloatBuffer dGradBeforeNorm, int batch, int seqLen, boolean zeroParamGrads) {
-        int flat = batch * seqLen * dModel;
-        if (!deviceDecoderBackward || blockCachesDevice == null || !TensorOpsGPU.isGpuAvailable()) {
-            throw new IllegalStateException(
-                    "decoder backward on VRAM requires deviceDecoderBackward, CUDA, and device activation cache "
-                            + "from forward(training=true); misconfiguration or missing GPU pipeline.");
-        }
-        decoderBwdGradPing = ensureGpuBuffer(decoderBwdGradPing, flat);
-        decoderBwdGradPong = ensureGpuBuffer(decoderBwdGradPong, flat);
-
-        GpuFloatBuffer gradCur = dGradBeforeNorm;
-        GpuFloatBuffer gradNext = decoderBwdGradPing;
-
-        for (int layer = numLayers - 1; layer >= 0; layer--) {
-            DecoderBlock blk = blocks[layer];
-            if (zeroParamGrads) {
-                blk.zeroGradTensors();
-            }
-            TensorOps.GpuAttnResidentBuffers attnResident =
-                    gpuDecoderLayer != null ? gpuDecoderLayer[layer].attnBuffers() : null;
-            TensorOps.GpuFfnResidentBuffers ffnResident =
-                    gpuDecoderLayer != null ? gpuDecoderLayer[layer].ffnBuffers() : null;
-            TransformerBackward.transformerBlockBackwardGpuDevice(
-                    gradCur,
-                    blockCachesDevice[layer],
-                    blk.getWq(),
-                    blk.getWk(),
-                    blk.getWv(),
-                    blk.getWo(),
-                    blk.getW1(),
-                    blk.getW2(),
-                    blk.getW3(),
-                    blk.getNorm1(),
-                    blk.getNorm2(),
-                    numHeads,
-                    lastMask,
-                    true,
-                    gradNext,
-                    blk.getWq(),
-                    blk.getWk(),
-                    blk.getWv(),
-                    blk.getWo(),
-                    blk.getW1(),
-                    blk.getW2(),
-                    blk.getW3(),
-                    blk.getNorm1(),
-                    blk.getNorm2(),
-                    attnResident,
-                    ffnResident);
-
-            if (DebugGpuTrain.perLayerFiniteCheck()) {
-                if (TensorOpsGPU.anyNonFiniteGpuDevice(gradNext, flat)) {
-                    log.warn(
-                            "Non-finite gradient after decoder layer {} ({} elements). "
-                                    + "Enable JGPT_DEBUG_GPU_TRAIN=1 for JSONL diagnostics; "
-                                    + "JGPT_BWD_LAYER_FINITE_CHECK=0 and no debug = one check after stack only.",
-                            layer,
-                            flat);
-                    agentLogB39372LayerGrad(layer, flat);
-                }
-            }
-
-            GpuFloatBuffer tmp = gradCur;
-            gradCur = gradNext;
-            gradNext = tmp;
-        }
-
-        if (!DebugGpuTrain.perLayerFiniteCheck()) {
-            if (TensorOpsGPU.anyNonFiniteGpuDevice(gradCur, flat)) {
-                log.warn(
-                        "Non-finite gradient after decoder stack ({} elements). "
-                                + "Enable JGPT_DEBUG_GPU_TRAIN=1 for JSONL or JGPT_BWD_LAYER_FINITE_CHECK=1 "
-                                + "to localize by layer.",
-                        flat);
-                agentLogB39372LayerGrad(-1, flat);
-            }
-        }
-
-        tokenEmbedding.backwardScatterFromDeviceGrad(lastInputTokens, gradCur, batch, seqLen);
-        positionEmbedding.backwardAccumulateFromDeviceGrad(gradCur, batch, seqLen);
-    }
-
     private static Tensor ensureReusableLike(Tensor reusable, Tensor like) {
         int[] shape = like.getShape();
         if (reusable != null && Arrays.equals(reusable.getShape(), shape)) {
@@ -3012,99 +1871,13 @@ public final class GPTModel {
      * <p>
      * При {@code temperature <= 0} — жадный выбор (argmax по logit; при равенстве — меньший индекс), без сэмплирования.
      * <p>
-     * <b>Скользящее окно (когда длина контекста превышает {@link #getMaxSeqLen()}):</b> KV-cache сбрасывается и
+     * <b>Скользящее окно (когда длина контекста превышает :</b> KV-cache сбрасывается и
      * выполняется полный prefill по срезу подсказки с подходящим RoPE-сдвигом. Это корректно, но даёт дополнительную
      * работу порядка квадрата окна на каждое срабатывание; для очень длинных генераций в production обычно используют
      * rolling KV / paged attention вместо полного пересчёта.
      */
     public Tensor generate(Tensor inputTokens, int maxNewTokens, float temperature, int topK) {
-        int[] inputShape = inputTokens.getShape();
-        int batch = inputShape[0];
-        int seqLen = inputShape[1];
-
-        if (batch != 1) {
-            throw new IllegalArgumentException("generate currently supports batch_size=1 only");
-        }
-
-        Tensor output = new Tensor(new int[]{1, seqLen + maxNewTokens});
-        float[] outData = output.internalBuffer();
-        float[] inData = inputTokens.internalBuffer();
-        System.arraycopy(inData, 0, outData, 0, seqLen);
-
-        int dHead = dModel / numHeads;
-        KvCache cache = new KvCache(numLayers, numHeads, dHead, maxSeqLen);
-
-        Tensor logitsPrefill = forwardPrefill(inputTokens, cache, 0);
-        Tensor lastPlane = sliceBatch3D(logitsPrefill, 0);
-        float[] lastLogitData = lastPlane.internalBuffer();
-        int lastRowOffset = (seqLen - 1) * vocabSize;
-
-        int nextToken =
-                sampleNextToken(lastLogitData, lastRowOffset, vocabSize, temperature, topK);
-        outData[seqLen] = nextToken;
-        if (nextToken == 0) {
-            return output;
-        }
-
-        for (int j = 1; j < maxNewTokens; j++) {
-            int currentLen = seqLen + j;
-
-            if (currentLen > maxSeqLen) {
-                int startIdx = currentLen - maxSeqLen;
-                // forwardRange(ropeOffset, seqLen) требует startIdx + seqLen <= число строк PE (= maxSeqLen)
-                int sliceLen = maxSeqLen - startIdx;
-                if (sliceLen <= 0) {
-                    throw new IllegalStateException(
-                            "sliding window: startIdx="
-                                    + startIdx
-                                    + " maxSeqLen="
-                                    + maxSeqLen
-                                    + " (увеличьте max_seq_len модели или уменьшите длину генерации)");
-                }
-                cache.clear();
-                log.warn(
-                        "Скользящее окно KV (кэш на хосте): полный prefill по {} токенам (позиции {}..{}). "
-                                + "Каждое срабатывание — O(окно²); для длинных прогонов увеличьте max_seq_len или используйте paged/rolling KV.",
-                        sliceLen,
-                        startIdx,
-                        startIdx + sliceLen - 1);
-                if (reusableSlidingPrefillInput == null
-                        || reusableSlidingPrefillInput.getShape()[0] != 1
-                        || reusableSlidingPrefillInput.getShape()[1] != sliceLen) {
-                    reusableSlidingPrefillInput = new Tensor(new int[] {1, sliceLen});
-                }
-                float[] sliceData = reusableSlidingPrefillInput.internalBuffer();
-                for (int t = 0; t < sliceLen; t++) {
-                    sliceData[t] = outData[startIdx + t];
-                }
-                logitsPrefill = forwardPrefill(reusableSlidingPrefillInput, cache, startIdx);
-                lastPlane = sliceBatch3D(logitsPrefill, 0);
-                lastLogitData = lastPlane.internalBuffer();
-                lastRowOffset = (sliceLen - 1) * vocabSize;
-                nextToken =
-                        sampleNextToken(lastLogitData, lastRowOffset, vocabSize, temperature, topK);
-                outData[currentLen] = nextToken;
-                if (nextToken == 0) {
-                    break;
-                }
-                continue;
-            }
-
-            if (reusableDecodeOneToken == null) {
-                reusableDecodeOneToken = new Tensor(new int[]{1, 1});
-            }
-            reusableDecodeOneToken.internalBuffer()[0] = outData[seqLen + j - 1];
-            Tensor logitsDec = forwardDecode(reusableDecodeOneToken, cache, cache.length(), seqLen + j - 1);
-            lastPlane = sliceBatch3D(logitsDec, 0);
-            lastLogitData = lastPlane.internalBuffer();
-            nextToken = sampleNextToken(lastLogitData, 0, vocabSize, temperature, topK);
-            outData[currentLen] = nextToken;
-            if (nextToken == 0) {
-                break;
-            }
-        }
-
-        return output;
+        return GptAutoregressiveGenerator.generateHost(this, inputTokens, maxNewTokens, temperature, topK);
     }
 
     /**
@@ -3112,214 +1885,13 @@ public final class GPTModel {
      * {@link KvCacheGpu} (путь attention без host-тензоров K/V). Тот же контракт по {@code temperature} / {@code
      * topK}, что и {@link #generate}.
      * <p>
-     * При превышении {@link #getMaxSeqLen()} действует тот же механизм скользящего окна, что и в {@link #generate}, с
+     * При превышении действует тот же механизм скользящего окна, что и в {@link #generate}, с
      * полным reprefill среза (см. javadoc {@link #generate}).
      * <p>
      * Требует {@link #isGpuResident()} и доступной CUDA ({@link TensorOpsGPU#isGpuAvailable()}).
      */
     public Tensor generateGpuKv(Tensor inputTokens, int maxNewTokens, float temperature, int topK) {
-        if (!isGpuResident()) {
-            throw new IllegalStateException("generateGpuKv requires GPU-resident weights");
-        }
-        if (!TensorOpsGPU.isGpuAvailable()) {
-            throw new IllegalStateException("generateGpuKv requires CUDA");
-        }
-        int[] inputShape = inputTokens.getShape();
-        int batch = inputShape[0];
-        int seqLen = inputShape[1];
-
-        if (batch != 1) {
-            throw new IllegalArgumentException("generateGpuKv currently supports batch_size=1 only");
-        }
-
-        Tensor output = new Tensor(new int[] {1, seqLen + maxNewTokens});
-        float[] outData = output.internalBuffer();
-        float[] inData = inputTokens.internalBuffer();
-        System.arraycopy(inData, 0, outData, 0, seqLen);
-
-        int dHead = dModel / numHeads;
-        try (KvCacheGpu cache = new KvCacheGpu(numLayers, numHeads, dHead, maxSeqLen)) {
-            try {
-            Tensor logitsPrefill = forwardPrefill(inputTokens, cache, 0);
-            Tensor lastPlane = sliceBatch3D(logitsPrefill, 0);
-            float[] lastLogitData = lastPlane.internalBuffer();
-            int lastRowOffset = (seqLen - 1) * vocabSize;
-
-            int nextToken =
-                    sampleNextToken(lastLogitData, lastRowOffset, vocabSize, temperature, topK);
-            outData[seqLen] = nextToken;
-            if (nextToken == 0) {
-                return output;
-            }
-
-            for (int j = 1; j < maxNewTokens; j++) {
-                int currentLen = seqLen + j;
-
-                if (currentLen > maxSeqLen) {
-                    int startIdx = currentLen - maxSeqLen;
-                    int sliceLen = maxSeqLen - startIdx;
-                    if (sliceLen <= 0) {
-                        throw new IllegalStateException(
-                                "sliding window: startIdx="
-                                        + startIdx
-                                        + " maxSeqLen="
-                                        + maxSeqLen
-                                        + " (увеличьте max_seq_len модели или уменьшите длину генерации)");
-                    }
-                    cache.clear();
-                    log.warn(
-                            "Скользящее окно KV (кэш в VRAM): полный prefill по {} токенам (позиции {}..{}). "
-                                    + "Каждое срабатывание — O(окно²); для длинных прогонов увеличьте max_seq_len или используйте paged/rolling KV.",
-                            sliceLen,
-                            startIdx,
-                            startIdx + sliceLen - 1);
-                    if (reusableSlidingPrefillInput == null
-                            || reusableSlidingPrefillInput.getShape()[0] != 1
-                            || reusableSlidingPrefillInput.getShape()[1] != sliceLen) {
-                        reusableSlidingPrefillInput = new Tensor(new int[] {1, sliceLen});
-                    }
-                    float[] sliceData = reusableSlidingPrefillInput.internalBuffer();
-                    for (int t = 0; t < sliceLen; t++) {
-                        sliceData[t] = outData[startIdx + t];
-                    }
-                    logitsPrefill = forwardPrefill(reusableSlidingPrefillInput, cache, startIdx);
-                    lastPlane = sliceBatch3D(logitsPrefill, 0);
-                    lastLogitData = lastPlane.internalBuffer();
-                    lastRowOffset = (sliceLen - 1) * vocabSize;
-                    nextToken =
-                            sampleNextToken(lastLogitData, lastRowOffset, vocabSize, temperature, topK);
-                    outData[currentLen] = nextToken;
-                    if (nextToken == 0) {
-                        break;
-                    }
-                    continue;
-                }
-
-                if (reusableDecodeOneToken == null) {
-                    reusableDecodeOneToken = new Tensor(new int[] {1, 1});
-                }
-                reusableDecodeOneToken.internalBuffer()[0] = outData[seqLen + j - 1];
-                Tensor logitsDec =
-                        forwardDecode(reusableDecodeOneToken, cache, cache.length(), seqLen + j - 1);
-                lastPlane = sliceBatch3D(logitsDec, 0);
-                lastLogitData = lastPlane.internalBuffer();
-                nextToken = sampleNextToken(lastLogitData, 0, vocabSize, temperature, topK);
-                outData[currentLen] = nextToken;
-                if (nextToken == 0) {
-                    break;
-                }
-            }
-            } finally {
-                TensorOpsGPU.synchronizeStream();
-            }
-        }
-
-        return output;
-    }
-
-    private int sampleNextToken(
-            float[] logits, int offset, int vocabSize, float temperature, int topK) {
-        if (sampleLogitsScratch == null || sampleLogitsScratch.length < vocabSize) {
-            sampleLogitsScratch = new float[vocabSize];
-        }
-        System.arraycopy(logits, offset, sampleLogitsScratch, 0, vocabSize);
-
-        if (temperature != 1.0f && temperature > 0) {
-            for (int i = 0; i < vocabSize; i++) {
-                sampleLogitsScratch[i] /= temperature;
-            }
-        }
-
-        if (topK > 0 && topK < vocabSize) {
-            // O(n log k): min-heap из k «худших» среди текущего топа; при равных logit хуже больший индекс
-            // (как при стабильной сортировке по убыванию logit на Integer[] 0..v-1).
-            PriorityQueue<Integer> worstOfTop =
-                    new PriorityQueue<>(
-                            topK,
-                            (a, b) -> {
-                                int c = Float.compare(sampleLogitsScratch[a], sampleLogitsScratch[b]);
-                                if (c != 0) {
-                                    return c;
-                                }
-                                return Integer.compare(b, a);
-                            });
-            for (int i = 0; i < vocabSize; i++) {
-                if (worstOfTop.size() < topK) {
-                    worstOfTop.offer(i);
-                } else {
-                    int w = worstOfTop.peek();
-                    if (isBetterLogit(sampleLogitsScratch, i, w)) {
-                        worstOfTop.poll();
-                        worstOfTop.offer(i);
-                    }
-                }
-            }
-            if (sampleTopKMember == null || sampleTopKMember.length < vocabSize) {
-                sampleTopKMember = new boolean[vocabSize];
-            }
-            Arrays.fill(sampleTopKMember, 0, vocabSize, false);
-            while (!worstOfTop.isEmpty()) {
-                sampleTopKMember[worstOfTop.poll()] = true;
-            }
-            for (int i = 0; i < vocabSize; i++) {
-                if (!sampleTopKMember[i]) {
-                    sampleLogitsScratch[i] = Float.NEGATIVE_INFINITY;
-                }
-            }
-        }
-
-        if (temperature <= 0f) {
-            return argmaxLogitsGreedy(sampleLogitsScratch, vocabSize);
-        }
-
-        float max = Float.NEGATIVE_INFINITY;
-        for (int i = 0; i < vocabSize; i++) {
-            max = Math.max(max, sampleLogitsScratch[i]);
-        }
-
-        float sum = 0f;
-        for (int i = 0; i < vocabSize; i++) {
-            float e = (float) Math.exp(sampleLogitsScratch[i] - max);
-            sampleLogitsScratch[i] = e;
-            sum += e;
-        }
-        for (int i = 0; i < vocabSize; i++) {
-            sampleLogitsScratch[i] /= sum;
-        }
-
-        float rand = (float) ThreadLocalRandom.current().nextDouble();
-        float cumsum = 0f;
-        for (int i = 0; i < vocabSize; i++) {
-            cumsum += sampleLogitsScratch[i];
-            if (rand <= cumsum) {
-                return i;
-            }
-        }
-
-        return vocabSize - 1;
-    }
-
-    /** Argmax по logit; при равенстве — минимальный индекс (детерминированно). */
-    private static int argmaxLogitsGreedy(float[] logits, int vocabSize) {
-        int best = 0;
-        float bestVal = logits[0];
-        for (int i = 1; i < vocabSize; i++) {
-            float v = logits[i];
-            if (v > bestVal || (v == bestVal && i < best)) {
-                bestVal = v;
-                best = i;
-            }
-        }
-        return best;
-    }
-
-    /** Сравнение как у top-k после сортировки по убыванию logit; при равенстве предпочтительнее меньший индекс. */
-    private static boolean isBetterLogit(float[] vals, int i, int j) {
-        int c = Float.compare(vals[i], vals[j]);
-        if (c != 0) {
-            return c > 0;
-        }
-        return i < j;
+        return GptAutoregressiveGenerator.generateGpuKv(this, inputTokens, maxNewTokens, temperature, topK);
     }
 
     public long countParameters() {
@@ -3351,39 +1923,6 @@ public final class GPTModel {
     }
 
     /**
-     * Число тензоров вне стека {@link DecoderBlock}: token emb, pos emb, final RMSNorm, LM head (порядок
-     * {@link #getParameters()}).
-     */
-    private static final int WEIGHT_SAVE_NON_LAYER_TENSOR_COUNT = 4;
-
-    /**
-     * Число тензоров на слой в файле весов (см. {@link DecoderBlock#collectParameters}).
-     */
-    private static final int WEIGHT_SAVE_TENSORS_PER_DECODER_LAYER = 9;
-
-    private String weightTensorCountMismatchMessage(int savedN, int modelN) {
-        StringBuilder sb = new StringBuilder(280);
-        sb.append("saved parameter count ")
-                .append(savedN)
-                .append(" != model parameter count ")
-                .append(modelN)
-                .append(" (текущая геометрия: ")
-                .append(numLayers)
-                .append(" слоёв).");
-        if (savedN >= WEIGHT_SAVE_NON_LAYER_TENSOR_COUNT
-                && (savedN - WEIGHT_SAVE_NON_LAYER_TENSOR_COUNT) % WEIGHT_SAVE_TENSORS_PER_DECODER_LAYER == 0) {
-            int fileLayers =
-                    (savedN - WEIGHT_SAVE_NON_LAYER_TENSOR_COUNT) / WEIGHT_SAVE_TENSORS_PER_DECODER_LAYER;
-            sb.append(" По числу тензоров файл похож на ")
-                    .append(fileLayers)
-                    .append("-слойный чекпоинт; задайте --layers ")
-                    .append(fileLayers)
-                    .append(" (и при необходимости --seq-len как при обучении), либо те же env, что при train.");
-        }
-        return sb.toString();
-    }
-
-    /**
      * Загружает веса из файла, сохранённого {@link LLMTrainer#saveModelWeights(String)} (тот же порядок
      * тензоров, что у {@link #getParameters()}).
      */
@@ -3395,7 +1934,7 @@ public final class GPTModel {
             bis.reset();
             if (b0 == 0xac && b1 == 0xed) {
                 try (ObjectInputStream in = new ObjectInputStream(bis)) {
-                    loadWeightsFromJavaSerialization(in);
+                    GptModelWeightsLoader.loadFromJavaSerialization(numLayers, getParameters(), in);
                 }
             } else {
                 DataInputStream dis = new DataInputStream(bis);
@@ -3403,102 +1942,11 @@ public final class GPTModel {
                 if (!MODEL_WEIGHTS_FORMAT_V1.equals(tag)) {
                     throw new IOException("unknown model weights tag: " + tag);
                 }
-                loadWeightsFromBinaryV1(dis);
+                GptModelWeightsLoader.loadFromBinaryV1(numLayers, getParameters(), dis);
             }
         }
         syncGpuResidentWeightsFromHost();
         log.info("Веса модели загружены из файла: {}", path);
-    }
-
-    private void loadWeightsFromJavaSerialization(ObjectInputStream in) throws IOException, ClassNotFoundException {
-        int n = in.readInt();
-        List<Tensor> params = getParameters();
-        if (n != params.size()) {
-            throw new IOException(weightTensorCountMismatchMessage(n, params.size()));
-        }
-        for (int i = 0; i < n; i++) {
-            int[] shape = (int[]) in.readObject();
-            float[] data = (float[]) in.readObject();
-            copyLoadedParamSlice(i, params, shape, data);
-        }
-    }
-
-    private void loadWeightsFromBinaryV1(DataInputStream in) throws IOException {
-        int n = in.readInt();
-        List<Tensor> params = getParameters();
-        if (n != params.size()) {
-            throw new IOException(weightTensorCountMismatchMessage(n, params.size()));
-        }
-        for (int i = 0; i < n; i++) {
-            int rank = in.readInt();
-            int[] shape = new int[rank];
-            for (int r = 0; r < rank; r++) {
-                shape[r] = in.readInt();
-            }
-            int expected = 1;
-            for (int d : shape) {
-                expected *= d;
-            }
-            float[] data = new float[expected];
-            if (expected > 0) {
-                byte[] raw = new byte[expected * 4];
-                in.readFully(raw);
-                ByteBuffer.wrap(raw).order(ByteOrder.BIG_ENDIAN).asFloatBuffer().get(data);
-            }
-            copyLoadedParamSlice(i, params, shape, data);
-        }
-    }
-
-    private static IOException shapeMismatchAtParam(int i, int[] savedShape, int[] modelShape) {
-        String base =
-                "shape mismatch at param "
-                        + i
-                        + ": saved "
-                        + Arrays.toString(savedShape)
-                        + " vs model "
-                        + Arrays.toString(modelShape);
-        if (i == 1
-                && savedShape.length == 2
-                && modelShape.length == 2
-                && savedShape[1] == modelShape[1]
-                && savedShape[0] != modelShape[0]) {
-            return new IOException(
-                    base
-                            + ". Несовпадение maxSeqLen у позиционной таблицы: в чекпоинте "
-                            + savedShape[0]
-                            + " позиций, в текущей геометрии "
-                            + modelShape[0]
-                            + ". Задайте --seq-len "
-                            + savedShape[0]
-                            + " (и то же, что при обучении / JGPT_MAX_SEQ_LEN).");
-        }
-        if (i == 0
-                && savedShape.length == 2
-                && modelShape.length == 2
-                && savedShape[1] == modelShape[1]
-                && savedShape[0] != modelShape[0]) {
-            return new IOException(
-                    base
-                            + ". Несовпадение vocab у эмбеддинга токенов: файл "
-                            + savedShape[0]
-                            + " vs модель "
-                            + modelShape[0]
-                            + " (токенизатор/пресет).");
-        }
-        return new IOException(base);
-    }
-
-    private static void copyLoadedParamSlice(int i, List<Tensor> params, int[] shape, float[] data)
-            throws IOException {
-        Tensor p = params.get(i);
-        if (!Arrays.equals(shape, p.getShape())) {
-            throw shapeMismatchAtParam(i, shape, p.getShape());
-        }
-        float[] dst = p.internalBuffer();
-        if (data.length != dst.length) {
-            throw new IOException("length mismatch at param " + i);
-        }
-        System.arraycopy(data, 0, dst, 0, dst.length);
     }
 
     public Tensor getLastHidden() {
@@ -3508,873 +1956,4 @@ public final class GPTModel {
     public Tensor getLmHead() {
         return lmHead;
     }
-
-    private static final class TokenEmbedding {
-        private final Tensor weights;
-        /** Копия {@link #weights} на VRAM при GPU-резидентной модели; gather без H2D весов на каждый forward. */
-        private final GpuTensor weightsGpu;
-
-        TokenEmbedding(int vocabSize, int dModel, float scale, boolean gpuResidentEmbedding) {
-            this.weights = TensorOps.randomTensor(new int[]{vocabSize, dModel}, scale);
-            if (gpuResidentEmbedding) {
-                this.weightsGpu = GpuTensor.fromHostTensor(weights);
-            } else {
-                this.weightsGpu = null;
-            }
-        }
-
-        void syncGpuWeightsFromHost() {
-            if (weightsGpu != null) {
-                weightsGpu.uploadFrom(weights.internalBuffer(), 0, weights.size());
-            }
-        }
-
-        void closeGpuWeights() {
-            if (weightsGpu != null) {
-                weightsGpu.close();
-            }
-        }
-
-        boolean hasWeightsGpu() {
-            return weightsGpu != null;
-        }
-
-        /**
-         * Gather в {@code out} на device; веса — {@link #weightsGpu}. Форма {@code out} — {@code [batch, seq, dModel]}.
-         */
-        void forwardGatherToGpuTensor(Tensor tokens, GpuTensor out) {
-            if (weightsGpu == null) {
-                throw new IllegalStateException("weightsGpu is null");
-            }
-            int[] shape = tokens.getShape();
-            int batch = shape[0];
-            int seqLen = shape[1];
-            int dModel = weights.getShape()[1];
-            int vocabSize = weights.getShape()[0];
-            int[] os = out.getShape();
-            if (os.length != 3 || os[0] != batch || os[1] != seqLen || os[2] != dModel) {
-                throw new IllegalArgumentException(
-                        "out must be [batch, seq, d_model], got " + Arrays.toString(os));
-            }
-            int nTok = batch * seqLen;
-            for (int i = 0; i < nTok; i++) {
-                int tokenIdx = (int) tokens.getLinear(i);
-                if (tokenIdx < 0 || tokenIdx >= vocabSize) {
-                    throw new IllegalArgumentException("token index out of range: " + tokenIdx);
-                }
-            }
-            java.nio.ByteBuffer tokenByteBuf = tokens.directByteBuffer();
-            if (tokenByteBuf != null && tokenByteBuf.isDirect()) {
-                TensorOpsGPU.embeddingTokenForwardGpuDirectDeviceWeightsToDevice(
-                        tokenByteBuf, weightsGpu.devicePointer(), out.dataBuffer(), batch, seqLen, dModel, vocabSize);
-            } else {
-                float[] tokenData = tokens.internalBuffer();
-                TensorOpsGPU.embeddingTokenForwardGpuDeviceWeightsToDevice(
-                        tokenData, weightsGpu.devicePointer(), out.dataBuffer(), batch, seqLen, dModel, vocabSize);
-            }
-        }
-
-        void collectParameters(List<Tensor> out) {
-            out.add(weights);
-        }
-
-        /** Градиент по таблице эмбеддингов: scatter по индексам токенов. */
-        void backwardScatter(Tensor tokens, Tensor gradOut) {
-            int[] shape = tokens.getShape();
-            int batch = shape[0];
-            int seqLen = shape[1];
-            int dm = weights.getShape()[1];
-            int vocab = weights.getShape()[0];
-            int wSize = vocab * dm;
-            if (!weights.hasGrad()) {
-                weights.zeroGrad();
-            }
-            float[] gw = weights.gradBuffer();
-            float[] tok = tokens.internalBuffer();
-            float[] g = gradOut.gradBuffer();
-            int n = batch * seqLen * dm;
-            if (n <= 0) {
-                return;
-            }
-            if (weightsGpu != null) {
-                TensorOpsGPU.requireCuda("TokenEmbedding.backwardScatter");
-                if (!weightsGpu.hasGradBuffer()) {
-                    weightsGpu.zeroGrad();
-                }
-                weightsGpu.gradBuffer().copyFrom(gw, 0, wSize);
-                TensorOpsGPU.embeddingTokenBackwardGPUDeviceGradWeights(
-                        tok, g, batch, seqLen, dm, vocab, weightsGpu.gradDevicePointer());
-                weightsGpu.gradBuffer().copyTo(gw, 0, wSize);
-                weightsGpu.zeroGrad();
-                return;
-            }
-            TensorOpsGPU.requireCuda("TokenEmbedding.backwardScatter");
-            TensorOpsGPU.embeddingTokenBackwardGPU(tok, g, gw, batch, seqLen, dm, vocab);
-        }
-
-        /**
-         * Как {@link #backwardScatter}, но градиент на входе эмбеддинга уже на device (без D2H всего
-         * {@code [B,S,d]}).
-         */
-        void backwardScatterFromDeviceGrad(Tensor tokens, GpuFloatBuffer gradDevice, int batch, int seqLen) {
-            int dm = weights.getShape()[1];
-            int vocab = weights.getShape()[0];
-            if (!weights.hasGrad()) {
-                weights.zeroGrad();
-            }
-            float[] tok = tokens.internalBuffer();
-            if (weightsGpu == null) {
-                throw new IllegalStateException(
-                        "backwardScatterFromDeviceGrad requires GPU-resident token embedding tables");
-            }
-            TensorOpsGPU.requireCuda("TokenEmbedding.backwardScatterFromDeviceGrad");
-            if (!weightsGpu.hasGradBuffer()) {
-                weightsGpu.zeroGrad();
-            }
-            /* Накопление только в VRAM (atomicAdd в CUDA); хостовый буфер весов не обновляется. Между микробатчами ∂W
-             * на GPU не обнуляем (полный GPU-шаг оптимизатора читает только grad на VRAM). */
-            TensorOpsGPU.embeddingTokenBackwardGPUDeviceGradWeightsDeviceGrad(
-                    tok,
-                    gradDevice.devicePointer(),
-                    batch,
-                    seqLen,
-                    dm,
-                    vocab,
-                    weightsGpu.gradDevicePointer());
-        }
-
-        Tensor forward(Tensor tokens) {
-            int[] shape = tokens.getShape();
-            int batch = shape[0];
-            int seqLen = shape[1];
-            int dModel = weights.getShape()[1];
-            int vocabSize = weights.getShape()[0];
-
-            Tensor output = new Tensor(new int[]{batch, seqLen, dModel});
-            float[] outData = output.internalBuffer();
-            float[] weightData = weights.internalBuffer();
-
-            int nTok = batch * seqLen;
-            for (int i = 0; i < nTok; i++) {
-                int tokenIdx = (int) tokens.getLinear(i);
-                if (tokenIdx < 0 || tokenIdx >= vocabSize) {
-                    throw new IllegalArgumentException("token index out of range: " + tokenIdx);
-                }
-            }
-
-            int n = batch * seqLen * dModel;
-            if (n <= 0) {
-                return output;
-            }
-            TensorOpsGPU.requireCuda("TokenEmbedding.forward");
-            java.nio.ByteBuffer tokenByteBuf = tokens.directByteBuffer();
-            if (weightsGpu != null) {
-                long dW = weightsGpu.devicePointer();
-                if (tokenByteBuf != null && tokenByteBuf.isDirect()) {
-                    TensorOpsGPU.embeddingTokenForwardGpuDirectDeviceWeights(
-                            tokenByteBuf, dW, outData, batch, seqLen, dModel, vocabSize);
-                    return output;
-                }
-                float[] tokenData = tokens.internalBuffer();
-                TensorOpsGPU.embeddingTokenForwardGpuDeviceWeights(
-                        tokenData, dW, outData, batch, seqLen, dModel, vocabSize);
-                return output;
-            }
-            if (tokenByteBuf != null && tokenByteBuf.isDirect()) {
-                TensorOpsGPU.embeddingTokenForwardGpuDirect(
-                        tokenByteBuf, weightData, outData, batch, seqLen, dModel, vocabSize);
-                return output;
-            }
-            float[] tokenData = tokens.internalBuffer();
-            TensorOpsGPU.embeddingTokenForwardGpu(tokenData, weightData, outData, batch, seqLen, dModel, vocabSize);
-            return output;
-        }
-    }
-
-    private static final class PositionEmbedding {
-        private final Tensor weights;
-        /** Копия {@link #weights} на VRAM при GPU-резидентной модели; backward scatter ∂ без alloc всей таблицы. */
-        private final GpuTensor weightsGpu;
-
-        PositionEmbedding(int maxSeqLen, int dModel, float scale, boolean gpuResidentEmbedding) {
-            this.weights = TensorOps.randomTensor(new int[]{maxSeqLen, dModel}, scale);
-            if (gpuResidentEmbedding) {
-                this.weightsGpu = GpuTensor.fromHostTensor(weights);
-            } else {
-                this.weightsGpu = null;
-            }
-        }
-
-        void syncGpuWeightsFromHost() {
-            if (weightsGpu != null) {
-                weightsGpu.uploadFrom(weights.internalBuffer(), 0, weights.size());
-            }
-        }
-
-        void closeGpuWeights() {
-            if (weightsGpu != null) {
-                weightsGpu.close();
-            }
-        }
-
-        boolean hasWeightsGpu() {
-            return weightsGpu != null;
-        }
-
-        GpuFloatBuffer positionWeightsDataBuffer() {
-            if (weightsGpu == null) {
-                throw new IllegalStateException("weightsGpu is null");
-            }
-            return weightsGpu.dataBuffer();
-        }
-
-        /**
-         * In-place: {@code x[b,s,:] += table[posRowStart+s,:]}. Таблица позиций — {@code [maxSeq, dModel]} на host или
-         * VRAM.
-         */
-        void addToActivationsInPlace(Tensor x, int seqLen, int posRowStart) {
-            int[] sh = x.getShape();
-            if (sh.length != 3 || sh[1] != seqLen) {
-                throw new IllegalArgumentException(
-                        "x must be [batch, seqLen=" + seqLen + ", d_model], got " + Arrays.toString(sh));
-            }
-            int batch = sh[0];
-            int dm = sh[2];
-            int maxPos = weights.getShape()[0];
-            int wDm = weights.getShape()[1];
-            if (dm != wDm) {
-                throw new IllegalArgumentException("d_model mismatch: x has " + dm + ", table has " + wDm);
-            }
-            if (posRowStart < 0 || posRowStart + seqLen > maxPos) {
-                throw new IllegalArgumentException(
-                        "position rows ["
-                                + posRowStart
-                                + ", "
-                                + (posRowStart + seqLen)
-                                + ") out of table rows [0,"
-                                + maxPos
-                                + ")");
-            }
-            int n = batch * seqLen * dm;
-            if (n == 0) {
-                return;
-            }
-            TensorOpsGPU.requireCuda("PositionEmbedding.addToActivationsInPlace");
-            float[] xb = x.internalBuffer();
-            if (weightsGpu != null) {
-                TensorOpsGPU.addPositionEmbeddingGPUDeviceWeights(
-                        xb, weightsGpu.devicePointer(), batch, seqLen, dm, posRowStart);
-            } else {
-                float[] slice = new float[seqLen * dm];
-                float[] w = weights.internalBuffer();
-                int rowStride = weights.stridesInternal()[0];
-                for (int s = 0; s < seqLen; s++) {
-                    System.arraycopy(w, (posRowStart + s) * rowStride, slice, s * dm, dm);
-                }
-                TensorOpsGPU.addPositionEmbeddingInPlaceHostSlice(xb, slice, batch, seqLen, dm);
-            }
-        }
-
-        void collectParameters(List<Tensor> out) {
-            out.add(weights);
-        }
-
-        /** Сумма градиентов по батчу для позиций 0..seqLen-1. */
-        void backwardAccumulate(Tensor gradCombined, int seqLen) {
-            int dm = weights.getShape()[1];
-            int[] gs = gradCombined.getShape();
-            int batch = gs[0];
-            int wPlane = seqLen * dm;
-            if (!weights.hasGrad()) {
-                weights.zeroGrad();
-            }
-            float[] gw = weights.gradBuffer();
-            float[] g = gradCombined.gradBuffer();
-            int n = batch * seqLen * dm;
-            if (n <= 0) {
-                return;
-            }
-            if (weightsGpu != null) {
-                TensorOpsGPU.requireCuda("PositionEmbedding.backwardAccumulate");
-                if (!weightsGpu.hasGradBuffer()) {
-                    weightsGpu.zeroGrad();
-                }
-                weightsGpu.gradBuffer().copyFrom(gw, 0, wPlane);
-                TensorOpsGPU.embeddingPositionBackwardGPUDeviceGradWeights(
-                        g, batch, seqLen, dm, weightsGpu.gradDevicePointer());
-                weightsGpu.gradBuffer().copyTo(gw, 0, wPlane);
-                weightsGpu.zeroGrad();
-                return;
-            }
-            TensorOpsGPU.requireCuda("PositionEmbedding.backwardAccumulate");
-            TensorOpsGPU.embeddingPositionBackwardGPU(g, gw, batch, seqLen, dm);
-        }
-
-        /** Как {@link #backwardAccumulate}, но градиент объединённого входа уже на device. */
-        void backwardAccumulateFromDeviceGrad(GpuFloatBuffer gradDevice, int batch, int seqLen) {
-            int dm = weights.getShape()[1];
-            if (!weights.hasGrad()) {
-                weights.zeroGrad();
-            }
-            if (weightsGpu == null) {
-                throw new IllegalStateException(
-                        "backwardAccumulateFromDeviceGrad requires GPU-resident position embedding");
-            }
-            TensorOpsGPU.requireCuda("PositionEmbedding.backwardAccumulateFromDeviceGrad");
-            if (!weightsGpu.hasGradBuffer()) {
-                weightsGpu.zeroGrad();
-            }
-            /* ∂ позиций 0..seqLen-1 накопление в VRAM; буфер размера maxSeq×d строки s≥seqLen не трогаются ядром. */
-            TensorOpsGPU.embeddingPositionBackwardGPUDeviceGradWeightsDeviceGrad(
-                    gradDevice.devicePointer(), batch, seqLen, dm, weightsGpu.gradDevicePointer());
-        }
-
-        Tensor forward(int seqLen) {
-            int dModel = weights.getShape()[1];
-            Tensor out = new Tensor(new int[]{1, seqLen, dModel});
-            float[] w = weights.internalBuffer();
-            float[] o = out.internalBuffer();
-            for (int s = 0; s < seqLen; s++) {
-                System.arraycopy(w, s * dModel, o, s * dModel, dModel);
-            }
-            return out;
-        }
-
-        /** Одна строка таблицы позиций: {@code [1, 1, d_model]}. */
-        Tensor forwardOne(int position) {
-            int maxPos = weights.getShape()[0];
-            int dModel = weights.getShape()[1];
-            if (position < 0 || position >= maxPos) {
-                throw new IllegalArgumentException("position " + position + " out of range [0," + maxPos + ")");
-            }
-            Tensor out = new Tensor(new int[]{1, 1, dModel});
-            float[] w = weights.internalBuffer();
-            System.arraycopy(w, position * dModel, out.internalBuffer(), 0, dModel);
-            return out;
-        }
-
-        /** Строки {@code [start, start+len)} → {@code [1, len, d_model]}. */
-        Tensor forwardRange(int start, int len) {
-            int maxPos = weights.getShape()[0];
-            int dModel = weights.getShape()[1];
-            if (start < 0 || len < 0 || start + len > maxPos) {
-                throw new IllegalArgumentException(
-                        "range [" + start + ", " + (start + len) + ") out of [0," + maxPos + ")");
-            }
-            Tensor out = new Tensor(new int[]{1, len, dModel});
-            float[] w = weights.internalBuffer();
-            float[] o = out.internalBuffer();
-            for (int s = 0; s < len; s++) {
-                System.arraycopy(w, (start + s) * dModel, o, s * dModel, dModel);
-            }
-            return out;
-        }
-    }
-
-    /**
-     * Декодер-блок (backward на CPU). При {@link GPTModel#gpuResident}: аттеншн и FFN без H2D весов на шаг
-     * (см. {@link TensorOps#tryMultiHeadAttentionWithRoPEGpuResident} и fused FFN).
-     */
-    private static final class DecoderBlock {
-        private final Tensor Wq;
-        private final Tensor Wk;
-        private final Tensor Wv;
-        private final Tensor Wo;
-        private final Tensor W1;
-        private final Tensor W2;
-        private final Tensor W3;
-        private final Tensor norm1;
-        private final Tensor norm2;
-        private final int numHeads;
-
-        DecoderBlock(int dModel, int numHeads, int dIntermediate, float projScale, float ffnScale) {
-            this.numHeads = numHeads;
-            this.Wq = TensorOps.randomTensor(new int[]{dModel, dModel}, projScale);
-            this.Wk = TensorOps.randomTensor(new int[]{dModel, dModel}, projScale);
-            this.Wv = TensorOps.randomTensor(new int[]{dModel, dModel}, projScale);
-            this.Wo = TensorOps.randomTensor(new int[]{dModel, dModel}, projScale);
-            this.W1 = TensorOps.randomTensor(new int[]{dModel, dIntermediate}, ffnScale);
-            this.W2 = TensorOps.randomTensor(new int[]{dIntermediate, dModel}, ffnScale);
-            this.W3 = TensorOps.randomTensor(new int[]{dModel, dIntermediate}, ffnScale);
-            this.norm1 = TensorOps.onesTensor(new int[]{dModel});
-            this.norm2 = TensorOps.onesTensor(new int[]{dModel});
-        }
-
-        void collectParameters(List<Tensor> out) {
-            out.add(Wq);
-            out.add(Wk);
-            out.add(Wv);
-            out.add(Wo);
-            out.add(W1);
-            out.add(W2);
-            out.add(W3);
-            out.add(norm1);
-            out.add(norm2);
-        }
-
-        void zeroGradTensors() {
-            Wq.zeroGrad();
-            Wk.zeroGrad();
-            Wv.zeroGrad();
-            Wo.zeroGrad();
-            W1.zeroGrad();
-            W2.zeroGrad();
-            W3.zeroGrad();
-            norm1.zeroGrad();
-            norm2.zeroGrad();
-        }
-
-        Tensor getWq() {
-            return Wq;
-        }
-
-        Tensor getWk() {
-            return Wk;
-        }
-
-        Tensor getWv() {
-            return Wv;
-        }
-
-        Tensor getWo() {
-            return Wo;
-        }
-
-        Tensor getW1() {
-            return W1;
-        }
-
-        Tensor getW2() {
-            return W2;
-        }
-
-        Tensor getW3() {
-            return W3;
-        }
-
-        Tensor getNorm1() {
-            return norm1;
-        }
-
-        Tensor getNorm2() {
-            return norm2;
-        }
-
-        Tensor forward(Tensor x, Tensor mask, boolean useRoPE) {
-            return forward(x, mask, useRoPE, null, null, null, null);
-        }
-
-        Tensor forward(
-                Tensor x,
-                Tensor mask,
-                boolean useRoPE,
-                BlockActivationCache cache) {
-            return forward(x, mask, useRoPE, cache, null, null, null);
-        }
-
-        Tensor forward(
-                Tensor x,
-                Tensor mask,
-                boolean useRoPE,
-                BlockActivationCache cache,
-                TensorOps.GpuFfnResidentBuffers ffnResident) {
-            return forward(x, mask, useRoPE, cache, null, ffnResident, null);
-        }
-
-        Tensor forward(
-                Tensor x,
-                Tensor mask,
-                boolean useRoPE,
-                BlockActivationCache cache,
-                TensorOps.GpuFfnResidentBuffers ffnResident,
-                TensorOps.GpuAttnResidentBuffers attnResident) {
-            return forward(x, mask, useRoPE, cache, null, ffnResident, attnResident);
-        }
-
-        Tensor forward(
-                Tensor x,
-                Tensor mask,
-                boolean useRoPE,
-                BlockActivationCache hostCache,
-                BlockActivationCacheDevice deviceCache,
-                TensorOps.GpuFfnResidentBuffers ffnResident,
-                TensorOps.GpuAttnResidentBuffers attnResident) {
-            if (hostCache != null && deviceCache != null) {
-                throw new IllegalArgumentException("host BlockActivationCache and BlockActivationCacheDevice are mutually exclusive");
-            }
-            final float eps = TensorOpsGPU.rmsNormEps();
-            TensorOps.AttnGpuResidentResult ar = null;
-            if (attnResident != null) {
-                ar = TensorOps.tryMultiHeadAttentionWithRoPEGpuResident(
-                        x, eps, attnResident, numHeads, mask, useRoPE, hostCache, deviceCache);
-            }
-            Tensor xNorm1;
-            Tensor attnOut;
-            if (ar != null) {
-                attnOut = ar.out();
-                xNorm1 = ar.xNorm1();
-            } else {
-                xNorm1 = TensorOps.rmsNorm(x, norm1, eps);
-                attnOut =
-                        useRoPE
-                                ? TensorOps.multiHeadAttentionWithRoPE(
-                                        xNorm1, Wq, Wk, Wv, Wo, numHeads, mask, true, hostCache)
-                                : TensorOps.multiHeadAttention(xNorm1, Wq, Wk, Wv, Wo, numHeads, mask);
-            }
-            Tensor xRes1 = TensorOps.add(x, attnOut);
-            Tensor xNorm2;
-            Tensor ffnOut;
-            Tensor out;
-            TensorOps.FfnForwardResult fusedFfn =
-                    ffnResident != null
-                            ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(
-                                    xRes1, ffnResident, hostCache, deviceCache)
-                            : null;
-            if (fusedFfn == null) {
-                fusedFfn = TensorOps.tryFusedNormResidualSwiGLUForwardGpu(xRes1, norm2, W1, W2, W3, hostCache);
-            }
-            if (fusedFfn != null) {
-                xNorm2 = fusedFfn.xNorm2;
-                ffnOut = fusedFfn.ffnOut;
-                out = fusedFfn.out;
-            } else {
-                xNorm2 = TensorOps.rmsNorm(xRes1, norm2, eps);
-                ffnOut = TensorOps.feedForwardSwiGLU(xNorm2, W1, W2, W3, hostCache);
-                out = TensorOps.add(xRes1, ffnOut);
-            }
-            int[] xShape = x.getShape();
-            int rows = xShape[0] * xShape[1];
-            int plane = rows * xShape[2];
-            if (hostCache != null) {
-                boolean fp16Slot = hostCache.useFp16ActivationStorage;
-                boolean fp16Fused = hostCache.fp16ForFusedGpuBackwardConsumptionSlots();
-                hostCache.xIn.store(x, fp16Slot);
-                hostCache.xNorm1.store(xNorm1, fp16Fused);
-                hostCache.attnOut.store(attnOut, fp16Slot);
-                hostCache.xRes1.store(xRes1, fp16Fused);
-                if (fusedFfn == null) {
-                    hostCache.xNorm2.store(xNorm2, fp16Fused);
-                    hostCache.ffnOut.store(ffnOut, fp16Fused);
-                }
-                hostCache.xOut.store(out, fp16Slot);
-            }
-            if (deviceCache != null) {
-                deviceCache.copySlotFromHostFloat(BlockActivationCacheDevice.SlotId.X_IN, x.internalBuffer(), 0, plane);
-                deviceCache.copySlotFromHostFloat(
-                        BlockActivationCacheDevice.SlotId.X_RES1, xRes1.internalBuffer(), 0, plane);
-                deviceCache.copySlotFromHostFloat(BlockActivationCacheDevice.SlotId.X_OUT, out.internalBuffer(), 0, plane);
-            }
-            return out;
-        }
-
-        /**
-         * Явный вход «GPU-пайплайн блока» (resident attention/FFN при ненулевых буферах); эквивалентно
-         * {@link #forward(Tensor, Tensor, boolean, BlockActivationCache, BlockActivationCacheDevice, TensorOps.GpuFfnResidentBuffers, TensorOps.GpuAttnResidentBuffers)}
-         * с RoPE.
-         */
-        Tensor forwardGpuPipeline(
-                Tensor x,
-                Tensor mask,
-                BlockActivationCache hostCache,
-                BlockActivationCacheDevice deviceCache,
-                TensorOps.GpuFfnResidentBuffers ffnResident,
-                TensorOps.GpuAttnResidentBuffers attnResident) {
-            return forward(x, mask, true, hostCache, deviceCache, ffnResident, attnResident);
-        }
-
-        Tensor forwardKvPrefill(
-                Tensor x,
-                Tensor mask,
-                BlockActivationCache cache,
-                Tensor kCacheLayer,
-                Tensor vCacheLayer,
-                int ropeOffset) {
-            return forwardKvPrefill(x, mask, cache, kCacheLayer, vCacheLayer, ropeOffset, null, null);
-        }
-
-        Tensor forwardKvPrefill(
-                Tensor x,
-                Tensor mask,
-                BlockActivationCache cache,
-                Tensor kCacheLayer,
-                Tensor vCacheLayer,
-                int ropeOffset,
-                TensorOps.GpuFfnResidentBuffers ffnResident) {
-            return forwardKvPrefill(
-                    x, mask, cache, kCacheLayer, vCacheLayer, ropeOffset, ffnResident, null);
-        }
-
-        Tensor forwardKvPrefill(
-                Tensor x,
-                Tensor mask,
-                BlockActivationCache cache,
-                Tensor kCacheLayer,
-                Tensor vCacheLayer,
-                int ropeOffset,
-                TensorOps.GpuFfnResidentBuffers ffnResident,
-                TensorOps.GpuAttnResidentBuffers attnResident) {
-            final float eps = TensorOpsGPU.rmsNormEps();
-            Tensor attnOut = null;
-            if (attnResident != null) {
-                attnOut =
-                        TensorOps.tryMultiHeadAttentionWithRoPEPrefillGpuResident(
-                                x,
-                                eps,
-                                attnResident,
-                                numHeads,
-                                mask,
-                                kCacheLayer,
-                                vCacheLayer,
-                                ropeOffset);
-            }
-            if (attnOut == null) {
-                Tensor xNorm1 = TensorOps.rmsNorm(x, norm1, eps);
-                attnOut =
-                        TensorOps.multiHeadAttentionWithRoPEPrefill(
-                                xNorm1,
-                                Wq,
-                                Wk,
-                                Wv,
-                                Wo,
-                                numHeads,
-                                mask,
-                                kCacheLayer,
-                                vCacheLayer,
-                                ropeOffset);
-            }
-            Tensor xRes1 = TensorOps.add(x, attnOut);
-            TensorOps.FfnForwardResult fusedFfn =
-                    ffnResident != null
-                            ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(xRes1, ffnResident, cache)
-                            : null;
-            if (fusedFfn == null) {
-                fusedFfn = TensorOps.tryFusedNormResidualSwiGLUForwardGpu(xRes1, norm2, W1, W2, W3, cache);
-            }
-            if (fusedFfn != null) {
-                return fusedFfn.out;
-            }
-            Tensor xNorm2 = TensorOps.rmsNorm(xRes1, norm2, eps);
-            Tensor ffnOut = TensorOps.feedForwardSwiGLU(xNorm2, W1, W2, W3, cache);
-            return TensorOps.add(xRes1, ffnOut);
-        }
-
-        Tensor forwardKvDecode(
-                Tensor x,
-                BlockActivationCache cache,
-                Tensor kCacheLayer,
-                Tensor vCacheLayer,
-                int cacheLenBefore,
-                int ropePosition) {
-            return forwardKvDecode(
-                    x, cache, kCacheLayer, vCacheLayer, cacheLenBefore, ropePosition, null, null);
-        }
-
-        Tensor forwardKvDecode(
-                Tensor x,
-                BlockActivationCache cache,
-                Tensor kCacheLayer,
-                Tensor vCacheLayer,
-                int cacheLenBefore,
-                int ropePosition,
-                TensorOps.GpuFfnResidentBuffers ffnResident) {
-            return forwardKvDecode(
-                    x,
-                    cache,
-                    kCacheLayer,
-                    vCacheLayer,
-                    cacheLenBefore,
-                    ropePosition,
-                    ffnResident,
-                    null);
-        }
-
-        Tensor forwardKvDecode(
-                Tensor x,
-                BlockActivationCache cache,
-                Tensor kCacheLayer,
-                Tensor vCacheLayer,
-                int cacheLenBefore,
-                int ropePosition,
-                TensorOps.GpuFfnResidentBuffers ffnResident,
-                TensorOps.GpuAttnResidentBuffers attnResident) {
-            final float eps = TensorOpsGPU.rmsNormEps();
-            Tensor attnOut = null;
-            if (attnResident != null) {
-                attnOut =
-                        TensorOps.tryMultiHeadAttentionWithRoPEDecodeGpuResident(
-                                x,
-                                eps,
-                                attnResident,
-                                numHeads,
-                                kCacheLayer,
-                                vCacheLayer,
-                                cacheLenBefore,
-                                ropePosition);
-            }
-            if (attnOut == null) {
-                Tensor xNorm1 = TensorOps.rmsNorm(x, norm1, eps);
-                attnOut =
-                        TensorOps.multiHeadAttentionWithRoPEDecode(
-                                xNorm1,
-                                Wq,
-                                Wk,
-                                Wv,
-                                Wo,
-                                numHeads,
-                                kCacheLayer,
-                                vCacheLayer,
-                                cacheLenBefore,
-                                ropePosition);
-            }
-            Tensor xRes1 = TensorOps.add(x, attnOut);
-            TensorOps.FfnForwardResult fusedFfn =
-                    ffnResident != null
-                            ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(xRes1, ffnResident, cache)
-                            : null;
-            if (fusedFfn == null) {
-                fusedFfn = TensorOps.tryFusedNormResidualSwiGLUForwardGpu(xRes1, norm2, W1, W2, W3, cache);
-            }
-            if (fusedFfn != null) {
-                return fusedFfn.out;
-            }
-            Tensor xNorm2 = TensorOps.rmsNorm(xRes1, norm2, eps);
-            Tensor ffnOut = TensorOps.feedForwardSwiGLU(xNorm2, W1, W2, W3, cache);
-            return TensorOps.add(xRes1, ffnOut);
-        }
-
-        Tensor forwardKvPrefillVram(
-                Tensor x,
-                Tensor mask,
-                BlockActivationCache cache,
-                GpuFloatBuffer kGpu,
-                GpuFloatBuffer vGpu,
-                int maxSeqLen,
-                int ropeOffset,
-                TensorOps.GpuFfnResidentBuffers ffnResident,
-                TensorOps.GpuAttnResidentBuffers attnResident) {
-            final float eps = TensorOpsGPU.rmsNormEps();
-            if (attnResident == null) {
-                throw new IllegalArgumentException("forwardKvPrefillVram requires GpuAttnResidentBuffers");
-            }
-            Tensor attnOut =
-                    TensorOps.tryMultiHeadAttentionWithRoPEPrefillGpuResident(
-                            x, eps, attnResident, numHeads, mask, kGpu, vGpu, maxSeqLen, ropeOffset);
-            if (attnOut == null) {
-                throw new IllegalStateException("GPU KV VRAM prefill path failed");
-            }
-            Tensor xRes1 = TensorOps.add(x, attnOut);
-            TensorOps.FfnForwardResult fusedFfn =
-                    ffnResident != null
-                            ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(xRes1, ffnResident, cache)
-                            : null;
-            if (fusedFfn == null) {
-                fusedFfn = TensorOps.tryFusedNormResidualSwiGLUForwardGpu(xRes1, norm2, W1, W2, W3, cache);
-            }
-            if (fusedFfn != null) {
-                return fusedFfn.out;
-            }
-            Tensor xNorm2 = TensorOps.rmsNorm(xRes1, norm2, eps);
-            Tensor ffnOut = TensorOps.feedForwardSwiGLU(xNorm2, W1, W2, W3, cache);
-            return TensorOps.add(xRes1, ffnOut);
-        }
-
-        Tensor forwardKvDecodeVram(
-                Tensor x,
-                BlockActivationCache cache,
-                GpuFloatBuffer kGpu,
-                GpuFloatBuffer vGpu,
-                int maxSeqLen,
-                int cacheLenBefore,
-                int ropePosition,
-                TensorOps.GpuFfnResidentBuffers ffnResident,
-                TensorOps.GpuAttnResidentBuffers attnResident) {
-            final float eps = TensorOpsGPU.rmsNormEps();
-            if (attnResident == null) {
-                throw new IllegalArgumentException("forwardKvDecodeVram requires GpuAttnResidentBuffers");
-            }
-            Tensor attnOut =
-                    TensorOps.tryMultiHeadAttentionWithRoPEDecodeGpuResident(
-                            x,
-                            eps,
-                            attnResident,
-                            numHeads,
-                            kGpu,
-                            vGpu,
-                            maxSeqLen,
-                            cacheLenBefore,
-                            ropePosition);
-            if (attnOut == null) {
-                throw new IllegalStateException("GPU KV VRAM decode path failed");
-            }
-            Tensor xRes1 = TensorOps.add(x, attnOut);
-            TensorOps.FfnForwardResult fusedFfn =
-                    ffnResident != null
-                            ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(xRes1, ffnResident, cache)
-                            : null;
-            if (fusedFfn == null) {
-                fusedFfn = TensorOps.tryFusedNormResidualSwiGLUForwardGpu(xRes1, norm2, W1, W2, W3, cache);
-            }
-            if (fusedFfn != null) {
-                return fusedFfn.out;
-            }
-            Tensor xNorm2 = TensorOps.rmsNorm(xRes1, norm2, eps);
-            Tensor ffnOut = TensorOps.feedForwardSwiGLU(xNorm2, W1, W2, W3, cache);
-            return TensorOps.add(xRes1, ffnOut);
-        }
-    }
-
-    /** [batch, seq, d] → плоскость [seq, d]. */
-    private static Tensor sliceBatch3D(Tensor t, int batchIdx) {
-        int[] shape = t.getShape();
-        if (shape.length != 3) {
-            throw new IllegalArgumentException("expected 3D tensor");
-        }
-        Tensor slice = new Tensor(new int[]{shape[1], shape[2]});
-        float[] src = t.internalBuffer();
-        float[] dst = slice.internalBuffer();
-        int[] s = t.stridesInternal();
-        int srcBase = batchIdx * s[0];
-        if (s[2] == 1) {
-            for (int i = 0; i < shape[1]; i++) {
-                System.arraycopy(src, srcBase + i * s[1], dst, i * shape[2], shape[2]);
-            }
-        } else {
-            for (int i = 0; i < shape[1]; i++) {
-                for (int j = 0; j < shape[2]; j++) {
-                    dst[i * shape[2] + j] = src[srcBase + i * s[1] + j * s[2]];
-                }
-            }
-        }
-        return slice;
-    }
-
-    /** Копия [seq, last] в dest[batchIdx, :, :]. */
-    private static void copyBatchPlane(Tensor dest, Tensor src, int batchIdx) {
-        int[] dShape = dest.getShape();
-        int[] sShape = src.getShape();
-        if (dShape.length != 3
-                || sShape.length != 2
-                || sShape[0] != dShape[1]
-                || sShape[1] != dShape[2]) {
-            throw new IllegalArgumentException(
-                    "copyBatchPlane: dest " + Arrays.toString(dShape) + ", src " + Arrays.toString(sShape));
-        }
-        float[] d = dest.internalBuffer();
-        float[] sbuf = src.internalBuffer();
-        int[] ds = dest.stridesInternal();
-        int[] ss = src.stridesInternal();
-        int destBase = batchIdx * ds[0];
-        if (ds[2] == 1 && ss[1] == 1) {
-            for (int i = 0; i < sShape[0]; i++) {
-                System.arraycopy(sbuf, i * ss[0], d, destBase + i * ds[1], sShape[1]);
-            }
-        } else {
-            for (int i = 0; i < sShape[0]; i++) {
-                for (int j = 0; j < sShape[1]; j++) {
-                    d[destBase + i * ds[1] + j * ds[2]] = sbuf[i * ss[0] + j * ss[1]];
-                }
-            }
-        }
-    }
-
 }

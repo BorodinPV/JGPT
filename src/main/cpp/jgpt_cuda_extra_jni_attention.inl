@@ -26,9 +26,6 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     if (jgpt_size_mul_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen))) {
         return;
     }
-    if ((long long) batch * (long long) seqLen > (long long) INT_MAX) {
-        return;
-    }
     if (jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(dKDim))
             || jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(seqLen))
             || jgpt_alloc_matrix_bytes_overflows(static_cast<size_t>(seqLen), static_cast<size_t>(seqLen), sizeof(float))) {
@@ -111,9 +108,6 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     if (jgpt_size_mul_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen))) {
         return;
     }
-    if ((long long) batch * (long long) seqLen > (long long) INT_MAX) {
-        return;
-    }
     if (jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(dKDim))
             || jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(seqLen))) {
         return;
@@ -172,9 +166,6 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     if (jgpt_size_mul_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen))) {
         return;
     }
-    if ((long long) batch * (long long) seqLen > (long long) INT_MAX) {
-        return;
-    }
     if (jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(seqLen))
             || jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(dK))
             || jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(dV))) {
@@ -220,7 +211,6 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     /* softmax bwd пишет через +=; scratch свежий — обнуляем. */
     CUDA_CHECK_X(cudaMemset(d_ds, 0, bytesProb));
 
-    int nrows = batch * seqLen;
     /*
      * Раньше при useFp16Softmax пересчитывали QK^T/scores на device и гоняли softmax_last_dim_bwd_from_logits_fp16.
      * Forward softmax_last_dim_kernel_fp16 уже пишет вероятности в FP32 (exp в FP32 — см. комментарий к ядру);
@@ -228,8 +218,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
      */
     (void) useFp16Softmax;
     {
-        size_t smem = kSoftmaxNumWarps * sizeof(float);
-        softmax_last_dim_bwd_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(d_dp, d_p, d_ds, nrows, seqLen);
+        const long long nrows_ll = static_cast<long long>(batch) * static_cast<long long>(seqLen);
+        launch_softmax_last_dim_bwd_block_chunked(d_dp, d_p, d_ds, nrows_ll, seqLen, kTensorCudaStream);
     }
     CUDA_KERNEL_CHECK();
     // scale перенесён как alpha в GEMMы gQ/gK — отдельный проход scale_inplace устранён
@@ -274,9 +264,6 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     if (jgpt_size_mul_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen))) {
         return;
     }
-    if ((long long) batch * (long long) seqLen > (long long) INT_MAX) {
-        return;
-    }
     if (jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(seqLen))
             || jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(dVDim))) {
         return;
@@ -308,11 +295,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
 
     CUDA_CHECK_X(cudaMemset(d_ds, 0, bytesProb));
 
-    int nrows = batch * seqLen;
     (void) useFp16Softmax;
     {
-        size_t smem = kSoftmaxNumWarps * sizeof(float);
-        softmax_last_dim_bwd_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(d_dp, p, d_ds, nrows, seqLen);
+        const long long nrows_ll = static_cast<long long>(batch) * static_cast<long long>(seqLen);
+        launch_softmax_last_dim_bwd_block_chunked(d_dp, p, d_ds, nrows_ll, seqLen, kTensorCudaStream);
     }
     CUDA_KERNEL_CHECK();
     // scale перенесён как alpha в GEMMы gQ/gK — отдельный проход scale_inplace устранён

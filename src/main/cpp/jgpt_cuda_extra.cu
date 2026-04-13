@@ -6,8 +6,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <cstdint>
+#include <algorithm>
 #include <climits>
 #include <cstring>
+#include <cstddef>
 #include <mutex>
 
 #include "jgpt_cuda_stream.cuh"

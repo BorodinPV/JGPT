@@ -6,22 +6,11 @@
   <component name="ChangeListManager">
     <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Крупный рефакторинг">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_device.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_device.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_graph_flash.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_graph_flash.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_host_fwd.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_host_fwd.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_optim.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_optim.inl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_attention.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_attention.inl" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_kernels_launches.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_kernels_launches.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_thread_resources.cuh" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_thread_resources.cuh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_graph_prewarm.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_graph_prewarm.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_buffers.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_buffers.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_init_matmul.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_init_matmul.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_ops_graph.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_ops_graph.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_kernels_launches_macros.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_kernels_launches_macros.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_matmul_staging.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_matmul_staging.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_size_check.cuh" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_size_check.cuh" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/last_step.txt" beforeDir="false" afterPath="$PROJECT_DIR$/state/last_step.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/stats.json" beforeDir="false" afterPath="$PROJECT_DIR$/state/stats.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/state/training.pid" beforeDir="false" afterPath="$PROJECT_DIR$/state/training.pid" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -163,7 +152,7 @@
       <workItem from="1776071856072" duration="73000" />
       <workItem from="1776083722757" duration="10076000" />
       <workItem from="1776099285185" duration="6000" />
-      <workItem from="1776112332280" duration="3755000" />
+      <workItem from="1776112332280" duration="4655000" />
     </task>
     <task id="LOCAL-00001" summary="Переработка для gpu">
       <option name="closed" value="true" />
@@ -445,7 +434,15 @@
       <option name="project" value="LOCAL" />
       <updated>1776114063274</updated>
     </task>
-    <option name="localTasksCounter" value="36" />
+    <task id="LOCAL-00036" summary="Крупный рефакторинг">
+      <option name="closed" value="true" />
+      <created>1776116417794</created>
+      <option name="number" value="00036" />
+      <option name="presentableId" value="LOCAL-00036" />
+      <option name="project" value="LOCAL" />
+      <updated>1776116417794</updated>
+    </task>
+    <option name="localTasksCounter" value="37" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

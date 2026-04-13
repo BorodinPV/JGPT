@@ -68,6 +68,38 @@ static constexpr int kSoftmaxNumWarps       = kSoftmaxBlockDim / 32;  // 8
 static constexpr int kSoftmaxSharedPrefixFloats = 32;
 static constexpr int kSoftmaxBlockThreshold = 64;          // при inner >= этого → block-per-row
 
+/** Макс. gridDim.x для текущего устройства (кэш), не выше INT_MAX для безопасного приведения в launch. */
+static unsigned int jgpt_extra_cuda_max_grid_x() {
+    static unsigned int cached = 0;
+    if (cached == 0) {
+        cudaDeviceProp prop{};
+        if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) {
+            cached = (1u << 20);
+        } else {
+            unsigned long x = static_cast<unsigned long>(prop.maxGridSize[0]);
+            if (x == 0ul || x > static_cast<unsigned long>(INT_MAX)) {
+                x = static_cast<unsigned long>(INT_MAX);
+            }
+            cached = static_cast<unsigned int>(x);
+        }
+    }
+    return cached;
+}
+
+/** true если смещение (nrows-1)*inner + (inner-1) выходит за PTRDIFF_MAX (консервативно). */
+static bool jgpt_softmax_row_inner_offset_overflows(long long nrows_total, int inner) {
+    if (nrows_total <= 0 || inner <= 0) {
+        return false;
+    }
+    const auto inner_u = static_cast<unsigned long long>(inner);
+    const auto last_row = static_cast<unsigned long long>(nrows_total - 1);
+    if (last_row > static_cast<unsigned long long>(PTRDIFF_MAX) / inner_u) {
+        return true;
+    }
+    const unsigned long long max_elem_off = last_row * inner_u + (inner_u - 1u);
+    return max_elem_off > static_cast<unsigned long long>(PTRDIFF_MAX);
+}
+
 __device__ __forceinline__ float warpReduceMax32(float v) {
     v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, 16));
     v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, 8));
@@ -147,16 +179,18 @@ __global__ void softmax_last_dim_block_kernel(
 __global__ void softmax_scaled_masked_block_kernel(
         const float* __restrict__ src, float* __restrict__ dst,
         const float* __restrict__ mask, float scale,
-        int nrows, int inner) {
+        long long nrows_total, long long row_offset, int inner) {
     extern __shared__ float smem[];
     float* const red = smem;
     float* const z = smem + kSoftmaxSharedPrefixFloats;
-    const int row = blockIdx.x;
-    if (row >= nrows) return;
+    const long long row = row_offset + static_cast<long long>(blockIdx.x);
+    if (row >= nrows_total) {
+        return;
+    }
     const int tid = threadIdx.x;
-    const float* rowSrc = src + (ptrdiff_t)row * inner;
-    float*       rowDst = dst + (ptrdiff_t)row * inner;
-    const int qPos = row % inner;  // query-позиция в последовательности для causal mask
+    const float* rowSrc = src + static_cast<ptrdiff_t>(row) * inner;
+    float* rowDst = dst + static_cast<ptrdiff_t>(row) * inner;
+    const int qPos = static_cast<int>(row % inner);  // query-позиция в последовательности для causal mask
 
     float maxv = -INFINITY;
     for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
@@ -186,17 +220,18 @@ __global__ void softmax_scaled_masked_block_kernel(
  * Одно чтение глобальной строки на этапе заполнения z в shared.
  */
 __global__ void softmax_scaled_masked_inplace_block_kernel(
-        float* __restrict__ buf, const float* __restrict__ mask, float scale, int nrows, int inner) {
+        float* __restrict__ buf, const float* __restrict__ mask, float scale,
+        long long nrows_total, long long row_offset, int inner) {
     extern __shared__ float smem[];
     float* const red = smem;
     float* const z = smem + kSoftmaxSharedPrefixFloats;
-    const int row = blockIdx.x;
-    if (row >= nrows) {
+    const long long row = row_offset + static_cast<long long>(blockIdx.x);
+    if (row >= nrows_total) {
         return;
     }
     const int tid = threadIdx.x;
-    float* rowBuf = buf + (ptrdiff_t)row * inner;
-    const int qPos = row % inner;
+    float* rowBuf = buf + static_cast<ptrdiff_t>(row) * inner;
+    const int qPos = static_cast<int>(row % inner);
 
     float maxv = -INFINITY;
     for (int j = tid; j < inner; j += kSoftmaxBlockDim) {
@@ -219,6 +254,47 @@ __global__ void softmax_scaled_masked_inplace_block_kernel(
         const float v = z[j];
         rowBuf[j] = expf(v - maxv) * inv;
     }
+}
+
+static bool launch_softmax_scaled_masked_block_chunked(
+        float* d_scores,
+        float* d_probs,
+        const float* d_mask,
+        float scale,
+        long long nrows_total,
+        int inner,
+        cudaStream_t stream) {
+    if (inner < 0 || nrows_total <= 0) {
+        return true;
+    }
+    if (jgpt_softmax_row_inner_offset_overflows(nrows_total, inner)) {
+        fprintf(stderr, "attn_fwd: softmax masked row*inner offset overflow\n");
+        return false;
+    }
+    const size_t smem = (static_cast<size_t>(kSoftmaxSharedPrefixFloats) + static_cast<size_t>(inner)) * sizeof(float);
+    const unsigned int chunk_cap = jgpt_extra_cuda_max_grid_x();
+    const long long chunk_ll = static_cast<long long>(chunk_cap);
+
+    for (long long row_off = 0; row_off < nrows_total; row_off += chunk_ll) {
+        const long long remain = nrows_total - row_off;
+        const unsigned int grid_x = static_cast<unsigned int>(std::min(chunk_ll, remain));
+        if (grid_x == 0u) {
+            break;
+        }
+        if (d_probs == d_scores) {
+            softmax_scaled_masked_inplace_block_kernel<<<grid_x, kSoftmaxBlockDim, smem, stream>>>(
+                    d_scores, d_mask, scale, nrows_total, row_off, inner);
+        } else {
+            softmax_scaled_masked_block_kernel<<<grid_x, kSoftmaxBlockDim, smem, stream>>>(
+                    d_scores, d_probs, d_mask, scale, nrows_total, row_off, inner);
+        }
+        const cudaError_t le = cudaGetLastError();
+        if (le != cudaSuccess) {
+            fprintf(stderr, "launch_softmax_scaled_masked_block_chunked: %s\n", cudaGetErrorString(le));
+            return false;
+        }
+    }
+    return true;
 }
 
 /**
@@ -902,12 +978,14 @@ __global__ void softmax_last_dim_bwd_kernel(const float* gOut, const float* p, f
  */
 __global__ void softmax_last_dim_bwd_block_kernel(
         const float* __restrict__ gOut, const float* __restrict__ p,
-        float* __restrict__ gIn, int nrows, int inner) {
+        float* __restrict__ gIn, long long nrows_total, long long row_offset, int inner) {
     extern __shared__ float smem[];
-    const int row = blockIdx.x;
-    if (row >= nrows) return;
+    const long long row = row_offset + static_cast<long long>(blockIdx.x);
+    if (row >= nrows_total) {
+        return;
+    }
     const int tid = threadIdx.x;
-    const ptrdiff_t base = (ptrdiff_t)row * inner;
+    const ptrdiff_t base = static_cast<ptrdiff_t>(row) * inner;
 
     float dot = 0.f;
     for (int j = tid; j < inner; j += kSoftmaxBlockDim)
@@ -916,6 +994,35 @@ __global__ void softmax_last_dim_bwd_block_kernel(
 
     for (int j = tid; j < inner; j += kSoftmaxBlockDim)
         gIn[base + j] += p[base + j] * (gOut[base + j] - dot);
+}
+
+static void launch_softmax_last_dim_bwd_block_chunked(
+        const float* gOut, const float* p, float* gIn, long long nrows_total, int inner, cudaStream_t stream) {
+    if (inner < 0 || nrows_total <= 0) {
+        return;
+    }
+    if (jgpt_softmax_row_inner_offset_overflows(nrows_total, inner)) {
+        fprintf(stderr, "softmax_last_dim_bwd_block: row*inner offset overflow\n");
+        return;
+    }
+    const size_t smem = static_cast<size_t>(kSoftmaxNumWarps) * sizeof(float);
+    const unsigned int chunk_cap = jgpt_extra_cuda_max_grid_x();
+    const long long chunk_ll = static_cast<long long>(chunk_cap);
+
+    for (long long row_off = 0; row_off < nrows_total; row_off += chunk_ll) {
+        const long long remain = nrows_total - row_off;
+        const unsigned int grid_x = static_cast<unsigned int>(std::min(chunk_ll, remain));
+        if (grid_x == 0u) {
+            break;
+        }
+        softmax_last_dim_bwd_block_kernel<<<grid_x, kSoftmaxBlockDim, smem, stream>>>(
+                gOut, p, gIn, nrows_total, row_off, inner);
+        const cudaError_t le = cudaGetLastError();
+        if (le != cudaSuccess) {
+            fprintf(stderr, "launch_softmax_last_dim_bwd_block_chunked: %s\n", cudaGetErrorString(le));
+            return;
+        }
+    }
 }
 
 /* ========== Missing helper kernels (были пропущены) ========== */
@@ -1168,8 +1275,8 @@ static void launch_softmax_last_dim(const float* src, float* dst, int nrows, int
 
 static void launch_softmax_last_dim_bwd(const float* gOut, const float* p, float* gIn, int nrows, int inner) {
     if (inner >= kSoftmaxBlockThreshold) {
-        size_t smem = kSoftmaxNumWarps * sizeof(float);
-        softmax_last_dim_bwd_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(gOut, p, gIn, nrows, inner);
+        launch_softmax_last_dim_bwd_block_chunked(
+                gOut, p, gIn, static_cast<long long>(nrows), inner, kTensorCudaStream);
     } else {
         int threads = jgpt_cuda_get_optimal_block_size();
         int blocks = (nrows + threads - 1) / threads;
@@ -1430,17 +1537,10 @@ static bool attn_fwd_run_core(
         return false;
     }
     // Слитый scale + causal-mask + softmax: одно чтение global scores на строку (кэш z в shared).
-    int nrows = batch * seqLen;
-    {
-        const size_t smem = (static_cast<size_t>(kSoftmaxSharedPrefixFloats) + static_cast<size_t>(seqLen)) *
-                sizeof(float);
-        if (d_probs == d_scores) {
-            softmax_scaled_masked_inplace_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(
-                    d_scores, d_mask, scale, nrows, seqLen);
-        } else {
-            softmax_scaled_masked_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(
-                    d_scores, d_probs, d_mask, scale, nrows, seqLen);
-        }
+    const long long nrows_ll = static_cast<long long>(batch) * static_cast<long long>(seqLen);
+    if (!launch_softmax_scaled_masked_block_chunked(
+                d_scores, d_probs, d_mask, scale, nrows_ll, seqLen, kTensorCudaStream)) {
+        return false;
     }
     CUDA_KERNEL_CHECK_RV(false);
     if (!batched_sgemm_row_major_extra(d_probs, d_v, d_out, batch, seqLen, seqLen, dV, 1.0f, 0.0f)) {

@@ -13,7 +13,7 @@
 ### Как работает `jgpt-smart.sh`
 
 Один скрипт в `scripts/`:
-1. Собирает `libjgpt_cuda.so` (`cmake` + `cmake --build`)
+1. Собирает `libjgpt_cuda_extra.so` и `libjgpt_cuda.so` (`cmake` + `cmake --build`)
 2. Выставляет базовые `JGPT_*` env-переменные и подмешивает активный пресет из `env/<имя>.env`
 3. Запускает **`AllBooksTrain`** с `tee -a training_allbooks.log`
 4. **Bash-монитор** по логу: OOM, залипание FP16 scale, «зависание» без шагов, плато eval — при необходимости останавливает JVM и перезапускает со следующим пресетом (upgrade/downgrade по порогам в начале скрипта)

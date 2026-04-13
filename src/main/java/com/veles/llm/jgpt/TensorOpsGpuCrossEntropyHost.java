@@ -16,6 +16,25 @@ final class TensorOpsGpuCrossEntropyHost {
 
     private TensorOpsGpuCrossEntropyHost() {}
 
+    static float crossEntropySoftmaxGradLossGpu(
+            float[] logits,
+            float[] targets,
+            float[] gradOut,
+            int batch,
+            int seqLen,
+            int vocab,
+            float gradScaleOverTotalTokens) {
+        return crossEntropySoftmaxGradLossGpuEx(
+                logits,
+                targets,
+                gradOut,
+                batch,
+                seqLen,
+                vocab,
+                gradScaleOverTotalTokens,
+                TensorOpsGPU.useFp16Matmul());
+    }
+
     static float crossEntropySoftmaxGradLossGpuEx(
             float[] logits,
             float[] targets,

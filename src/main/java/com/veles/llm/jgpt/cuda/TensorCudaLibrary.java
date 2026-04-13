@@ -4,8 +4,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * Единая загрузка {@code libjgpt_cuda.so}: {@code -Djgpt.cuda.lib}, переменная {@code JGPT_CUDA_LIB},
- * затем {@code build/libjgpt_cuda.so} относительно {@code user.dir}, иначе {@link System#loadLibrary}.
+ * Загрузка нативных библиотек CUDA: сначала {@code libjgpt_cuda_extra.so} (JNI/ядра из {@code jgpt_cuda_extra.cu}),
+ * затем {@code libjgpt_cuda.so} (основной модуль). Обе собираются в {@code build/} и должны лежать рядом (или в
+ * {@code java.library.path} при {@link System#loadLibrary}).
+ *
+ * <p>Порядок: {@code -Djgpt.cuda.lib} / {@code JGPT_CUDA_LIB} (путь к <b>основной</b> {@code libjgpt_cuda.so}),
+ * относительные пути к {@code build/libjgpt_cuda.so}, иначе {@link System#loadLibrary}.
  *
  * <p><b>Потокобезопасность:</b> повторные вызовы {@link #load()} после успешной загрузки — no-op (быстрый путь).
  * Первый успех фиксируется под монитором класса; параллельные первые вызовы не приводят к повторному
@@ -13,7 +17,7 @@ import java.nio.file.Path;
  *
  * <p><b>Жизненный цикл:</b> выгрузить нативную библиотеку из стандартной JVM нельзя; новая загрузка возможна
  * только в другом {@link ClassLoader}. {@link #getLastLoadedPath()} осмысленен только после успешного
- * {@link #load()} (обновляется сразу после успешного {@code System.load} / {@code loadLibrary}).
+ * {@link #load()} (обновляется сразу после успешного {@code System.load} основной библиотеки).
  */
 public final class TensorCudaLibrary {
 
@@ -27,7 +31,7 @@ public final class TensorCudaLibrary {
         return loaded;
     }
 
-    /** Путь к загруженному файлу или метка {@code jgpt_cuda (java.library.path)}; до {@link #load()} — {@code null}. */
+    /** Путь к загруженному основному {@code .so} или метка {@code jgpt_cuda (java.library.path)}; до {@link #load()} — {@code null}. */
     public static String getLastLoadedPath() {
         return lastLoadedPath;
     }
@@ -48,9 +52,8 @@ public final class TensorCudaLibrary {
             if (override != null && !override.isBlank()) {
                 Path p = Path.of(override.trim());
                 if (Files.isRegularFile(p)) {
-                    String abs = p.toAbsolutePath().toString();
-                    System.load(abs);
-                    lastLoadedPath = abs;
+                    loadMainWithCompanionExtra(p);
+                    lastLoadedPath = p.toAbsolutePath().toString();
                     loaded = true;
                     return;
                 }
@@ -61,9 +64,8 @@ public final class TensorCudaLibrary {
             if (env != null && !env.isBlank()) {
                 Path p = Path.of(env.trim());
                 if (Files.isRegularFile(p)) {
-                    String abs = p.toAbsolutePath().toString();
-                    System.load(abs);
-                    lastLoadedPath = abs;
+                    loadMainWithCompanionExtra(p);
+                    lastLoadedPath = p.toAbsolutePath().toString();
                     loaded = true;
                     return;
                 }
@@ -73,22 +75,22 @@ public final class TensorCudaLibrary {
             for (String rel : relativeCandidatePaths()) {
                 Path p = Path.of(rel).normalize();
                 if (Files.isRegularFile(p)) {
-                    String abs = p.toAbsolutePath().toString();
-                    System.load(abs);
-                    lastLoadedPath = abs;
+                    loadMainWithCompanionExtra(p);
+                    lastLoadedPath = p.toAbsolutePath().toString();
                     loaded = true;
                     return;
                 }
             }
 
             try {
+                System.loadLibrary("jgpt_cuda_extra");
                 System.loadLibrary("jgpt_cuda");
-                lastLoadedPath = "jgpt_cuda (java.library.path)";
+                lastLoadedPath = "jgpt_cuda_extra + jgpt_cuda (java.library.path)";
                 loaded = true;
                 return;
             } catch (UnsatisfiedLinkError e) {
                 System.err.println(
-                        "[TensorCudaLibrary] System.loadLibrary(jgpt_cuda) не удался: " + e.getMessage());
+                        "[TensorCudaLibrary] loadLibrary(jgpt_cuda_extra/jgpt_cuda) не удался: " + e.getMessage());
                 System.err.println(
                         "[TensorCudaLibrary] java.library.path="
                                 + System.getProperty("java.library.path", "<пусто>"));
@@ -96,6 +98,35 @@ public final class TensorCudaLibrary {
 
             throw new UnsatisfiedLinkError(buildErrorMessage());
         }
+    }
+
+    /** Сначала companion {@code jgpt_cuda_extra}, затем основной модуль (тот же каталог, что и {@code mainSo}). */
+    private static void loadMainWithCompanionExtra(Path mainSo) {
+        Path dir = mainSo.toAbsolutePath().getParent();
+        if (dir != null) {
+            Path extra = dir.resolve(companionExtraFileName());
+            if (!Files.isRegularFile(extra)) {
+                throw new UnsatisfiedLinkError(
+                        "Рядом с "
+                                + mainSo
+                                + " ожидается "
+                                + extra
+                                + " (соберите cmake-таргеты jgpt_cuda_extra и jgpt_cuda).");
+            }
+            System.load(extra.toAbsolutePath().toString());
+        }
+        System.load(mainSo.toAbsolutePath().toString());
+    }
+
+    private static String companionExtraFileName() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (os.contains("win")) {
+            return "jgpt_cuda_extra.dll";
+        }
+        if (os.contains("mac")) {
+            return "libjgpt_cuda_extra.dylib";
+        }
+        return "libjgpt_cuda_extra.so";
     }
 
     private static String[] relativeCandidatePaths() {
@@ -106,7 +137,9 @@ public final class TensorCudaLibrary {
     private static String buildErrorMessage() {
         String[] candidates = relativeCandidatePaths();
         String env = System.getenv("JGPT_CUDA_LIB");
-        return "libjgpt_cuda.so не найден. Порядок поиска:\n"
+        return "libjgpt_cuda.so не найден (и/или рядом нет "
+                + companionExtraFileName()
+                + "). Порядок поиска:\n"
                 + "  1. -Djgpt.cuda.lib="
                 + System.getProperty("jgpt.cuda.lib", "<не задано>")
                 + "\n"
@@ -116,7 +149,7 @@ public final class TensorCudaLibrary {
                 + "  3. Относительно user.dir: "
                 + String.join(", ", candidates)
                 + "\n"
-                + "  4. java.library.path="
+                + "  4. java.library.path (нужны и jgpt_cuda_extra, и jgpt_cuda): "
                 + System.getProperty("java.library.path", "<пусто>")
                 + "\n"
                 + "Сборка: cd src/main/cpp && cmake -B ../../build -S . && cmake --build ../../build";

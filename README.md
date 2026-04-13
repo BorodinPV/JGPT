@@ -27,7 +27,7 @@
 | `JGPT_CE_ASYNC` | Асинхронный CE на GPU; с `JGPT_TRAIN_LOSS_MODE=sampled` обычно ставят `0`. |
 | `JGPT_CE_GPU_MIN_ELEMENTS` | Порог размера; ниже него CE может остаться на CPU. |
 | `JGPT_CHECKPOINT_ASYNC` | Асинхронная запись весов после основного чекпоинта (`model_*.bin`). |
-| `JGPT_CUDA_LIB` | Абсолютный путь к `libjgpt_cuda.so`. |
+| `JGPT_CUDA_LIB` | Абсолютный путь к `libjgpt_cuda.so` (в том же каталоге должна лежать `libjgpt_cuda_extra.so`). |
 | `JGPT_DEBUG_CURSOR_B39372` | Расширенный pre-launch-лог для отладки CUDA graph / cursor (см. `CursorDebugB39372`). |
 | `JGPT_DEBUG_GPU_TRAIN` | Включить отладочный режим GPU-обучения (`DebugGpuTrain`, JSONL/события). |
 | `JGPT_DEBUG_GPU_TRAIN_LOG` | Путь или режим файла лога для `JGPT_DEBUG_GPU_TRAIN`. |

@@ -10,6 +10,40 @@ final class TensorOpsGpuEmbeddingHost {
 
     private TensorOpsGpuEmbeddingHost() {}
 
+    static void addPositionEmbeddingGPUDeviceWeights(
+            float[] xBatchSeqD, long posWeightsDevicePtr, int batch, int seqLen, int dModel) {
+        TensorOpsGPU.addPositionEmbeddingGPUDeviceWeightsWithOffset(
+                xBatchSeqD, posWeightsDevicePtr, batch, seqLen, dModel, 0);
+    }
+
+    static void addPositionEmbeddingGPUDeviceWeights(
+            float[] xBatchSeqD,
+            long posWeightsDevicePtr,
+            int batch,
+            int seqLen,
+            int dModel,
+            int posRowStart) {
+        TensorOpsGPU.addPositionEmbeddingGPUDeviceWeightsWithOffset(
+                xBatchSeqD, posWeightsDevicePtr, batch, seqLen, dModel, posRowStart);
+    }
+
+    static void addPositionEmbeddingGPUDeviceBuffers(
+            long xDevicePtr, long posWeightsDevicePtr, int batch, int seqLen, int dModel) {
+        TensorOpsGPU.addPositionEmbeddingGPUDeviceBuffersWithOffset(
+                xDevicePtr, posWeightsDevicePtr, batch, seqLen, dModel, 0);
+    }
+
+    static void addPositionEmbeddingGPUDeviceBuffers(
+            long xDevicePtr,
+            long posWeightsDevicePtr,
+            int batch,
+            int seqLen,
+            int dModel,
+            int posRowStart) {
+        TensorOpsGPU.addPositionEmbeddingGPUDeviceBuffersWithOffset(
+                xDevicePtr, posWeightsDevicePtr, batch, seqLen, dModel, posRowStart);
+    }
+
     static void embeddingTokenForwardGpu(
             float[] tokens,
             float[] weights,

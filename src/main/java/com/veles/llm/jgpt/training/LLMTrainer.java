@@ -283,6 +283,12 @@ public final class LLMTrainer {
     private final DynamicLossScaler dynamicLossScaler;
     /** Ранний выход после N шагов оптимизатора (env {@code JGPT_EXIT_AFTER_STEP}). */
     private final int exitAfterOptimizerSteps;
+    /**
+     * Периодический вызов {@link TensorOpsGPU#cudaTrimDeviceMemoryPoolsBestEffort()} каждые N успешных шагов
+     * оптимизатора (см. цикл в {@link #train()}). Env {@code JGPT_CUDA_TRIM_EVERY_STEPS}; {@code 0} — выкл.;
+     * по умолчанию 500 — смягчает рост allocated/фрагментации при длинных прогонах.
+     */
+    private final int cudaTrimEveryOptimizerSteps;
 
     /**
      * Кэш {@link TensorOpsGPU#useFp16Matmul()} на время жизни тренера (не меняется без перезапуска JVM).
@@ -460,6 +466,13 @@ public final class LLMTrainer {
             }
         }
         this.exitAfterOptimizerSteps = readPositiveEnvInt("JGPT_EXIT_AFTER_STEP", 0);
+        this.cudaTrimEveryOptimizerSteps = readCudaTrimEveryOptimizerStepsFromEnv();
+        if (cudaTrimEveryOptimizerSteps > 0) {
+            log.info(
+                    "{} JGPT_CUDA_TRIM_EVERY_STEPS={} — периодический trim пулов CUDA после успешного шага",
+                    LogFmt.badge("CFG"),
+                    cudaTrimEveryOptimizerSteps);
+        }
         this.lastGlobalGradNorm = 0f;
         this.checkpointAsyncIo =
                 readBooleanEnv("JGPT_CHECKPOINT_ASYNC", false)
@@ -1259,6 +1272,15 @@ public final class LLMTrainer {
                     }
                 }
 
+                if (cudaTrimEveryOptimizerSteps > 0
+                        && globalStep % cudaTrimEveryOptimizerSteps == 0
+                        && model.isGpuResident()
+                        && TensorOpsGPU.isGpuAvailable()) {
+                    TensorOpsGPU.synchronizeStream();
+                    TensorOpsGPU.drainDeferredGpuBuffers();
+                    TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+                }
+
                 if (globalStep % config.saveEverySteps == 0) {
                     saveCheckpoint("step_" + globalStep);
                 }
@@ -1716,6 +1738,19 @@ public final class LLMTrainer {
             return parsed > 0 ? parsed : defaultValue;
         } catch (NumberFormatException ignored) {
             return defaultValue;
+        }
+    }
+
+    /** {@code 0} в env — выкл.; неверный формат — 500 по умолчанию. */
+    private static int readCudaTrimEveryOptimizerStepsFromEnv() {
+        String e = System.getenv("JGPT_CUDA_TRIM_EVERY_STEPS");
+        if (e == null || e.isBlank()) {
+            return 500;
+        }
+        try {
+            return Math.max(0, Integer.parseInt(e.trim()));
+        } catch (NumberFormatException ex) {
+            return 500;
         }
     }
 

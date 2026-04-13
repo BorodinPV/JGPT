@@ -125,6 +125,46 @@ public final class LLMConfig {
     }
 
     /**
+     * Переопределение {@link #learningRate}: {@code JGPT_LEARNING_RATE} или краткий псевдоним {@code JGPT_LR}
+     * (положительное конечное число; десятичный разделитель «.» или «,»). Удобно для дообучения на плато.
+     *
+     * <p>Пример: {@code JGPT_LEARNING_RATE=1e-4 ./scripts/jgpt-smart.sh}
+     */
+    public static LLMConfig applyLearningRateOverrideFromEnv(LLMConfig base) {
+        float lr = readLearningRateFromEnvOrDefault(base.learningRate);
+        if (lr == base.learningRate) {
+            return base;
+        }
+        return new LLMConfig(
+                base.name,
+                base.vocabSize,
+                base.maxSeqLen,
+                base.dModel,
+                base.numHeads,
+                base.numLayers,
+                base.dIntermediate,
+                base.batchSize,
+                base.accumulationSteps,
+                lr,
+                base.epochs);
+    }
+
+    private static float readLearningRateFromEnvOrDefault(float defaultValue) {
+        String raw = firstNonBlank(System.getenv("JGPT_LEARNING_RATE"), System.getenv("JGPT_LR"));
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            float v = Float.parseFloat(raw.trim().replace(',', '.'));
+            if (v > 0f && Float.isFinite(v)) {
+                return v;
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        return defaultValue;
+    }
+
+    /**
      * Runtime override from env {@code JGPT_BATCH_SIZE}.
      */
     public static LLMConfig applyBatchSizeOverrideFromEnv(LLMConfig base) {

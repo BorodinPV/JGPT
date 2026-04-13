@@ -46,7 +46,7 @@ jgpt__export_train_env() {
     export JGPT_BLOCK_CACHE_GROW_ONLY="${JGPT_BLOCK_CACHE_GROW_ONLY:-1}"
     export JGPT_BLOCK_CACHE_MAX_BYTES="${JGPT_BLOCK_CACHE_MAX_BYTES:-0}"
     export JGPT_BLOCK_CACHE_POOL="${JGPT_BLOCK_CACHE_POOL:-1}"
-    export JGPT_BLOCK_CACHE_POOL_MAX="${JGPT_BLOCK_CACHE_POOL_MAX:-2}"
+    export JGPT_BLOCK_CACHE_POOL_MAX="${JGPT_BLOCK_CACHE_POOL_MAX:-4}"
 
     export JGPT_CE_GPU_MIN_ELEMENTS="${JGPT_CE_GPU_MIN_ELEMENTS:-0}"
     export JGPT_CE_ASYNC="${JGPT_CE_ASYNC:-1}"
@@ -58,6 +58,7 @@ jgpt__export_train_env() {
     export JGPT_CHECKPOINT_ASYNC="${JGPT_CHECKPOINT_ASYNC:-0}"
 
     export JGPT_CUDA_LIB="${JGPT_CUDA_LIB:-}"
+    export JGPT_CUDA_TRIM_EVERY_STEPS="${JGPT_CUDA_TRIM_EVERY_STEPS:-500}"
     if [[ -z "$JGPT_CUDA_LIB" && -f "$ROOT/build/libjgpt_cuda.so" ]]; then
         export JGPT_CUDA_LIB="$ROOT/build/libjgpt_cuda.so"
     fi
@@ -103,8 +104,150 @@ jgpt_e2e_train_overrides() {
     export JGPT_FP16_DYNAMIC_RESET_EACH_EPOCH="${JGPT_FP16_DYNAMIC_RESET_EACH_EPOCH:-0}"
 }
 
+# Абсолютный путь к nvcc для CMake (кэш часто содержит /usr/bin/nvcc без пакета nvidia-cuda-toolkit).
+jgpt__resolve_nvcc() {
+    local p cand
+    if [[ -n "${CUDACXX:-}" && -x "${CUDACXX}" ]]; then
+        readlink -f "${CUDACXX}" 2>/dev/null || echo "${CUDACXX}"
+        return 0
+    fi
+    p="$(command -v nvcc 2>/dev/null || true)"
+    if [[ -n "$p" && -x "$p" ]]; then
+        readlink -f "$p" 2>/dev/null || echo "$p"
+        return 0
+    fi
+    if [[ -x /usr/local/cuda/bin/nvcc ]]; then
+        readlink -f /usr/local/cuda/bin/nvcc 2>/dev/null || echo /usr/local/cuda/bin/nvcc
+        return 0
+    fi
+    shopt -s nullglob
+    local -a vers=(/usr/local/cuda-*/bin/nvcc)
+    shopt -u nullglob
+    if [[ ${#vers[@]} -gt 0 ]]; then
+        while IFS= read -r cand; do
+            [[ -x "$cand" ]] || continue
+            readlink -f "$cand" 2>/dev/null || echo "$cand"
+            return 0
+        done < <(printf '%s\n' "${vers[@]}" | sort -Vr)
+    fi
+    if [[ -x /opt/cuda/bin/nvcc ]]; then
+        readlink -f /opt/cuda/bin/nvcc 2>/dev/null || echo /opt/cuda/bin/nvcc
+        return 0
+    fi
+    echo "[jgpt-smart] nvcc не найден. Установите CUDA Toolkit или задайте CUDACXX=/полный/путь/к/nvcc" >&2
+    return 1
+}
+
+# g++ для хост-кода nvcc: CUDA 12.6 официально только до GCC 13; GCC 14+ без g++-13 ломает cudafe++.
+jgpt__resolve_cudahostcxx() {
+    local p maj
+    if [[ -n "${CUDAHOSTCXX:-}" && -x "${CUDAHOSTCXX}" ]]; then
+        readlink -f "${CUDAHOSTCXX}" 2>/dev/null || echo "${CUDAHOSTCXX}"
+        return 0
+    fi
+    for p in \
+        /usr/bin/g++-13 /usr/bin/x86_64-linux-gnu-g++-13 \
+        /usr/bin/g++-12 /usr/bin/x86_64-linux-gnu-g++-12 \
+        /usr/bin/g++-11 /usr/bin/x86_64-linux-gnu-g++-11
+    do
+        [[ -x "$p" ]] || continue
+        readlink -f "$p" 2>/dev/null || echo "$p"
+        return 0
+    done
+    maj="$(gcc -dumpversion 2>/dev/null | cut -d. -f1)"
+    maj="${maj//[^0-9]/}"
+    maj="${maj:-99}"
+    if [[ "$maj" -gt 13 ]]; then
+        echo "[jgpt-smart] Системный GCC ${maj} не поддерживается nvcc 12.x как хост-компилятор." >&2
+        echo "[jgpt-smart] Установите: sudo apt install g++-13" >&2
+        echo "[jgpt-smart] Или задайте CUDAHOSTCXX=/usr/bin/g++-13 (после установки пакета)." >&2
+        return 1
+    fi
+    return 0
+}
+
+# Патч одного crt/math_functions.h (glibc 2.41+ / noexcept); файл должен быть доступен на запись.
+jgpt__patch_cuda_math_functions_h_file() {
+    perl -i -pe '
+  s/^extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double\s+rsqrt\(double x\);$/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 rsqrt(double x) noexcept (true);/;
+  s/^extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float\s+rsqrtf\(float x\);$/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  rsqrtf(float x) noexcept (true);/;
+  s/^extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double\s+sinpi\(double x\);$/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x) noexcept (true);/;
+  s/^extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float\s+sinpif\(float x\);$/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x) noexcept (true);/;
+  s/^extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double\s+cospi\(double x\);$/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x) noexcept (true);/;
+  s/^extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float\s+cospif\(float x\);$/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x) noexcept (true);/;
+' "$1"
+}
+
+# glibc 2.41+: nvcc иначе тянет системный crt/math_functions.h (нужен sudo для правки в /usr/local).
+# Копируем targets/.../include в build/cuda_include_mirror и подставляем -I… раньше пути toolkit (см. nvcc -v).
+jgpt__resolve_cuda_include_mirror_if_needed() {
+    local nvcc_real inc_root mirror meta new_ts sys_mf
+    nvcc_real="$(readlink -f "$1")"
+    inc_root="$(readlink -f "$(dirname "$nvcc_real")/../targets/x86_64-linux/include")"
+    if [[ ! -d "$inc_root" ]]; then
+        echo "[jgpt-smart] Нет каталога заголовков CUDA: $inc_root" >&2
+        return 1
+    fi
+    sys_mf="$inc_root/crt/math_functions.h"
+    if grep -q 'cospi(double x) noexcept' "$sys_mf" 2>/dev/null; then
+        return 0
+    fi
+    mirror="$ROOT/build/cuda_include_mirror"
+    meta="$mirror/.jgpt_cuda_mirror_meta"
+    new_ts="$(stat -c '%Y' "$inc_root/cuda_runtime.h" 2>/dev/null || echo 0)"
+    if [[ -f "$mirror/crt/math_functions.h" ]] \
+        && grep -q 'cospi(double x) noexcept' "$mirror/crt/math_functions.h" 2>/dev/null \
+        && [[ -f "$meta" ]] && [[ "$(<"$meta")" == "${inc_root}|${new_ts}" ]]; then
+        echo "$mirror"
+        return 0
+    fi
+    echo "[jgpt-smart] Копирую заголовки CUDA в build/cuda_include_mirror (обход glibc без sudo)…" >&2
+    rm -rf "$mirror"
+    mkdir -p "$ROOT/build"
+    mkdir -p "$mirror"
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a "$inc_root/" "$mirror/"
+    else
+        cp -a "$inc_root/." "$mirror/"
+    fi
+    jgpt__patch_cuda_math_functions_h_file "$mirror/crt/math_functions.h" || return 1
+    if ! grep -q 'cospi(double x) noexcept' "$mirror/crt/math_functions.h"; then
+        echo "[jgpt-smart] Патч math_functions.h не применился (другая версия CUDA?)." >&2
+        return 1
+    fi
+    printf '%s|%s\n' "$inc_root" "$new_ts" > "$meta"
+    echo "$mirror"
+    return 0
+}
+
 jgpt_cmake_build_cuda() {
-    cmake -B build -S src/main/cpp
+    local nvcc_path cuda_bin hostcxx cuda_mirror
+    local -a cmake_args
+    nvcc_path="$(jgpt__resolve_nvcc)" || return 1
+    export CUDACXX="$nvcc_path"
+    cuda_mirror="$(jgpt__resolve_cuda_include_mirror_if_needed "$nvcc_path")" || return 1
+    cuda_bin="$(dirname "$nvcc_path")"
+    case ":${PATH}:" in
+        *:"${cuda_bin}":*) ;;
+        *) export PATH="${cuda_bin}:${PATH}" ;;
+    esac
+    cmake_args=(-DCMAKE_CUDA_COMPILER="$nvcc_path")
+    hostcxx="$(jgpt__resolve_cudahostcxx)" || return 1
+    if [[ -n "$hostcxx" ]]; then
+        export CUDAHOSTCXX="$hostcxx"
+        cmake_args+=(-DCMAKE_CUDA_HOST_COMPILER="$hostcxx")
+    fi
+    # Убрать устаревший флаг из кэша (например -allow-unsupported-compiler при уже выбранном g++-13).
+    # Путь к зеркалу с пробелами/кириллицей ломает CMAKE_CUDA_FLAGS: CMake режет по пробелу → nvcc fatal.
+    # Симлинк в /tmp без пробелов — стабильный -I и для try_compile (определение компилятора CUDA).
+    if [[ -n "$cuda_mirror" ]]; then
+        local cuda_inc_link h
+        h="$(printf '%s' "$cuda_mirror" | cksum | awk '{print $1}')"
+        cuda_inc_link="/tmp/jgpt-cuda-include-${UID:-0}-${h}"
+        ln -sfn "$cuda_mirror" "$cuda_inc_link"
+        cmake_args+=("-DCMAKE_CUDA_FLAGS=-I${cuda_inc_link}")
+    fi
+    cmake -B build -U CMAKE_CUDA_FLAGS -S src/main/cpp "${cmake_args[@]}"
     cmake --build build
     export JGPT_CUDA_LIB="$ROOT/build/libjgpt_cuda.so"
 }

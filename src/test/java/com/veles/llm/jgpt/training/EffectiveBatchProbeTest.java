@@ -115,10 +115,11 @@ final class EffectiveBatchProbeTest {
                             case "smart50m", "smart50", "50m" -> LLMConfig.smart50M();
                             default -> LLMConfig.small16M();
                         };
-        return LLMConfig.applyAccumulationStepsOverrideFromEnv(
-                LLMConfig.applyPresetNumLayersOverrideFromEnv(
-                        LLMConfig.applySeqLenOverrideFromEnv(
-                                LLMConfig.applyBatchSizeOverrideFromEnv(base))));
+        return LLMConfig.applyLearningRateOverrideFromEnv(
+                LLMConfig.applyAccumulationStepsOverrideFromEnv(
+                        LLMConfig.applyPresetNumLayersOverrideFromEnv(
+                                LLMConfig.applySeqLenOverrideFromEnv(
+                                        LLMConfig.applyBatchSizeOverrideFromEnv(base)))));
     }
 
     /** Строка для сводки: эталонные batch/accum/LR/регуляризация как у полного обучения. */

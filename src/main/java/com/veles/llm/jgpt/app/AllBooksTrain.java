@@ -47,11 +47,14 @@ import org.slf4j.LoggerFactory;
  *       при этом сохраняются. Используйте, если добавили новые книги и хотите
  *       переобучить полный цикл эпох заново.</li>
  *   <li><b>JGPT_VAL_FRACTION</b> — доля окон под hold-out validation (например {@code 0.05}); {@code JGPT_VAL_SEED}
- *       — seed перемешивания (по умолчанию 42). Без env eval считается на train-потоке, как раньше.</li>
+ *       — seed перемешивания при split (по умолчанию 42). Без env eval считается на train-потоке, как раньше.</li>
+ *   <li><b>JGPT_TRAIN_SHUFFLE_SEED</b> — seed {@link com.veles.llm.jgpt.data.DataLoader#shuffle()} на каждой эпохе
+ *       (по умолчанию 42); другой seed — другой порядок батчей при том же корпусе.</li>
  *   <li><b>JGPT_IF_STEP_BEYOND_PLAN</b> — если из чекпоинта {@code globalStep} не меньше нового
  *       {@code totalTrainingSteps} (типично после смены пресета/батча): {@code skip} (по умолчанию вне smart),
  *       {@code restart_schedule} (сброс шага и LR-цикла, веса/Adam/best eval сохраняются;
  *       задаётся по умолчанию в {@code scripts/jgpt-smart.sh}), {@code fail} — выход с кодом 2.</li>
+ *   <li><b>JGPT_LEARNING_RATE</b> или <b>JGPT_LR</b> — базовый learning rate пресета (дообучение на плато).</li>
  *   <li><b>JGPT_CKPT_PRUNE</b> — автоматическое удаление старых {@code checkpoint_step_*}/{@code model_step_*}
  *       и эпоховых снимков (см. {@link CheckpointPruner}); {@code 0} — выключить.
  *       {@code JGPT_CKPT_KEEP_STEP_SNAPSHOTS} (по умолчанию 2), {@code JGPT_CKPT_KEEP_EPOCH_SNAPSHOTS}
@@ -101,12 +104,13 @@ public final class AllBooksTrain {
         }
         log.info("[DATA] книг найдено: {}", books.size());
 
-        LLMConfig llm = LLMConfig.applyAccumulationStepsOverrideFromEnv(
-                LLMConfig.applyEpochsOverrideFromEnv(
-                        LLMConfig.applyPresetNumLayersOverrideFromEnv(
-                                LLMConfig.applySeqLenOverrideFromEnv(
-                                        LLMConfig.applyBatchSizeOverrideFromEnv(
-                                                LLMConfig.smart50M())))));
+        LLMConfig llm = LLMConfig.applyLearningRateOverrideFromEnv(
+                LLMConfig.applyAccumulationStepsOverrideFromEnv(
+                        LLMConfig.applyEpochsOverrideFromEnv(
+                                LLMConfig.applyPresetNumLayersOverrideFromEnv(
+                                        LLMConfig.applySeqLenOverrideFromEnv(
+                                                LLMConfig.applyBatchSizeOverrideFromEnv(
+                                                        LLMConfig.smart50M()))))));
         runCore(root, dataDir, books, llm);
     }
 
@@ -115,8 +119,9 @@ public final class AllBooksTrain {
         Path checkpointsDir = root.resolve("checkpoints").resolve("all_books");
         Path tokenizerPath = root.resolve("checkpoints").resolve("tokenizer_global.bin");
 
-        log.info("[CFG] seq={}, d_model={}, layers={}, heads={}, vocab={}",
-                llm.maxSeqLen, llm.dModel, llm.numLayers, llm.numHeads, llm.vocabSize);
+        log.info("[CFG] seq={}, d_model={}, layers={}, heads={}, vocab={}, lr={}",
+                llm.maxSeqLen, llm.dModel, llm.numLayers, llm.numHeads, llm.vocabSize,
+                String.format(Locale.ROOT, "%.4g", llm.learningRate));
 
         // --- токенизатор ---
         BPETokenizer tokenizer;

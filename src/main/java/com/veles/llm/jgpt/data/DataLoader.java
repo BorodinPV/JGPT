@@ -81,11 +81,27 @@ public final class DataLoader {
         this.maxSeqLen = maxSeqLen;
         this.batchSize = batchSize;
         this.sequences = new ArrayList<>();
-        this.random = new Random(42);
+        this.random = new Random(resolveTrainShuffleSeed());
         this.currentIndex = 0;
         this.maxSequences = 0;
         this.usePinnedHostBatchBuffers = usePinnedHostBatchBuffers;
         this.useDirectBatchBuffers = useDirectBatchBuffers || usePinnedHostBatchBuffers;
+    }
+
+    /**
+     * Seed для {@link #shuffle()} на каждой эпохе (и для {@link Collections#shuffle} списка окон).
+     * Env {@code JGPT_TRAIN_SHUFFLE_SEED}; не задано или неверный формат — {@code 42}.
+     */
+    private static long resolveTrainShuffleSeed() {
+        String e = System.getenv("JGPT_TRAIN_SHUFFLE_SEED");
+        if (e == null || e.isBlank()) {
+            return 42L;
+        }
+        try {
+            return Long.parseLong(e.trim());
+        } catch (NumberFormatException ex) {
+            return 42L;
+        }
     }
 
     private static boolean resolvePinnedHostBatchBuffers() {

@@ -20,7 +20,7 @@ __global__ void relu_kernel(const float* __restrict__ a, float* __restrict__ b, 
     if (i < n) { float x = a[i]; b[i] = x > 0.f ? x : 0.f; }
 }
 
-// 🔧 FIX: адаптивный выбор blockSize + проверка запуска
+// Адаптивный выбор blockSize + проверка запуска
 static void launch_vec_add(const float* d_a, const float* d_b, float* d_c, int n) {
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (n + threads - 1) / threads;

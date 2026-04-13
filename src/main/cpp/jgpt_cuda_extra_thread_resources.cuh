@@ -6,9 +6,13 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "jgpt_cuda_tls_blob.cuh"
 #include "jgpt_cuda_stream.cuh"
+#include "jgpt_cuda_cublas_common.cuh"
 
 namespace jgpt_extra {
+
+using TlsDeviceBlob = jgpt_cuda_tls::TlsDeviceBlob;
 
 /** Thread-local cuBLAS for extra strided-batched GEMM / JNI paths. */
 struct ExtraCublas {
@@ -18,32 +22,7 @@ struct ExtraCublas {
         if (h != nullptr) {
             return h;
         }
-        jgpt_cuda_ensure_stream();
-        cublasHandle_t nh = nullptr;
-        cublasStatus_t st = cublasCreate(&nh);
-        if (st != CUBLAS_STATUS_SUCCESS) {
-            fprintf(stderr, "TensorOpsGPU extra: cublasCreate failed: %d\n", static_cast<int>(st));
-            return nullptr;
-        }
-        st = cublasSetMathMode(nh, CUBLAS_TF32_TENSOR_OP_MATH);
-        if (st != CUBLAS_STATUS_SUCCESS) {
-            fprintf(stderr, "TensorOpsGPU extra: cublasSetMathMode failed: %d\n", static_cast<int>(st));
-            cublasDestroy(nh);
-            return nullptr;
-        }
-        cudaStream_t stream = jgpt_cuda_stream_handle();
-        if (stream == nullptr) {
-            fprintf(stderr, "TensorOpsGPU extra: CUDA stream unavailable after jgpt_cuda_ensure_stream (cublas)\n");
-            cublasDestroy(nh);
-            return nullptr;
-        }
-        st = cublasSetStream(nh, stream);
-        if (st != CUBLAS_STATUS_SUCCESS) {
-            fprintf(stderr, "TensorOpsGPU extra: cublasSetStream failed: %d\n", static_cast<int>(st));
-            cublasDestroy(nh);
-            return nullptr;
-        }
-        h = nh;
+        h = jgpt_cuda_detail::create_cublas_for_jgpt_stream("TensorOpsGPU extra");
         return h;
     }
 
@@ -148,27 +127,12 @@ struct CeLossBuffers {
         d_logits = nullptr;
         d_grad = nullptr;
         logits_bytes = 0;
-
-        cudaError_t e_logits = cudaMalloc(reinterpret_cast<void**>(&d_logits), bytes_logits);
-        if (e_logits != cudaSuccess) {
-            fprintf(
-                    stderr,
-                    "ce_ensure_logits_grad_buffers: cudaMalloc(logits) %zu bytes: %s\n",
+        if (!jgpt_cuda_tls::malloc_pair_same_size(
+                    &d_logits,
+                    &d_grad,
                     bytes_logits,
-                    cudaGetErrorString(e_logits));
-            return false;
-        }
-        cudaError_t e_grad = cudaMalloc(reinterpret_cast<void**>(&d_grad), bytes_logits);
-        if (e_grad != cudaSuccess) {
-            fprintf(
-                    stderr,
-                    "ce_ensure_logits_grad_buffers: cudaMalloc(grad) %zu bytes: %s\n",
-                    bytes_logits,
-                    cudaGetErrorString(e_grad));
-            cudaFree(d_logits);
-            d_logits = nullptr;
-            d_grad = nullptr;
-            logits_bytes = 0;
+                    "ce_ensure_logits_grad_buffers: cudaMalloc(logits)",
+                    "ce_ensure_logits_grad_buffers: cudaMalloc(grad)")) {
             return false;
         }
         logits_bytes = bytes_logits;
@@ -177,7 +141,7 @@ struct CeLossBuffers {
 };
 
 struct SoftmaxPairScratch {
-    void* pair = nullptr;
+    TlsDeviceBlob blob;
     size_t bytes_per = 0;
 
     bool ensure(size_t bytes_per_elem, float** d_src, float** d_dst) {
@@ -186,22 +150,20 @@ struct SoftmaxPairScratch {
             return false;
         }
         if (bytes_per_elem > bytes_per) {
-            cudaFree(pair);
-            pair = nullptr;
+            blob.free_cached();
             bytes_per = 0;
-            if (cudaMalloc(&pair, bytes_per_elem * 2U) != cudaSuccess) {
+            if (!blob.grow_to_fit(bytes_per_elem * 2U)) {
                 return false;
             }
             bytes_per = bytes_per_elem;
         }
-        *d_src = static_cast<float*>(pair);
-        *d_dst = reinterpret_cast<float*>(static_cast<unsigned char*>(pair) + bytes_per_elem);
+        *d_src = static_cast<float*>(blob.ptr);
+        *d_dst = reinterpret_cast<float*>(static_cast<unsigned char*>(blob.ptr) + bytes_per_elem);
         return true;
     }
 
     void free_cached() {
-        cudaFree(pair);
-        pair = nullptr;
+        blob.free_cached();
         bytes_per = 0;
     }
 };
@@ -229,31 +191,15 @@ struct AdamwPoolScratch {
         d_grad = nullptr;
         d_m = nullptr;
         d_v = nullptr;
-        this->bytes = 0;
-        if (cudaMalloc(reinterpret_cast<void**>(&d_param), need_bytes) != cudaSuccess) {
+        bytes = 0;
+        float* s[4];
+        if (!jgpt_cuda_tls::malloc_n_same_size(s, 4, need_bytes)) {
             return false;
         }
-        if (cudaMalloc(reinterpret_cast<void**>(&d_grad), need_bytes) != cudaSuccess) {
-            cudaFree(d_param);
-            d_param = nullptr;
-            return false;
-        }
-        if (cudaMalloc(reinterpret_cast<void**>(&d_m), need_bytes) != cudaSuccess) {
-            cudaFree(d_param);
-            cudaFree(d_grad);
-            d_param = nullptr;
-            d_grad = nullptr;
-            return false;
-        }
-        if (cudaMalloc(reinterpret_cast<void**>(&d_v), need_bytes) != cudaSuccess) {
-            cudaFree(d_param);
-            cudaFree(d_grad);
-            cudaFree(d_m);
-            d_param = nullptr;
-            d_grad = nullptr;
-            d_m = nullptr;
-            return false;
-        }
+        d_param = s[0];
+        d_grad = s[1];
+        d_m = s[2];
+        d_v = s[3];
         bytes = need_bytes;
         return true;
     }
@@ -272,22 +218,15 @@ struct AdamwPoolScratch {
 };
 
 struct AttnBwdHostScratch {
-    void* buf = nullptr;
-    size_t total = 0;
+    TlsDeviceBlob blob;
 
     bool ensure(size_t bytesProb, size_t bytesQK, size_t bytesV, float** d_go, float** d_p, float** d_q, float** d_k,
             float** d_v, float** d_dp, float** d_ds, float** d_gq, float** d_gk, float** d_gv) {
         size_t need = 3U * bytesProb + 4U * bytesQK + 3U * bytesV;
-        if (need > total) {
-            cudaFree(buf);
-            buf = nullptr;
-            total = 0;
-            if (cudaMalloc(&buf, need) != cudaSuccess) {
-                return false;
-            }
-            total = need;
+        if (!blob.grow_to_fit(need)) {
+            return false;
         }
-        unsigned char* base = static_cast<unsigned char*>(buf);
+        unsigned char* base = static_cast<unsigned char*>(blob.ptr);
         size_t off = 0;
         *d_go = reinterpret_cast<float*>(base + off);
         off += bytesV;
@@ -313,29 +252,20 @@ struct AttnBwdHostScratch {
     }
 
     void free_cached() {
-        cudaFree(buf);
-        buf = nullptr;
-        total = 0;
+        blob.free_cached();
     }
 };
 
 struct AttnBwdAuxScratch {
-    void* buf = nullptr;
-    size_t total = 0;
+    TlsDeviceBlob blob;
 
     bool ensure(size_t bytesProb, size_t bytesV, float** d_dp, float** d_ds) {
         (void) bytesV;
         size_t need = 2U * bytesProb;
-        if (need > total) {
-            cudaFree(buf);
-            buf = nullptr;
-            total = 0;
-            if (cudaMalloc(&buf, need) != cudaSuccess) {
-                return false;
-            }
-            total = need;
+        if (!blob.grow_to_fit(need)) {
+            return false;
         }
-        unsigned char* base = static_cast<unsigned char*>(buf);
+        unsigned char* base = static_cast<unsigned char*>(blob.ptr);
         size_t off = 0;
         *d_dp = reinterpret_cast<float*>(base + off);
         off += bytesProb;
@@ -344,9 +274,7 @@ struct AttnBwdAuxScratch {
     }
 
     void free_cached() {
-        cudaFree(buf);
-        buf = nullptr;
-        total = 0;
+        blob.free_cached();
     }
 };
 
@@ -355,8 +283,7 @@ struct AttnBwdAuxScratch {
  * Separate from g_attn_fwd_graph_aux (graph path).
  */
 struct AttnFwdScratch {
-    void* aux = nullptr;
-    size_t aux_total = 0;
+    TlsDeviceBlob blob;
 
     bool ensure(size_t bytesQK, size_t bytesProb, size_t bytesMask, bool with_mask, float** d_scores,
             float** d_probs, float** d_mask) {
@@ -364,16 +291,10 @@ struct AttnFwdScratch {
         if (with_mask) {
             total_need += bytesMask;
         }
-        if (total_need > aux_total) {
-            cudaFree(aux);
-            aux = nullptr;
-            aux_total = 0;
-            if (cudaMalloc(&aux, total_need) != cudaSuccess) {
-                return false;
-            }
-            aux_total = total_need;
+        if (!blob.grow_to_fit(total_need)) {
+            return false;
         }
-        unsigned char* base = static_cast<unsigned char*>(aux);
+        unsigned char* base = static_cast<unsigned char*>(blob.ptr);
         size_t off = 0;
         *d_scores = reinterpret_cast<float*>(base + off);
         off += bytesProb;
@@ -389,9 +310,7 @@ struct AttnFwdScratch {
     }
 
     void free_cached() {
-        cudaFree(aux);
-        aux = nullptr;
-        aux_total = 0;
+        blob.free_cached();
     }
 };
 
@@ -428,31 +347,22 @@ struct FlashAttnScratch {
 
 /** Workspace for jgpt_cuda_graph_prewarm_sdpa_aux_and_cublas batched-GEMM warmup. */
 struct GraphSdpaWarmupScratch {
-    void* buf = nullptr;
-    size_t buf_bytes = 0;
+    TlsDeviceBlob blob;
 
     float* ensure(size_t need_bytes) {
-        if (need_bytes > buf_bytes) {
-            if (buf != nullptr) {
-                cudaFree(buf);
-                buf = nullptr;
-            }
-            buf_bytes = 0;
-            if (cudaMalloc(&buf, need_bytes) != cudaSuccess) {
-                fprintf(stderr, "jgpt_cuda_graph_prewarm_sdpa_aux_and_cublas: cudaMalloc warmup\n");
-                return nullptr;
-            }
-            buf_bytes = need_bytes;
+        if (!blob.grow_to_fit(need_bytes)) {
+            fprintf(
+                    stderr,
+                    "jgpt_cuda_graph_prewarm_sdpa_aux_and_cublas: warmup alloc failed (%zu bytes): %s\n",
+                    need_bytes,
+                    cudaGetErrorString(cudaGetLastError()));
+            return nullptr;
         }
-        return reinterpret_cast<float*>(buf);
+        return reinterpret_cast<float*>(blob.ptr);
     }
 
     void free_cached() {
-        if (buf != nullptr) {
-            cudaFree(buf);
-            buf = nullptr;
-            buf_bytes = 0;
-        }
+        blob.free_cached();
     }
 };
 

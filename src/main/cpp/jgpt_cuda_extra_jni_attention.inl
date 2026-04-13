@@ -23,6 +23,17 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
             || dVDim <= 0) {
         return;
     }
+    if (jgpt_size_mul_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen))) {
+        return;
+    }
+    if ((long long) batch * (long long) seqLen > (long long) INT_MAX) {
+        return;
+    }
+    if (jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(dKDim))
+            || jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(seqLen))
+            || jgpt_alloc_matrix_bytes_overflows(static_cast<size_t>(seqLen), static_cast<size_t>(seqLen), sizeof(float))) {
+        return;
+    }
     float* pq = reinterpret_cast<float*>(static_cast<uintptr_t>(dQPtr));
     float* pk = reinterpret_cast<float*>(static_cast<uintptr_t>(dKPtr));
     float* pv = reinterpret_cast<float*>(static_cast<uintptr_t>(dVPtr));
@@ -97,6 +108,16 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
             || dVDim <= 0) {
         return;
     }
+    if (jgpt_size_mul_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen))) {
+        return;
+    }
+    if ((long long) batch * (long long) seqLen > (long long) INT_MAX) {
+        return;
+    }
+    if (jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(dKDim))
+            || jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(seqLen))) {
+        return;
+    }
     float* pq = reinterpret_cast<float*>(static_cast<uintptr_t>(dQPtr));
     float* pk = reinterpret_cast<float*>(static_cast<uintptr_t>(dKPtr));
     float* pv = reinterpret_cast<float*>(static_cast<uintptr_t>(dVPtr));
@@ -146,6 +167,17 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     (void) clazz;
     (void) h_mask;
     if (batch <= 0 || seqLen <= 0 || dK <= 0 || dV <= 0) {
+        return;
+    }
+    if (jgpt_size_mul_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen))) {
+        return;
+    }
+    if ((long long) batch * (long long) seqLen > (long long) INT_MAX) {
+        return;
+    }
+    if (jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(seqLen))
+            || jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(dK))
+            || jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(dV))) {
         return;
     }
     size_t bytesProb = (size_t) batch * (size_t) seqLen * (size_t) seqLen * sizeof(float);
@@ -237,6 +269,16 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     (void) dMask;
     if (dGradOut == 0 || dProbs == 0 || dQ == 0 || dK == 0 || dV == 0 || dGradQ == 0 || dGradK == 0 || dGradV == 0
             || batch <= 0 || seqLen <= 0 || dKDim <= 0 || dVDim <= 0) {
+        return;
+    }
+    if (jgpt_size_mul_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen))) {
+        return;
+    }
+    if ((long long) batch * (long long) seqLen > (long long) INT_MAX) {
+        return;
+    }
+    if (jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(seqLen))
+            || jgpt_alloc_volume3d_float_overflows(static_cast<size_t>(batch), static_cast<size_t>(seqLen), static_cast<size_t>(dVDim))) {
         return;
     }
     size_t bytesProb = (size_t) batch * (size_t) seqLen * (size_t) seqLen * sizeof(float);

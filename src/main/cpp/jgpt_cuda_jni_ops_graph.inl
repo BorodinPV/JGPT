@@ -10,6 +10,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_addGPU(
     jfloatArray h_a, jfloatArray h_b, jfloatArray h_c, jint n) {
     (void) clazz;
     if (n <= 0) return;
+    JGPT_CUDA_GUARD_1D(n, sizeof(float), return;);
     size_t bytes = (size_t) n * sizeof(float);
     float *d_a = nullptr, *d_b = nullptr, *d_c = nullptr;
     CUDA_CHECK_VOID(cudaMalloc(&d_a, bytes));
@@ -44,6 +45,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_subtractGPU(
     jfloatArray h_a, jfloatArray h_b, jfloatArray h_c, jint n) {
     (void) clazz;
     if (n <= 0) return;
+    JGPT_CUDA_GUARD_1D(n, sizeof(float), return;);
     size_t bytes = (size_t) n * sizeof(float);
     float *d_a = nullptr, *d_b = nullptr, *d_c = nullptr;
     CUDA_CHECK_VOID(cudaMalloc(&d_a, bytes));
@@ -80,6 +82,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_reluGPU(
     jfloatArray h_a, jfloatArray h_b, jint n) {
     (void) clazz;
     if (n <= 0) return;
+    JGPT_CUDA_GUARD_1D(n, sizeof(float), return;);
     size_t bytes = (size_t) n * sizeof(float);
     float *d_a = nullptr, *d_b = nullptr;
     CUDA_CHECK_VOID(cudaMalloc(&d_a, bytes));
@@ -508,6 +511,9 @@ JNIEXPORT jlong JNICALL Java_com_veles_llm_jgpt_cuda_CudaPinnedHost_allocBytes(J
     if (numBytes <= 0) {
         return 0;
     }
+    if (jgpt_jni_long_bytes_invalid(numBytes)) {
+        return 0;
+    }
     void* p = nullptr;
     cudaError_t e = cudaHostAlloc(&p, static_cast<size_t>(numBytes), cudaHostAllocDefault);
     if (e != cudaSuccess || p == nullptr) {
@@ -527,6 +533,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_cuda_CudaPinnedHost_free(JNIEnv* 
 JNIEXPORT jobject JNICALL Java_com_veles_llm_jgpt_cuda_CudaPinnedHost_directBuffer(JNIEnv* env, jclass clazz, jlong ptr, jlong numBytes) {
     (void) clazz;
     if (ptr == 0 || numBytes <= 0) {
+        return nullptr;
+    }
+    if (jgpt_jni_long_bytes_invalid(numBytes)) {
         return nullptr;
     }
     return env->NewDirectByteBuffer(reinterpret_cast<void*>(ptr), numBytes);

@@ -193,6 +193,7 @@ JNIEXPORT jfloat JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftma
     (void) clazz;
     int nrows = batch * seqLen;
     if (nrows <= 0 || vocab <= 0) return 0.f;
+    JGPT_CUDA_GUARD_1D(nrows, sizeof(float), return 0.f;);
     jgpt_cuda_ensure_stream();
 
     float* logits = reinterpret_cast<float*>(static_cast<uintptr_t>(dLogits));
@@ -241,6 +242,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     if (nrows <= 0 || vocab <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_1D(nrows, sizeof(float), return;);
     jgpt_cuda_ensure_stream();
 
     float* logits = reinterpret_cast<float*>(static_cast<uintptr_t>(dLogits));
@@ -309,6 +311,7 @@ JNIEXPORT jfloat JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftma
     (void) clazz;
     int nrows = batch * seqLen;
     if (nrows <= 0 || vocab <= 0 || dTargetsInt == 0) return 0.f;
+    JGPT_CUDA_GUARD_1D(nrows, sizeof(float), return 0.f;);
     jgpt_cuda_ensure_stream();
 
     float* logits = reinterpret_cast<float*>(static_cast<uintptr_t>(dLogits));
@@ -347,6 +350,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     if (nrows <= 0 || vocab <= 0 || dTargetsInt == 0) {
         return;
     }
+    JGPT_CUDA_GUARD_1D(nrows, sizeof(float), return;);
     jgpt_cuda_ensure_stream();
 
     float* logits = reinterpret_cast<float*>(static_cast<uintptr_t>(dLogits));
@@ -674,6 +678,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_accumulateAddFromHos
     JNIEnv* env, jclass clazz, jlong dAcc, jfloatArray hDelta, jint off, jint len) {
     (void) clazz;
     if (len <= 0 || dAcc == 0) return;
+    JGPT_CUDA_GUARD_1D(len, sizeof(float), return;);
     float* acc = reinterpret_cast<float*>(static_cast<uintptr_t>(dAcc));
     jfloat* pd = env->GetFloatArrayElements(hDelta, nullptr);
     if (!pd) return;

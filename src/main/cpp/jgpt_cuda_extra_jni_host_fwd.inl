@@ -193,6 +193,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_copyHostFloatBufferT
     if (n_tokens <= 0 || d_dst_int == 0) {
         return;
     }
+    JGPT_CUDA_GUARD_1D(n_tokens, sizeof(float), return;);
     size_t bytes_f = (size_t) n_tokens * sizeof(float);
     void* pf = jni_direct_ptr(env, float_buf, float_byte_off, (jlong) bytes_f, "copyFloatToInt targets");
     if (!pf) {
@@ -215,6 +216,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_layerNormGPU(
     if (outer <= 0 || lastDim <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_MATF(outer, lastDim, return;);
+    JGPT_CUDA_GUARD_1D(lastDim, sizeof(float), return;);
     size_t bytes_x = (size_t) outer * (size_t) lastDim * sizeof(float);
     size_t bytes_g = (size_t) lastDim * sizeof(float);
     float *d_x = nullptr, *d_g = nullptr, *d_b = nullptr, *d_o = nullptr;
@@ -270,6 +273,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormGPU(
     if (outer <= 0 || lastDim <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_MATF(outer, lastDim, return;);
+    JGPT_CUDA_GUARD_1D(lastDim, sizeof(float), return;);
     size_t bytes_x = (size_t) outer * (size_t) lastDim * sizeof(float);
     size_t bytes_g = (size_t) lastDim * sizeof(float);
     float *d_x = nullptr, *d_g = nullptr, *d_o = nullptr;
@@ -416,6 +421,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_geluGPU(
     if (n <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_1D(n, sizeof(float), return;);
     size_t bytes = (size_t) n * sizeof(float);
     float *d_a = nullptr, *d_b = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_a), bytes));
@@ -451,6 +457,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sigmoidGPU(
     if (n <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_1D(n, sizeof(float), return;);
     size_t bytes = (size_t) n * sizeof(float);
     float *d_a = nullptr, *d_b = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_a), bytes));
@@ -500,6 +507,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_multiplyGPU(
     if (n <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_1D(n, sizeof(float), return;);
     size_t bytes = (size_t) n * sizeof(float);
     float *d_a = nullptr, *d_b = nullptr, *d_c = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_a), bytes));
@@ -556,6 +564,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_multiplyScalarGPU(
     if (n <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_1D(n, sizeof(float), return;);
     size_t bytes = (size_t) n * sizeof(float);
     float *d_a = nullptr, *d_b = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_a), bytes));
@@ -593,6 +602,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyCausalMask3DGPU
     if (total <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, seqLen, return;);
+    JGPT_CUDA_GUARD_MATF(seqLen, seqLen, return;);
     size_t bytes_s = (size_t) total * sizeof(float);
     size_t bytes_m = (size_t) seqLen * seqLen * sizeof(float);
     float *d_s = nullptr, *d_m = nullptr, *d_o = nullptr;
@@ -637,6 +648,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_transpose2DLastGPU(
     if (total <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_VOL3_F(d0, d1, d2, return;);
     size_t bytes = (size_t) total * sizeof(float);
     float *d_s = nullptr, *d_d = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_s), bytes));
@@ -739,6 +751,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyRoPE4DGPU(
     if (total <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_CHAIN4_F(batch, numHeads, seqLen, dHead, return;);
     size_t bytes = (size_t) batch * numHeads * seqLen * dHead * sizeof(float);
     float *d_s = nullptr, *d_d = nullptr;
     int *d_pos = nullptr;
@@ -759,6 +772,15 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyRoPE4DGPU(
     if (h_positions != nullptr) {
         posLen = env->GetArrayLength(h_positions);
         posHost = env->GetIntArrayElements(h_positions, nullptr);
+        if (!posHost) {
+            cudaFree(d_s);
+            cudaFree(d_d);
+            return;
+        }
+        JGPT_CUDA_GUARD_JSIZE(posLen, sizeof(int), env->ReleaseIntArrayElements(h_positions, posHost, JNI_ABORT);
+                cudaFree(d_s);
+                cudaFree(d_d);
+                return;);
         CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_pos), (size_t) posLen * sizeof(int)));
         CUDA_CHECK_X(cudaMemcpyAsync(d_pos, posHost, (size_t) posLen * sizeof(int), cudaMemcpyHostToDevice, kTensorCudaStream));
         CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
@@ -810,6 +832,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyRoPE4DGPUDevice
         if (!posHost) {
             return;
         }
+        JGPT_CUDA_GUARD_JSIZE(posLen, sizeof(int), env->ReleaseIntArrayElements(h_positions, posHost, JNI_ABORT);
+                return;);
         CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_pos), (size_t) posLen * sizeof(int)));
         CUDA_CHECK_X(cudaMemcpyAsync(d_pos, posHost, (size_t) posLen * sizeof(int), cudaMemcpyHostToDevice, kTensorCudaStream));
         CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
@@ -837,6 +861,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyRoPEBackward4DG
     if (total <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_CHAIN4_F(batch, numHeads, seqLen, dHead, return;);
     size_t bytes = (size_t) batch * numHeads * seqLen * dHead * sizeof(float);
     float *d_gy = nullptr, *d_gx = nullptr;
     int *d_pos = nullptr;
@@ -860,6 +885,15 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyRoPEBackward4DG
     if (h_positions != nullptr) {
         posLen = env->GetArrayLength(h_positions);
         posHost = env->GetIntArrayElements(h_positions, nullptr);
+        if (!posHost) {
+            cudaFree(d_gy);
+            cudaFree(d_gx);
+            return;
+        }
+        JGPT_CUDA_GUARD_JSIZE(posLen, sizeof(int), env->ReleaseIntArrayElements(h_positions, posHost, JNI_ABORT);
+                cudaFree(d_gy);
+                cudaFree(d_gx);
+                return;);
         CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_pos), (size_t) posLen * sizeof(int)));
         CUDA_CHECK_X(cudaMemcpyAsync(d_pos, posHost, (size_t) posLen * sizeof(int), cudaMemcpyHostToDevice, kTensorCudaStream));
         CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
@@ -902,6 +936,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyRoPEBackward4DG
     if (total <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_CHAIN4_F(batch, numHeads, seqLen, dHead, return;);
     const float* gradY = reinterpret_cast<const float*>(static_cast<uintptr_t>(dGradY));
     float* gradX = reinterpret_cast<float*>(static_cast<uintptr_t>(dGradX));
     jgpt_cuda_ensure_stream();
@@ -920,6 +955,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     if (batch <= 0 || seqLen <= 0 || dModel <= 0 || vocabSize <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
+    JGPT_CUDA_GUARD_MATF(vocabSize, dModel, return;);
+    JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
     size_t tokBytes = (size_t) batch * (size_t) seqLen * sizeof(float);
     size_t wBytes = (size_t) vocabSize * (size_t) dModel * sizeof(float);
     size_t outBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
@@ -979,6 +1017,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     if (cap_bytes < 0 || (jlong) tok_bytes > cap_bytes) {
         return;
     }
+    JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
+    JGPT_CUDA_GUARD_MATF(vocabSize, dModel, return;);
+    JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
     size_t wBytes = (size_t) vocabSize * (size_t) dModel * sizeof(float);
     size_t outBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     float *d_tok = nullptr, *d_w = nullptr, *d_out = nullptr;
@@ -1030,6 +1071,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     if (d_w == nullptr) {
         return;
     }
+    JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
+    JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
     size_t tokBytes = (size_t) batch * (size_t) seqLen * sizeof(float);
     size_t outBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     float *d_tok = nullptr, *d_out = nullptr;
@@ -1077,6 +1120,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     if (d_w == nullptr || d_out == nullptr) {
         return;
     }
+    JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
     size_t tokBytes = (size_t) batch * (size_t) seqLen * sizeof(float);
     float* d_tok = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_tok), tokBytes));
@@ -1126,6 +1170,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     if (cap_bytes < 0 || (jlong) tok_bytes > cap_bytes) {
         return;
     }
+    JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
+    JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
     size_t outBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     float *d_tok = nullptr, *d_out = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_tok), tok_bytes));
@@ -1174,6 +1220,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     if (cap_bytes < 0 || (jlong) tok_bytes > cap_bytes) {
         return;
     }
+    JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
     float* d_tok = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_tok), tok_bytes));
     CUDA_CHECK_X(cudaMemcpyAsync(d_tok, tok_host, tok_bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
@@ -1203,6 +1250,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenBackwa
     if (batch <= 0 || seqLen <= 0 || dModel <= 0 || vocabSize <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
+    JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    JGPT_CUDA_GUARD_MATF(vocabSize, dModel, return;);
     size_t tokBytes = (size_t) batch * (size_t) seqLen * sizeof(float);
     size_t goBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     size_t gwBytes = (size_t) vocabSize * (size_t) dModel * sizeof(float);
@@ -1252,6 +1302,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenBackwa
     if (d_gw == nullptr) {
         return;
     }
+    JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
+    JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
     size_t tokBytes = (size_t) batch * (size_t) seqLen * sizeof(float);
     size_t goBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     float *d_tok = nullptr, *d_go = nullptr;
@@ -1284,6 +1336,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingPositionBac
     if (batch <= 0 || seqLen <= 0 || dModel <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    JGPT_CUDA_GUARD_MATF(seqLen, dModel, return;);
     size_t gcBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     size_t gwBytes = (size_t) seqLen * (size_t) dModel * sizeof(float);
     float *d_gc = nullptr, *d_gw = nullptr;
@@ -1327,6 +1381,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingPositionBac
     if (d_gw == nullptr) {
         return;
     }
+    JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
     size_t gcBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     float* d_gc = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_gc), gcBytes));
@@ -1357,6 +1412,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenBackwa
     if (d_gw == nullptr) {
         return;
     }
+    JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
     size_t tokBytes = (size_t) batch * (size_t) seqLen * sizeof(float);
     float* d_tok = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_tok), tokBytes));
@@ -1409,6 +1465,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_addPositionEmbedding
     if (d_pw == nullptr) {
         return;
     }
+    JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
     size_t xBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     float* d_x = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_x), xBytes));
@@ -1476,6 +1533,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_addPositionEmbedding
     if (batch <= 0 || seqLen <= 0 || dModel <= 0) {
         return;
     }
+    JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    JGPT_CUDA_GUARD_MATF(seqLen, dModel, return;);
     size_t xBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     size_t posBytes = (size_t) seqLen * (size_t) dModel * sizeof(float);
     float* d_x = nullptr;

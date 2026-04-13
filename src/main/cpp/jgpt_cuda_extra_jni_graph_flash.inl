@@ -96,8 +96,8 @@ JNIEXPORT jlong JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_decoderGraphNativeS
     unsigned long long cce = 0;
     int ov = 0;
     jgpt_cuda_decoder_graph_pack_snapshot(&wp, &cp, &cwe, &cce, &ov);
-    const uintptr_t warm = reinterpret_cast<uintptr_t>(jgpt_extra::jgpt_extra_tls().graph_sdpa_warmup.buf);
-    const size_t warm_sz = jgpt_extra::jgpt_extra_tls().graph_sdpa_warmup.buf_bytes;
+    const uintptr_t warm = reinterpret_cast<uintptr_t>(jgpt_extra::jgpt_extra_tls().graph_sdpa_warmup.blob.ptr);
+    const size_t warm_sz = jgpt_extra::jgpt_extra_tls().graph_sdpa_warmup.blob.bytes;
     const uintptr_t fad = reinterpret_cast<uintptr_t>(jgpt_extra::jgpt_extra_tls().flash_attn.d_D);
     const size_t fad_sz = jgpt_extra::jgpt_extra_tls().flash_attn.d_bytes;
 

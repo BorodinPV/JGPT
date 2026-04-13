@@ -22,6 +22,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGPU(
     jfloatArray h_A, jfloatArray h_B, jfloatArray h_C,
     jint M, jint K, jint N) {
 
+    if (M <= 0 || K <= 0 || N <= 0) {
+        return;
+    }
     if (check_size_overflow(M, K, sizeof(float)) ||
         check_size_overflow(K, N, sizeof(float)) ||
         check_size_overflow(M, N, sizeof(float))) {
@@ -97,6 +100,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGPUFp16(
     jfloatArray h_A, jfloatArray h_B, jfloatArray h_C,
     jint M, jint K, jint N) {
 
+    if (M <= 0 || K <= 0 || N <= 0) {
+        return;
+    }
     if (check_size_overflow(M, K, sizeof(float)) ||
         check_size_overflow(K, N, sizeof(float)) ||
         check_size_overflow(M, N, sizeof(float))) {
@@ -204,6 +210,13 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulBatchedGPU(
         return;
     }
 
+    if (jgpt_alloc_volume3d_float_overflows((size_t) batchCount, (size_t) M, (size_t) K) ||
+            jgpt_alloc_volume3d_float_overflows((size_t) batchCount, (size_t) K, (size_t) N) ||
+            jgpt_alloc_volume3d_float_overflows((size_t) batchCount, (size_t) M, (size_t) N)) {
+        fprintf(stderr, "[TensorOpsGPU] matmulBatchedGPU: tensor size overflow\n");
+        return;
+    }
+
     size_t numA = (size_t) batchCount * (size_t) M * (size_t) K;
     size_t numB = (size_t) batchCount * (size_t) K * (size_t) N;
     size_t numC = (size_t) batchCount * (size_t) M * (size_t) N;
@@ -298,6 +311,13 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulBatchedGPUFp16
     long long expectedC = (long long) batchCount * (long long) M * (long long) N;
     if ((long long) lenA != expectedA || (long long) lenB != expectedB || (long long) lenC != expectedC) {
         fprintf(stderr, "[TensorOpsGPU] matmulBatchedGPUFp16: buffer size mismatch\n");
+        return;
+    }
+
+    if (jgpt_alloc_volume3d_float_overflows((size_t) batchCount, (size_t) M, (size_t) K) ||
+            jgpt_alloc_volume3d_float_overflows((size_t) batchCount, (size_t) K, (size_t) N) ||
+            jgpt_alloc_volume3d_float_overflows((size_t) batchCount, (size_t) M, (size_t) N)) {
+        fprintf(stderr, "[TensorOpsGPU] matmulBatchedGPUFp16: tensor size overflow\n");
         return;
     }
 
@@ -698,6 +718,10 @@ JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_ensureStridedBat
     if (rows <= 0 || dModel <= 0 || dIntermediate <= 0) {
         return JNI_FALSE;
     }
+    if (rows > static_cast<jlong>(INT_MAX)) {
+        fprintf(stderr, "ensureStridedBatchedPackScratch0: rows too large\n");
+        return JNI_FALSE;
+    }
     jgpt_cuda_ensure_stream();
     /* cublasCreate / привязка к потоку недопустимы внутри cudaStreamBeginCapture; разогрев до захвата графа. */
     if (get_cublas_handle() == nullptr) {
@@ -734,6 +758,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_setStridedBatchedPac
     (void) clazz;
     if (wPtr == 0 || cPtr == 0 || capWElems <= 0 || capCElems <= 0) {
         fprintf(stderr, "setStridedBatchedPackOverride0: invalid args\n");
+        return;
+    }
+    if (jgpt_jni_long_elems_invalid(capWElems, sizeof(float)) || jgpt_jni_long_elems_invalid(capCElems, sizeof(float))) {
+        fprintf(stderr, "setStridedBatchedPackOverride0: capacity overflow\n");
         return;
     }
     tl_qkv_pack_override_w = reinterpret_cast<float*>(static_cast<uintptr_t>(wPtr));

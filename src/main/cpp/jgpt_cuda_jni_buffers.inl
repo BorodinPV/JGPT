@@ -68,7 +68,9 @@ static void jgpt_log_gpu_alloc_failure(
 JNIEXPORT jlong JNICALL Java_com_veles_llm_jgpt_GpuHalfBuffer_nativeAlloc(JNIEnv* env, jclass clazz, jlong numHalfs) {
     (void) env;
     (void) clazz;
-    if (numHalfs <= 0 || check_size_overflow(numHalfs, sizeof(__half), 1)) return 0;
+    if (jgpt_jni_long_elems_invalid(numHalfs, sizeof(__half))) {
+        return 0;
+    }
     size_t bytes = static_cast<size_t>(numHalfs) * sizeof(__half);
     __half* p = nullptr;
     cudaError_t e;
@@ -210,7 +212,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuHalfBuffer_nativeFree(JNIEnv* 
 JNIEXPORT jlong JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeAlloc(JNIEnv* env, jclass clazz, jlong numFloats) {
     (void) env;
     (void) clazz;
-    if (numFloats <= 0 || check_size_overflow(numFloats, sizeof(float), 1)) return 0;
+    if (jgpt_jni_long_elems_invalid(numFloats, sizeof(float))) {
+        return 0;
+    }
     size_t bytes = static_cast<size_t>(numFloats) * sizeof(float);
     float* p = nullptr;
     cudaError_t e;
@@ -350,6 +354,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyHtoD(
     JNIEnv* env, jclass clazz, jlong devicePtr, jfloatArray src, jint offset, jint length) {
     (void) clazz;
     if (devicePtr == 0 || length <= 0) return;
+    JGPT_CUDA_GUARD_1D(length, sizeof(float), return;);
     jgpt_cuda_ensure_stream();
     float* d = reinterpret_cast<float*>(static_cast<uintptr_t>(devicePtr));
     size_t bytes = static_cast<size_t>(length) * sizeof(float);
@@ -379,6 +384,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyHtoDOffs
     JNIEnv* env, jclass clazz, jlong devicePtr, jint deviceFloatOffset, jfloatArray src, jint srcOff, jint len) {
     (void) clazz;
     if (devicePtr == 0 || len <= 0) return;
+    JGPT_CUDA_GUARD_1D(len, sizeof(float), return;);
     jgpt_cuda_ensure_stream();
     float* d = reinterpret_cast<float*>(static_cast<uintptr_t>(devicePtr)) + deviceFloatOffset;
     size_t bytes = static_cast<size_t>(len) * sizeof(float);
@@ -407,6 +413,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyDtoH(
     JNIEnv* env, jclass clazz, jlong devicePtr, jfloatArray dst, jint offset, jint length) {
     (void) clazz;
     if (devicePtr == 0 || length <= 0) return;
+    JGPT_CUDA_GUARD_1D(length, sizeof(float), return;);
     jgpt_cuda_ensure_stream();
     jgpt_cuda_abort_stream_capture_discard_graph();
     float* d = reinterpret_cast<float*>(static_cast<uintptr_t>(devicePtr));
@@ -437,6 +444,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyDtoHOffs
     JNIEnv* env, jclass clazz, jlong devicePtr, jint deviceFloatOffset, jfloatArray dst, jint dstOff, jint len) {
     (void) clazz;
     if (devicePtr == 0 || len <= 0) return;
+    JGPT_CUDA_GUARD_1D(len, sizeof(float), return;);
     jgpt_cuda_ensure_stream();
     jgpt_cuda_abort_stream_capture_discard_graph();
     float* d = reinterpret_cast<float*>(static_cast<uintptr_t>(devicePtr)) + deviceFloatOffset;
@@ -467,6 +475,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyHtoDDire
     JNIEnv* env, jclass clazz, jlong devicePtr, jobject directBuf, jlong byteOffset, jlong numBytes) {
     (void) clazz;
     if (devicePtr == 0 || directBuf == nullptr || numBytes <= 0) return;
+    if (jgpt_jni_long_bytes_invalid(numBytes)) {
+        return;
+    }
     jgpt_cuda_ensure_stream();
     void* host = env->GetDirectBufferAddress(directBuf);
     if (!host) { fprintf(stderr, "GpuFloatBuffer.nativeCopyHtoDDirect: not a direct buffer\n"); return; }
@@ -492,6 +503,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyDtoHDire
     JNIEnv* env, jclass clazz, jlong devicePtr, jobject directBuf, jlong byteOffset, jlong numBytes) {
     (void) clazz;
     if (devicePtr == 0 || directBuf == nullptr || numBytes <= 0) return;
+    if (jgpt_jni_long_bytes_invalid(numBytes)) {
+        return;
+    }
     jgpt_cuda_ensure_stream();
     jgpt_cuda_abort_stream_capture_discard_graph();
     void* host = env->GetDirectBufferAddress(directBuf);
@@ -515,6 +529,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyHtoDFloa
     JNIEnv* env, jclass clazz, jlong devicePtr, jobject floatBuf, jlong floatOffset, jlong numFloats) {
     (void) clazz;
     if (devicePtr == 0 || floatBuf == nullptr || numFloats <= 0) return;
+    if (floatOffset < 0 || jgpt_jni_long_elems_invalid(floatOffset, sizeof(float))
+            || jgpt_jni_long_elems_invalid(numFloats, sizeof(float))) {
+        return;
+    }
     jgpt_cuda_ensure_stream();
     void* host = env->GetDirectBufferAddress(floatBuf);
     if (!host) { fprintf(stderr, "GpuFloatBuffer.nativeCopyHtoDFloatBuffer: not a direct buffer\n"); return; }
@@ -540,6 +558,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyDtoHFloa
     JNIEnv* env, jclass clazz, jlong devicePtr, jobject floatBuf, jlong floatOffset, jlong numFloats) {
     (void) clazz;
     if (devicePtr == 0 || floatBuf == nullptr || numFloats <= 0) return;
+    if (floatOffset < 0 || jgpt_jni_long_elems_invalid(floatOffset, sizeof(float))
+            || jgpt_jni_long_elems_invalid(numFloats, sizeof(float))) {
+        return;
+    }
     jgpt_cuda_ensure_stream();
     jgpt_cuda_abort_stream_capture_discard_graph();
     void* host = env->GetDirectBufferAddress(floatBuf);
@@ -564,6 +586,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyHtoDAddr
     (void) env;
     (void) clazz;
     if (devicePtr == 0 || hostAddress == 0 || numBytes <= 0) return;
+    if (jgpt_jni_long_bytes_invalid(numBytes)) {
+        return;
+    }
     jgpt_cuda_ensure_stream();
     void* base = reinterpret_cast<void*>(static_cast<uintptr_t>(hostAddress));
     float* d = reinterpret_cast<float*>(static_cast<uintptr_t>(devicePtr));
@@ -588,6 +613,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyDtoHAddr
     (void) env;
     (void) clazz;
     if (devicePtr == 0 || hostAddress == 0 || numBytes <= 0) return;
+    if (jgpt_jni_long_bytes_invalid(numBytes)) {
+        return;
+    }
     jgpt_cuda_ensure_stream();
     jgpt_cuda_abort_stream_capture_discard_graph();
     void* base = reinterpret_cast<void*>(static_cast<uintptr_t>(hostAddress));
@@ -609,6 +637,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeClear(
     JNIEnv* env, jclass clazz, jlong devicePtr, jlong numFloats) {
     (void) env; (void) clazz;
     if (devicePtr == 0 || numFloats <= 0) return;
+    if (jgpt_jni_long_elems_invalid(numFloats, sizeof(float))) {
+        return;
+    }
     jgpt_cuda_ensure_stream();
     float* d = reinterpret_cast<float*>(static_cast<uintptr_t>(devicePtr));
     size_t nbytes = static_cast<size_t>(numFloats) * sizeof(float);
@@ -631,6 +662,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyDtoD(
     JNIEnv* env, jclass clazz, jlong srcDevicePtr, jlong dstDevicePtr, jint length) {
     (void) env; (void) clazz;
     if (srcDevicePtr == 0 || dstDevicePtr == 0 || length <= 0) return;
+    JGPT_CUDA_GUARD_1D(length, sizeof(float), return;);
     const float* src = reinterpret_cast<const float*>(static_cast<uintptr_t>(srcDevicePtr));
     float* dst = reinterpret_cast<float*>(static_cast<uintptr_t>(dstDevicePtr));
     cudaError_t err = cudaMemcpyAsync(dst, src, static_cast<size_t>(length) * sizeof(float), cudaMemcpyDeviceToDevice, kTensorCudaStream);
@@ -641,7 +673,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyDtoD(
 
 JNIEXPORT jlong JNICALL Java_com_veles_llm_jgpt_GpuIntBuffer_nativeAlloc(JNIEnv* env, jclass clazz, jlong numInts) {
     (void) env; (void) clazz;
-    if (numInts <= 0 || check_size_overflow(static_cast<size_t>(numInts), sizeof(int), 1)) return 0;
+    if (jgpt_jni_long_elems_invalid(numInts, sizeof(int))) {
+        return 0;
+    }
     size_t bytes = static_cast<size_t>(numInts) * sizeof(int);
     int* p = nullptr;
     cudaError_t e = cudaMalloc(reinterpret_cast<void**>(&p), bytes);
@@ -662,6 +696,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuIntBuffer_nativeCopyHtoD(
     JNIEnv* env, jclass clazz, jlong devicePtr, jintArray src, jint offset, jint length) {
     (void) clazz;
     if (devicePtr == 0 || length <= 0) return;
+    JGPT_CUDA_GUARD_1D(length, sizeof(int), return;);
     jgpt_cuda_ensure_stream();
     int* d = reinterpret_cast<int*>(static_cast<uintptr_t>(devicePtr));
     size_t bytes = static_cast<size_t>(length) * sizeof(int);
@@ -691,6 +726,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuIntBuffer_nativeCopyDtoH(
     JNIEnv* env, jclass clazz, jlong devicePtr, jintArray dst, jint offset, jint length) {
     (void) clazz;
     if (devicePtr == 0 || length <= 0) return;
+    JGPT_CUDA_GUARD_1D(length, sizeof(int), return;);
     jgpt_cuda_ensure_stream();
     jgpt_cuda_abort_stream_capture_discard_graph();
     int* d = reinterpret_cast<int*>(static_cast<uintptr_t>(devicePtr));
@@ -721,6 +757,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuIntBuffer_nativeCopyHtoDDirect
     JNIEnv* env, jclass clazz, jlong devicePtr, jobject directBuf, jlong byteOffset, jlong numBytes) {
     (void) clazz;
     if (devicePtr == 0 || directBuf == nullptr || numBytes <= 0) return;
+    if (jgpt_jni_long_bytes_invalid(numBytes)) {
+        return;
+    }
     jgpt_cuda_ensure_stream();
     void* host = env->GetDirectBufferAddress(directBuf);
     if (!host) { fprintf(stderr, "GpuIntBuffer.nativeCopyHtoDDirect: not a direct buffer\n"); return; }
@@ -746,6 +785,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuIntBuffer_nativeCopyDtoHDirect
     JNIEnv* env, jclass clazz, jlong devicePtr, jobject directBuf, jlong byteOffset, jlong numBytes) {
     (void) clazz;
     if (devicePtr == 0 || directBuf == nullptr || numBytes <= 0) return;
+    if (jgpt_jni_long_bytes_invalid(numBytes)) {
+        return;
+    }
     jgpt_cuda_ensure_stream();
     jgpt_cuda_abort_stream_capture_discard_graph();
     void* host = env->GetDirectBufferAddress(directBuf);
@@ -769,6 +811,9 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuIntBuffer_nativeClear(
     JNIEnv* env, jclass clazz, jlong devicePtr, jlong numInts) {
     (void) env; (void) clazz;
     if (devicePtr == 0 || numInts <= 0) return;
+    if (jgpt_jni_long_elems_invalid(numInts, sizeof(int))) {
+        return;
+    }
     jgpt_cuda_ensure_stream();
     int* d = reinterpret_cast<int*>(static_cast<uintptr_t>(devicePtr));
     size_t nbytes = static_cast<size_t>(numInts) * sizeof(int);

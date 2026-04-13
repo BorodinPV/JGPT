@@ -1376,6 +1376,11 @@ static bool attn_fwd_aux_ensure_qk_probs_only(
         g_attn_fwd_graph_aux = nullptr;
         g_attn_fwd_graph_aux_total = 0;
         if (cudaMalloc(&g_attn_fwd_graph_aux, total) != cudaSuccess) {
+            fprintf(
+                    stderr,
+                    "attn_fwd_aux_ensure_qk_probs_only: cudaMalloc %zu bytes failed: %s\n",
+                    total,
+                    cudaGetErrorString(cudaGetLastError()));
             return false;
         }
         g_attn_fwd_graph_aux_total = total;
@@ -1391,10 +1396,10 @@ static bool attn_fwd_aux_ensure_qk_probs_only(
 void jgpt_cuda_decoder_graph_debug_aux_snapshot(
         uintptr_t* fwd_ptr, uintptr_t* graph_ptr, size_t* fwd_sz, size_t* graph_sz) {
     if (fwd_ptr != nullptr) {
-        *fwd_ptr = reinterpret_cast<uintptr_t>(jgpt_extra::jgpt_extra_tls().attn_fwd.aux);
+        *fwd_ptr = reinterpret_cast<uintptr_t>(jgpt_extra::jgpt_extra_tls().attn_fwd.blob.ptr);
     }
     if (fwd_sz != nullptr) {
-        *fwd_sz = jgpt_extra::jgpt_extra_tls().attn_fwd.aux_total;
+        *fwd_sz = jgpt_extra::jgpt_extra_tls().attn_fwd.blob.bytes;
     }
     std::lock_guard<std::mutex> lock(g_attn_fwd_graph_aux_mu);
     if (graph_ptr != nullptr) {

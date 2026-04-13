@@ -24,7 +24,7 @@ void jgpt_cuda_decoder_graph_debug_aux_snapshot(
     uintptr_t* fwd_ptr, uintptr_t* graph_ptr, size_t* fwd_sz, size_t* graph_sz);
 
 /**
- * Эффективные QKV/FFN strided pack указатели (override из Java или tl_qkv_*_pack_d) и ёмкости — для инвалидации
+ * Эффективные QKV/FFN strided pack указатели (override из Java или thread-local pack-блобов) и ёмкости — для инвалидации
  * decoder CUDA graph при перевыделении.
  */
 void jgpt_cuda_decoder_graph_pack_snapshot(

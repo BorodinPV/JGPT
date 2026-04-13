@@ -1,4 +1,4 @@
-CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.o : /home/pavel/Рабочий\ стол/tensor/src/main/cpp/tensor_cuda.cu \
+CMakeFiles/jgpt_cuda.dir/jgpt_cuda_extra.cu.o : /home/pavel/Рабочий\ стол/JGPT/src/main/cpp/jgpt_cuda_extra.cu \
     /usr/include/stdc-predef.h \
     /usr/include/cuda_runtime.h \
     /usr/include/crt/host_config.h \
@@ -193,6 +193,11 @@ CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.o : /home/pavel/Рабочий\ сто
     /usr/include/c++/13/utility \
     /usr/include/c++/13/bits/stl_relops.h \
     /usr/include/c++/13/initializer_list \
+    /usr/include/cuda_fp16.h \
+    /usr/include/nv/target \
+    /usr/include/nv/detail/__target_macros \
+    /usr/include/nv/detail/__preprocessor \
+    /usr/include/cuda_fp16.hpp \
     /usr/include/cublas_v2.h \
     /usr/include/cublas_api.h \
     /usr/lib/gcc/x86_64-linux-gnu/13/include/stdint.h \
@@ -201,11 +206,6 @@ CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.o : /home/pavel/Рабочий\ сто
     /usr/include/x86_64-linux-gnu/bits/stdint-uintn.h \
     /usr/include/x86_64-linux-gnu/bits/stdint-least.h \
     /usr/include/cuComplex.h \
-    /usr/include/cuda_fp16.h \
-    /usr/include/nv/target \
-    /usr/include/nv/detail/__target_macros \
-    /usr/include/nv/detail/__preprocessor \
-    /usr/include/cuda_fp16.hpp \
     /usr/include/cuda_bf16.h \
     /usr/include/cuda_bf16.hpp \
     /usr/lib/jvm/default-java/include/jni.h \
@@ -262,6 +262,8 @@ CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.o : /home/pavel/Рабочий\ сто
     /usr/include/c++/13/ext/atomicity.h \
     /usr/include/x86_64-linux-gnu/c++/13/bits/atomic_word.h \
     /usr/include/x86_64-linux-gnu/sys/single_threaded.h \
-    /home/pavel/Рабочий\ стол/tensor/src/main/cpp/tensor_cuda_stream.cuh \
-    /home/pavel/Рабочий\ стол/tensor/src/main/cpp/tensor_cuda_ffn_link.h \
-    /home/pavel/Рабочий\ стол/tensor/src/main/cpp/tensor_cuda_graph_prewarm.h
+    /home/pavel/Рабочий\ стол/JGPT/src/main/cpp/jgpt_cuda_stream.cuh \
+    /home/pavel/Рабочий\ стол/JGPT/src/main/cpp/jgpt_cuda_ffn_link.h \
+    /home/pavel/Рабочий\ стол/JGPT/src/main/cpp/jgpt_cuda_graph_prewarm.h \
+    /home/pavel/Рабочий\ стол/JGPT/src/main/cpp/jgpt_cuda_size_check.cuh \
+    /usr/include/c++/13/cstddef

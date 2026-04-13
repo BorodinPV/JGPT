@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls *)",
+      "Bash(xargs *)",
+      "Bash(make *)",
+      "Bash(rm *)",
+      "Bash(mkdir *)",
+      "Bash(cmake *)",
+      "Bash(nvcc *)",
+      "Bash(find *)",
+      "Bash(g++ *)",
+      "Bash(/usr/local/cuda-12.6/bin/nvcc *)",
+      "Bash(gcc *)",
+      "Bash(c++ *)",
+      "Bash(cp *)"
+    ]
+  },
+  "$version": 3
+}

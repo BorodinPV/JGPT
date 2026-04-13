@@ -159,6 +159,14 @@ struct SoftmaxPairScratch {
         }
         *d_src = static_cast<float*>(blob.ptr);
         *d_dst = reinterpret_cast<float*>(static_cast<unsigned char*>(blob.ptr) + bytes_per_elem);
+        /* Bounds check: d_dst + bytes_per_elem должен помещаться в blob. */
+        size_t total = bytes_per_elem * 2U;
+        if (total > blob.bytes) {
+            fprintf(stderr,
+                    "SoftmaxPairScratch::ensure: layout overflow %zu > %zu bytes\n",
+                    total, blob.bytes);
+            return false;
+        }
         return true;
     }
 
@@ -247,7 +255,15 @@ struct AttnBwdHostScratch {
         *d_gk = reinterpret_cast<float*>(base + off);
         off += bytesQK;
         *d_gv = reinterpret_cast<float*>(base + off);
-        (void) off;
+        off += bytesV;
+        /* Bounds check: убедимся что итоговое смещение не превышает размер blob. */
+        if (off > blob.bytes) {
+            fprintf(stderr,
+                    "AttnBwdHostScratch::ensure: layout overflow %zu > %zu bytes "
+                    "(bytesProb=%zu bytesQK=%zu bytesV=%zu)\n",
+                    off, blob.bytes, bytesProb, bytesQK, bytesV);
+            return false;
+        }
         return true;
     }
 
@@ -270,6 +286,13 @@ struct AttnBwdAuxScratch {
         *d_dp = reinterpret_cast<float*>(base + off);
         off += bytesProb;
         *d_ds = reinterpret_cast<float*>(base + off);
+        off += bytesProb;
+        if (off > blob.bytes) {
+            fprintf(stderr,
+                    "AttnBwdAuxScratch::ensure: layout overflow %zu > %zu bytes\n",
+                    off, blob.bytes);
+            return false;
+        }
         return true;
     }
 
@@ -302,8 +325,15 @@ struct AttnFwdScratch {
         off += bytesProb;
         if (with_mask) {
             *d_mask = reinterpret_cast<float*>(base + off);
+            off += bytesMask;
         } else {
             *d_mask = nullptr;
+        }
+        if (off > blob.bytes) {
+            fprintf(stderr,
+                    "AttnFwdScratch::ensure: layout overflow %zu > %zu bytes\n",
+                    off, blob.bytes);
+            return false;
         }
         (void) bytesQK;
         return true;

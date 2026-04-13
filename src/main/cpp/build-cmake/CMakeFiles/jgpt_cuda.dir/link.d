@@ -1,8 +1,8 @@
-/home/pavel/Рабочий стол/tensor/build/libtensor_cuda.so: \
+/home/pavel/Рабочий стол/JGPT/build/libjgpt_cuda.so: \
   /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/crti.o \
   /usr/lib/gcc/x86_64-linux-gnu/13/crtbeginS.o \
-  CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.o \
-  CMakeFiles/tensor_cuda.dir/tensor_cuda_extra.cu.o \
+  CMakeFiles/jgpt_cuda.dir/jgpt_cuda.cu.o \
+  CMakeFiles/jgpt_cuda.dir/jgpt_cuda_extra.cu.o \
   /usr/lib/x86_64-linux-gnu/stubs/libcublas.so \
   /usr/lib/x86_64-linux-gnu/libcudart.so \
   /usr/lib/x86_64-linux-gnu/stubs/libcuda.so \
@@ -42,9 +42,9 @@
 
 /usr/lib/gcc/x86_64-linux-gnu/13/crtbeginS.o:
 
-CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.o:
+CMakeFiles/jgpt_cuda.dir/jgpt_cuda.cu.o:
 
-CMakeFiles/tensor_cuda.dir/tensor_cuda_extra.cu.o:
+CMakeFiles/jgpt_cuda.dir/jgpt_cuda_extra.cu.o:
 
 /usr/lib/x86_64-linux-gnu/stubs/libcublas.so:
 

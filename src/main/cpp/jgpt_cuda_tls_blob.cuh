@@ -20,7 +20,15 @@ struct TlsDeviceBlob {
         if (need <= bytes && ptr != nullptr) {
             return true;
         }
-        cudaFree(ptr);
+        if (ptr != nullptr) {
+            cudaError_t e = cudaFree(ptr);
+            if (e != cudaSuccess) {
+                fprintf(stderr,
+                        "TlsDeviceBlob::grow_to_fit: cudaFree failed: %s\n",
+                        cudaGetErrorString(e));
+                /* Продолжаем: ptr всё равно станет невалиден после cudaFree. */
+            }
+        }
         ptr = nullptr;
         bytes = 0;
         if (cudaMalloc(&ptr, need) != cudaSuccess) {

@@ -8,9 +8,9 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
-  "/home/pavel/Рабочий стол/tensor/src/main/cpp/tensor_cuda.cu" "CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.o" "gcc" "CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.o.d"
-  "/home/pavel/Рабочий стол/tensor/src/main/cpp/tensor_cuda_extra.cu" "CMakeFiles/tensor_cuda.dir/tensor_cuda_extra.cu.o" "gcc" "CMakeFiles/tensor_cuda.dir/tensor_cuda_extra.cu.o.d"
-  "" "/home/pavel/Рабочий стол/tensor/build/libtensor_cuda.so" "gcc" "CMakeFiles/tensor_cuda.dir/link.d"
+  "/home/pavel/Рабочий стол/JGPT/src/main/cpp/jgpt_cuda.cu" "CMakeFiles/jgpt_cuda.dir/jgpt_cuda.cu.o" "gcc" "CMakeFiles/jgpt_cuda.dir/jgpt_cuda.cu.o.d"
+  "/home/pavel/Рабочий стол/JGPT/src/main/cpp/jgpt_cuda_extra.cu" "CMakeFiles/jgpt_cuda.dir/jgpt_cuda_extra.cu.o" "gcc" "CMakeFiles/jgpt_cuda.dir/jgpt_cuda_extra.cu.o.d"
+  "" "/home/pavel/Рабочий стол/JGPT/build/libjgpt_cuda.so" "gcc" "CMakeFiles/jgpt_cuda.dir/link.d"
   )
 
 # Targets to which this target links which contain Fortran sources.

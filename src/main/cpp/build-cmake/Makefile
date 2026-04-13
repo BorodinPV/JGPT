@@ -57,10 +57,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = "/home/pavel/Рабочий стол/tensor/src/main/cpp"
+CMAKE_SOURCE_DIR = "/home/pavel/Рабочий стол/JGPT/src/main/cpp"
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = "/home/pavel/Рабочий стол/tensor/src/main/cpp/build-cmake"
+CMAKE_BINARY_DIR = "/home/pavel/Рабочий стол/JGPT/src/main/cpp/build"
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -87,9 +87,9 @@ rebuild_cache/fast: rebuild_cache
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start "/home/pavel/Рабочий стол/tensor/src/main/cpp/build-cmake/CMakeFiles" "/home/pavel/Рабочий стол/tensor/src/main/cpp/build-cmake//CMakeFiles/progress.marks"
+	$(CMAKE_COMMAND) -E cmake_progress_start "/home/pavel/Рабочий стол/JGPT/src/main/cpp/build/CMakeFiles" "/home/pavel/Рабочий стол/JGPT/src/main/cpp/build//CMakeFiles/progress.marks"
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start "/home/pavel/Рабочий стол/tensor/src/main/cpp/build-cmake/CMakeFiles" 0
+	$(CMAKE_COMMAND) -E cmake_progress_start "/home/pavel/Рабочий стол/JGPT/src/main/cpp/build/CMakeFiles" 0
 .PHONY : all
 
 # The main clean target
@@ -117,65 +117,65 @@ depend:
 .PHONY : depend
 
 #=============================================================================
-# Target rules for targets named tensor_cuda
+# Target rules for targets named jgpt_cuda
 
 # Build rule for target.
-tensor_cuda: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tensor_cuda
-.PHONY : tensor_cuda
+jgpt_cuda: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 jgpt_cuda
+.PHONY : jgpt_cuda
 
 # fast build rule for target.
-tensor_cuda/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/tensor_cuda.dir/build.make CMakeFiles/tensor_cuda.dir/build
-.PHONY : tensor_cuda/fast
+jgpt_cuda/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/jgpt_cuda.dir/build.make CMakeFiles/jgpt_cuda.dir/build
+.PHONY : jgpt_cuda/fast
 
-tensor_cuda.o: tensor_cuda.cu.o
-.PHONY : tensor_cuda.o
-
-# target to build an object file
-tensor_cuda.cu.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/tensor_cuda.dir/build.make CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.o
-.PHONY : tensor_cuda.cu.o
-
-tensor_cuda.i: tensor_cuda.cu.i
-.PHONY : tensor_cuda.i
-
-# target to preprocess a source file
-tensor_cuda.cu.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/tensor_cuda.dir/build.make CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.i
-.PHONY : tensor_cuda.cu.i
-
-tensor_cuda.s: tensor_cuda.cu.s
-.PHONY : tensor_cuda.s
-
-# target to generate assembly for a file
-tensor_cuda.cu.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/tensor_cuda.dir/build.make CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.s
-.PHONY : tensor_cuda.cu.s
-
-tensor_cuda_extra.o: tensor_cuda_extra.cu.o
-.PHONY : tensor_cuda_extra.o
+jgpt_cuda.o: jgpt_cuda.cu.o
+.PHONY : jgpt_cuda.o
 
 # target to build an object file
-tensor_cuda_extra.cu.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/tensor_cuda.dir/build.make CMakeFiles/tensor_cuda.dir/tensor_cuda_extra.cu.o
-.PHONY : tensor_cuda_extra.cu.o
+jgpt_cuda.cu.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/jgpt_cuda.dir/build.make CMakeFiles/jgpt_cuda.dir/jgpt_cuda.cu.o
+.PHONY : jgpt_cuda.cu.o
 
-tensor_cuda_extra.i: tensor_cuda_extra.cu.i
-.PHONY : tensor_cuda_extra.i
+jgpt_cuda.i: jgpt_cuda.cu.i
+.PHONY : jgpt_cuda.i
 
 # target to preprocess a source file
-tensor_cuda_extra.cu.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/tensor_cuda.dir/build.make CMakeFiles/tensor_cuda.dir/tensor_cuda_extra.cu.i
-.PHONY : tensor_cuda_extra.cu.i
+jgpt_cuda.cu.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/jgpt_cuda.dir/build.make CMakeFiles/jgpt_cuda.dir/jgpt_cuda.cu.i
+.PHONY : jgpt_cuda.cu.i
 
-tensor_cuda_extra.s: tensor_cuda_extra.cu.s
-.PHONY : tensor_cuda_extra.s
+jgpt_cuda.s: jgpt_cuda.cu.s
+.PHONY : jgpt_cuda.s
 
 # target to generate assembly for a file
-tensor_cuda_extra.cu.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/tensor_cuda.dir/build.make CMakeFiles/tensor_cuda.dir/tensor_cuda_extra.cu.s
-.PHONY : tensor_cuda_extra.cu.s
+jgpt_cuda.cu.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/jgpt_cuda.dir/build.make CMakeFiles/jgpt_cuda.dir/jgpt_cuda.cu.s
+.PHONY : jgpt_cuda.cu.s
+
+jgpt_cuda_extra.o: jgpt_cuda_extra.cu.o
+.PHONY : jgpt_cuda_extra.o
+
+# target to build an object file
+jgpt_cuda_extra.cu.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/jgpt_cuda.dir/build.make CMakeFiles/jgpt_cuda.dir/jgpt_cuda_extra.cu.o
+.PHONY : jgpt_cuda_extra.cu.o
+
+jgpt_cuda_extra.i: jgpt_cuda_extra.cu.i
+.PHONY : jgpt_cuda_extra.i
+
+# target to preprocess a source file
+jgpt_cuda_extra.cu.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/jgpt_cuda.dir/build.make CMakeFiles/jgpt_cuda.dir/jgpt_cuda_extra.cu.i
+.PHONY : jgpt_cuda_extra.cu.i
+
+jgpt_cuda_extra.s: jgpt_cuda_extra.cu.s
+.PHONY : jgpt_cuda_extra.s
+
+# target to generate assembly for a file
+jgpt_cuda_extra.cu.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/jgpt_cuda.dir/build.make CMakeFiles/jgpt_cuda.dir/jgpt_cuda_extra.cu.s
+.PHONY : jgpt_cuda_extra.cu.s
 
 # Help Target
 help:
@@ -185,13 +185,13 @@ help:
 	@echo "... depend"
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
-	@echo "... tensor_cuda"
-	@echo "... tensor_cuda.o"
-	@echo "... tensor_cuda.i"
-	@echo "... tensor_cuda.s"
-	@echo "... tensor_cuda_extra.o"
-	@echo "... tensor_cuda_extra.i"
-	@echo "... tensor_cuda_extra.s"
+	@echo "... jgpt_cuda"
+	@echo "... jgpt_cuda.o"
+	@echo "... jgpt_cuda.i"
+	@echo "... jgpt_cuda.s"
+	@echo "... jgpt_cuda_extra.o"
+	@echo "... jgpt_cuda_extra.i"
+	@echo "... jgpt_cuda_extra.s"
 .PHONY : help
 
 

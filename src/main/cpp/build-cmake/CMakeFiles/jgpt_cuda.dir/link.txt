@@ -1,0 +1,1 @@
+/usr/lib/nvidia-cuda-toolkit/bin/g++ -fPIC -Wl,--dependency-file=CMakeFiles/jgpt_cuda.dir/link.d -shared -Wl,-soname,libjgpt_cuda.so -o "/home/pavel/Рабочий стол/JGPT/build/libjgpt_cuda.so" @CMakeFiles/jgpt_cuda.dir/objects1.rsp @CMakeFiles/jgpt_cuda.dir/linkLibs.rsp -L"/usr/lib/x86_64-linux-gnu/stubs" -L"/usr/lib/x86_64-linux-gnu"

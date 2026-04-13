@@ -1,4 +1,4 @@
-CMakeFiles/tensor_cuda.dir/tensor_cuda_extra.cu.o : /home/pavel/Рабочий\ стол/tensor/src/main/cpp/tensor_cuda_extra.cu \
+CMakeFiles/jgpt_cuda.dir/jgpt_cuda.cu.o : /home/pavel/Рабочий\ стол/JGPT/src/main/cpp/jgpt_cuda.cu \
     /usr/include/stdc-predef.h \
     /usr/include/cuda_runtime.h \
     /usr/include/crt/host_config.h \
@@ -193,11 +193,6 @@ CMakeFiles/tensor_cuda.dir/tensor_cuda_extra.cu.o : /home/pavel/Рабочий\ 
     /usr/include/c++/13/utility \
     /usr/include/c++/13/bits/stl_relops.h \
     /usr/include/c++/13/initializer_list \
-    /usr/include/cuda_fp16.h \
-    /usr/include/nv/target \
-    /usr/include/nv/detail/__target_macros \
-    /usr/include/nv/detail/__preprocessor \
-    /usr/include/cuda_fp16.hpp \
     /usr/include/cublas_v2.h \
     /usr/include/cublas_api.h \
     /usr/lib/gcc/x86_64-linux-gnu/13/include/stdint.h \
@@ -206,13 +201,91 @@ CMakeFiles/tensor_cuda.dir/tensor_cuda_extra.cu.o : /home/pavel/Рабочий\ 
     /usr/include/x86_64-linux-gnu/bits/stdint-uintn.h \
     /usr/include/x86_64-linux-gnu/bits/stdint-least.h \
     /usr/include/cuComplex.h \
+    /usr/include/cuda_fp16.h \
+    /usr/include/nv/target \
+    /usr/include/nv/detail/__target_macros \
+    /usr/include/nv/detail/__preprocessor \
+    /usr/include/cuda_fp16.hpp \
     /usr/include/cuda_bf16.h \
     /usr/include/cuda_bf16.hpp \
     /usr/lib/jvm/default-java/include/jni.h \
     /usr/lib/jvm/default-java/include/linux/jni_md.h \
     /usr/include/c++/13/cstdint \
     /usr/include/c++/13/climits \
+    /usr/include/c++/13/chrono \
+    /usr/include/c++/13/bits/chrono.h \
+    /usr/include/c++/13/ratio \
+    /usr/include/c++/13/ctime \
+    /usr/include/c++/13/bits/parse_numbers.h \
     /usr/include/c++/13/cstring \
-    /home/pavel/Рабочий\ стол/tensor/src/main/cpp/tensor_cuda_stream.cuh \
-    /home/pavel/Рабочий\ стол/tensor/src/main/cpp/tensor_cuda_ffn_link.h \
-    /home/pavel/Рабочий\ стол/tensor/src/main/cpp/tensor_cuda_graph_prewarm.h
+    /usr/include/c++/13/mutex \
+    /usr/include/c++/13/tuple \
+    /usr/include/c++/13/bits/uses_allocator.h \
+    /usr/include/c++/13/bits/invoke.h \
+    /usr/include/c++/13/exception \
+    /usr/include/c++/13/bits/exception_ptr.h \
+    /usr/include/c++/13/bits/cxxabi_init_exception.h \
+    /usr/include/c++/13/typeinfo \
+    /usr/include/c++/13/bits/hash_bytes.h \
+    /usr/include/c++/13/bits/nested_exception.h \
+    /usr/include/x86_64-linux-gnu/c++/13/bits/error_constants.h \
+    /usr/include/c++/13/cerrno \
+    /usr/include/errno.h \
+    /usr/include/x86_64-linux-gnu/bits/errno.h \
+    /usr/include/linux/errno.h \
+    /usr/include/x86_64-linux-gnu/asm/errno.h \
+    /usr/include/asm-generic/errno.h \
+    /usr/include/asm-generic/errno-base.h \
+    /usr/include/x86_64-linux-gnu/bits/types/error_t.h \
+    /usr/include/c++/13/bits/std_mutex.h \
+    /usr/include/x86_64-linux-gnu/c++/13/bits/gthr.h \
+    /usr/include/x86_64-linux-gnu/c++/13/bits/gthr-default.h \
+    /usr/include/pthread.h \
+    /usr/include/sched.h \
+    /usr/include/x86_64-linux-gnu/bits/sched.h \
+    /usr/include/linux/sched/types.h \
+    /usr/include/linux/types.h \
+    /usr/include/x86_64-linux-gnu/asm/types.h \
+    /usr/include/asm-generic/types.h \
+    /usr/include/asm-generic/int-ll64.h \
+    /usr/include/x86_64-linux-gnu/asm/bitsperlong.h \
+    /usr/include/asm-generic/bitsperlong.h \
+    /usr/include/linux/posix_types.h \
+    /usr/include/linux/stddef.h \
+    /usr/include/x86_64-linux-gnu/asm/posix_types.h \
+    /usr/include/x86_64-linux-gnu/asm/posix_types_64.h \
+    /usr/include/asm-generic/posix_types.h \
+    /usr/include/x86_64-linux-gnu/bits/types/struct_sched_param.h \
+    /usr/include/x86_64-linux-gnu/bits/cpu-set.h \
+    /usr/include/x86_64-linux-gnu/bits/setjmp.h \
+    /usr/include/x86_64-linux-gnu/bits/types/struct___jmp_buf_tag.h \
+    /usr/include/c++/13/bits/unique_lock.h \
+    /usr/include/c++/13/ext/atomicity.h \
+    /usr/include/x86_64-linux-gnu/c++/13/bits/atomic_word.h \
+    /usr/include/x86_64-linux-gnu/sys/single_threaded.h \
+    /usr/include/c++/13/unordered_set \
+    /usr/include/c++/13/bits/unordered_set.h \
+    /usr/include/c++/13/bits/hashtable.h \
+    /usr/include/c++/13/bits/hashtable_policy.h \
+    /usr/include/c++/13/bits/functional_hash.h \
+    /usr/include/c++/13/ext/aligned_buffer.h \
+    /usr/include/c++/13/ext/alloc_traits.h \
+    /usr/include/c++/13/bits/alloc_traits.h \
+    /usr/include/c++/13/bits/stl_construct.h \
+    /usr/include/c++/13/bits/memoryfwd.h \
+    /usr/include/c++/13/bits/allocator.h \
+    /usr/include/x86_64-linux-gnu/c++/13/bits/c++allocator.h \
+    /usr/include/c++/13/bits/new_allocator.h \
+    /usr/include/c++/13/bits/enable_special_members.h \
+    /usr/include/c++/13/bits/stl_function.h \
+    /usr/include/c++/13/backward/binders.h \
+    /usr/include/c++/13/bits/node_handle.h \
+    /usr/include/c++/13/bits/range_access.h \
+    /usr/include/c++/13/bits/erase_if.h \
+    /usr/include/c++/13/bits/memory_resource.h \
+    /usr/include/c++/13/cstddef \
+    /usr/include/c++/13/bits/uses_allocator_args.h \
+    /home/pavel/Рабочий\ стол/JGPT/src/main/cpp/jgpt_cuda_stream.cuh \
+    /home/pavel/Рабочий\ стол/JGPT/src/main/cpp/jgpt_cuda_ffn_link.h \
+    /home/pavel/Рабочий\ стол/JGPT/src/main/cpp/jgpt_cuda_graph_prewarm.h \
+    /home/pavel/Рабочий\ стол/JGPT/src/main/cpp/jgpt_cuda_size_check.cuh

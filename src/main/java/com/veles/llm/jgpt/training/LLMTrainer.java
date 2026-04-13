@@ -34,7 +34,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -57,11 +56,8 @@ public final class LLMTrainer {
     private static final Logger log = LoggerFactory.getLogger(LLMTrainer.class);
 
 
-
-
-
     /**
-     * После GPU-инференса вне шага обучения (промежуточная генерация, {@link #evaluate}, и т.п.): тот же сброс, что
+     * После GPU-инференса вне шага обучения (промежуточная генерация, и т.п.): тот же сброс, что
      * после {@code generateGpuKv}, иначе первый следующий train-step иногда даёт нечисловые градиенты при том же
      * потоке CUDA и decoder graphs.
      */
@@ -171,7 +167,7 @@ public final class LLMTrainer {
     final TrainingConfig config;
     final DataLoader dataLoader;
     /**
-     * Отдельный hold-out для {@link #evaluate()}; {@code null} — как раньше, eval идёт по батчам train-loader
+     * Отдельный hold-out для; {@code null} — как раньше, eval идёт по батчам train-loader
      * (с сохранением/восстановлением индекса).
      */
     final DataLoader evalDataLoader;
@@ -259,19 +255,19 @@ public final class LLMTrainer {
     int sampledCandidateFloatCapElems;
     int[] sampledCandidateIdsHostScratch;
     int[] sampledSharedNegativeScratch;
-    /** Число кандидатов на строку после {@link #prepareSampledCandidateIds} (для CE без повторной подготовки). */
+    /** Число кандидатов на строку после (для CE без повторной подготовки). */
     int sampledTrainCandidatesPerRow;
 
-    /** Скрач ∂logits для fused CE в {@link #evaluate()} (градиент не используется, {@code gradScale=0}). */
+    /** Скрач ∂logits для fused CE в (градиент не используется, {@code gradScale=0}). */
     float[] evalCeGradScratch;
 
     /**
-     * После {@link #zeroGpuGradsMarkingParamGradsClean}: ∂ обучаемых параметров на VRAM гарантированно нули.
-     * Сбрасывается в {@link #clipAndOptimizerStep} (хостовый Adam без zeroGpuGrads) и при первом запуске.
+     * После: ∂ обучаемых параметров на VRAM гарантированно нули.
+     * Сбрасывается в (хостовый Adam без zeroGpuGrads) и при первом запуске.
      */
     boolean gpuTrainableParamGradsKnownClean;
 
-    /** Переиспользуемые массивы для {@link #checkGpuParamGradsNonFiniteFused} (без аллокации на шаг). */
+    /** Переиспользуемые массивы для (без аллокации на шаг). */
     GpuFloatBuffer[] nonFiniteParamBufsScratch = new GpuFloatBuffer[0];
     int[] nonFiniteParamLensScratch = new int[0];
 
@@ -356,15 +352,15 @@ public final class LLMTrainer {
         int optimizerStepsPerEpoch = (batchesPerEpoch + acc - 1) / acc;
         this.totalTrainingSteps = Math.max(1, config.epochs * optimizerStepsPerEpoch);
         this.trainingStatsWriter =
-                readBooleanEnv("JGPT_STATS_JSON", true)
+                LlmTrainerEnvUtils.readBooleanEnv("JGPT_STATS_JSON", true)
                         ? new TrainingStatsWriter(Path.of("state"))
                         : null;
         if (trainingStatsWriter != null) {
             trainingStatsWriter.setConfig(
                     config,
                     totalTrainingSteps,
-                    envTrimOrDefault("JGPT_STATS_PRESET", "-"),
-                    envTrimOrDefault("JGPT_STATS_PRESET_IDX", "-"));
+                    LlmTrainerEnvUtils.envTrimOrDefault("JGPT_STATS_PRESET", "-"),
+                    LlmTrainerEnvUtils.envTrimOrDefault("JGPT_STATS_PRESET_IDX", "-"));
             trainingStatsWriter.setEvalDataSource(evalDataLoader != null ? "validation" : "train");
         }
         float wr = config.warmupRatio;
@@ -376,8 +372,9 @@ public final class LLMTrainer {
         this.fp16Matmul = TensorOpsGPU.useFp16Matmul();
         this.dynamicLossScaler =
                 lossScalerOverride != null ? lossScalerOverride : DynamicLossScaler.fromEnvironmentIfFp16();
-        this.fp16DynamicResetEachEpoch = readBooleanEnv("JGPT_FP16_DYNAMIC_RESET_EACH_EPOCH", false);
-        boolean ceAsyncEnv = readBooleanEnv("JGPT_CE_ASYNC", false);
+        this.fp16DynamicResetEachEpoch =
+                LlmTrainerEnvUtils.readBooleanEnv("JGPT_FP16_DYNAMIC_RESET_EACH_EPOCH", false);
+        boolean ceAsyncEnv = LlmTrainerEnvUtils.readBooleanEnv("JGPT_CE_ASYNC", false);
         this.ceAsyncDevice = ceAsyncEnv;
         if (ceAsyncDevice) {
             log.info(
@@ -415,7 +412,7 @@ public final class LLMTrainer {
         }
         this.lastGlobalGradNorm = 0f;
         this.checkpointAsyncIo =
-                readBooleanEnv("JGPT_CHECKPOINT_ASYNC", false)
+                LlmTrainerEnvUtils.readBooleanEnv("JGPT_CHECKPOINT_ASYNC", false)
                         || Boolean.getBoolean("jgpt.checkpoint.async");
         this.checkpointIoExecutor =
                 checkpointAsyncIo
@@ -500,28 +497,6 @@ public final class LLMTrainer {
         return exitedDueToSupervisorRequest;
     }
 
-    private static boolean readBooleanEnv(String key, boolean defaultValue) {
-        try {
-            String e = System.getenv(key);
-            if (e != null) {
-                String t = e.trim();
-                if ("1".equals(t) || "true".equalsIgnoreCase(t)) {
-                    return true;
-                }
-                if ("0".equals(t) || "false".equalsIgnoreCase(t)) {
-                    return false;
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return defaultValue;
-    }
-
-    private static String envTrimOrDefault(String key, String defaultValue) {
-        String v = System.getenv(key);
-        return (v != null && !v.isBlank()) ? v.trim() : defaultValue;
-    }
-
     /** Масштаб для CE и градиента по логитам (текущий шаг оптимизатора / накопление). */
     float lossScaleForForward() {
         if (!fp16Matmul) {
@@ -555,13 +530,13 @@ public final class LLMTrainer {
                         + "выход после шага={}; trainPerf={}; profile={}; timings={}; generateGpuKv={}",
                 dataLoader.usesDirectBatchBuffers(),
                 dataLoader.usesPinnedHostBatchBuffers(),
-                batchPrefetchEnabled(),
+                LlmTrainerEnvUtils.batchPrefetchEnabled(),
                 checkpointAsyncIo,
                 exitAfterOptimizerSteps > 0 ? Integer.toString(exitAfterOptimizerSteps) : "0 (выкл.)",
-                envRawOrDash("JGPT_TRAIN_PERF"),
-                envRawOrDash("JGPT_PROFILE"),
-                envRawOrDash("JGPT_TIMINGS"),
-                envRawOrDash("JGPT_GENERATE_GPU_KV"));
+                LlmTrainerEnvUtils.envRawOrDash("JGPT_TRAIN_PERF"),
+                LlmTrainerEnvUtils.envRawOrDash("JGPT_PROFILE"),
+                LlmTrainerEnvUtils.envRawOrDash("JGPT_TIMINGS"),
+                LlmTrainerEnvUtils.envRawOrDash("JGPT_GENERATE_GPU_KV"));
         log.info(
                 "  пресет/env: E2E={} резидент (эфф.)={} резидент (env)={} pipeline декодера={} полный GPU шаг={} "
                         + "логиты GPU={} decoder bwd GPU={} train loss={} sampled candidates={} sampled negatives={} "
@@ -569,7 +544,7 @@ public final class LLMTrainer {
                         + "FP16 aux soften scale={} CUDA_LIB={}",
                 LLMConfig.gpuE2eTrainFromEnv(),
                 LLMConfig.effectiveGpuResidentTraining(),
-                envRawOrDash("JGPT_TRAIN_GPU_RESIDENT"),
+                LlmTrainerEnvUtils.envRawOrDash("JGPT_TRAIN_GPU_RESIDENT"),
                 LLMConfig.decoderGpuPipelineFromEnvOrProp(),
                 LLMConfig.fullGpuTrainStepFromEnv(),
                 LLMConfig.deviceLogitsTrainStepFromEnv(),
@@ -577,13 +552,13 @@ public final class LLMTrainer {
                 config.trainLossMode,
                 config.usesSampledTrainLoss() ? Integer.toString(config.sampledCeCandidates) : "-",
                 config.usesSampledTrainLoss() ? config.sampledCeNegativeMode : "-",
-                envRawOrDash("JGPT_BATCH_SIZE"),
-                envRawOrDash("JGPT_ACTIVATION_CACHE_FP16"),
-                envRawOrDash("JGPT_FP16_DYNAMIC_INITIAL"),
-                envRawOrDash("JGPT_FP16_DYNAMIC_GROWTH_INTERVAL"),
-                envRawOrDash("JGPT_FP16_DYNAMIC_MAX"),
+                LlmTrainerEnvUtils.envRawOrDash("JGPT_BATCH_SIZE"),
+                LlmTrainerEnvUtils.envRawOrDash("JGPT_ACTIVATION_CACHE_FP16"),
+                LlmTrainerEnvUtils.envRawOrDash("JGPT_FP16_DYNAMIC_INITIAL"),
+                LlmTrainerEnvUtils.envRawOrDash("JGPT_FP16_DYNAMIC_GROWTH_INTERVAL"),
+                LlmTrainerEnvUtils.envRawOrDash("JGPT_FP16_DYNAMIC_MAX"),
                 LlmTrainerGpuUtils.fp16AuxSoftenScaleAfterInfer() ? "1" : "0",
-                envCudaLibSummary());
+                LlmTrainerEnvUtils.envCudaLibSummary());
         if (TensorOpsGPU.isGpuAvailable()) {
             log.info(
                     "  TensorOpsGPU (при загрузке класса): FP16_MATMUL={} CE_мин_элементов={} FlashAttention={}",
@@ -608,23 +583,6 @@ public final class LLMTrainer {
         }
         log.info(
                 "  в train() не используются: JGPT_BATCH_PROBE* / JGPT_PROBE_* (зонды в отдельных тестах)");
-    }
-
-    private static String envRawOrDash(String key) {
-        String v = System.getenv(key);
-        if (v == null) {
-            return "—";
-        }
-        String t = v.trim();
-        return t.isEmpty() ? "—" : t;
-    }
-
-    private static String envCudaLibSummary() {
-        String v = System.getenv("JGPT_CUDA_LIB");
-        if (v == null || v.isBlank()) {
-            return "—";
-        }
-        return "(задан)";
     }
 
     /**
@@ -817,7 +775,7 @@ public final class LLMTrainer {
         }
 
         ExecutorService prefetchExecutor =
-                batchPrefetchEnabled()
+                LlmTrainerEnvUtils.batchPrefetchEnabled()
                         ? Executors.newSingleThreadExecutor(
                                 r -> {
                                     Thread t = new Thread(r, "jgpt-batch-prefetch");
@@ -930,11 +888,11 @@ public final class LLMTrainer {
                 }
                 DataLoader.Batch batch;
                 if (prefetchExecutor != null && prefetchFut != null) {
-                    batch = takeNextBatchPrefetched(dataLoader, prefetchFut);
+                    batch = LlmTrainerBatchPrefetch.takeNextBatchPrefetched(dataLoader, prefetchFut);
                 } else {
                     batch = dataLoader.nextBatch();
                 }
-                prefetchFut = scheduleBatchPrefetch(dataLoader, prefetchExecutor);
+                prefetchFut = LlmTrainerBatchPrefetch.scheduleBatchPrefetch(dataLoader, prefetchExecutor);
 
                 boolean lastBatchOfEpoch = !dataLoader.hasMore();
                 microInAccum++;
@@ -1255,7 +1213,7 @@ public final class LLMTrainer {
 
             float avgLoss = epochLoss / Math.max(1, epochOptimizerAttempts);
             long epochElapsedNs = System.nanoTime() - epochStartNs;
-            String durationStr = formatEpochDuration(epochElapsedNs);
+            String durationStr = LlmTrainerTrainingFormat.formatEpochDuration(epochElapsedNs);
             String lossStr = String.format("%.4f", avgLoss);
             if (epochSuccessfulOptimizerSteps == 0 && epochOptimizerAttempts > 0) {
                 log.warn(
@@ -1340,54 +1298,6 @@ public final class LLMTrainer {
             }
         }
     }
-
-    private static boolean batchPrefetchEnabled() {
-        if (Boolean.getBoolean("jgpt.batch.prefetch")) {
-            return true;
-        }
-        String p = System.getProperty("jgpt.batch.prefetch");
-        if (p != null && ("0".equals(p.trim()) || "false".equalsIgnoreCase(p.trim()))) {
-            return false;
-        }
-        String v = System.getenv("JGPT_BATCH_PREFETCH");
-        if (v != null) {
-            String t = v.trim();
-            if ("0".equals(t) || "false".equalsIgnoreCase(t) || "no".equalsIgnoreCase(t)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static CompletableFuture<DataLoader.Batch> scheduleBatchPrefetch(
-            DataLoader loader, ExecutorService prefetchExecutor) {
-        if (prefetchExecutor == null || !loader.hasMore()) {
-            return null;
-        }
-        return CompletableFuture.supplyAsync(loader::buildBatchNoAdvance, prefetchExecutor);
-    }
-
-    private static DataLoader.Batch takeNextBatchPrefetched(
-            DataLoader loader, CompletableFuture<DataLoader.Batch> prefetchFut) {
-        try {
-            DataLoader.Batch b = prefetchFut.get();
-            loader.advanceAfterPreparedBatch();
-            return b;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException(e);
-        } catch (ExecutionException e) {
-            Throwable c = e.getCause();
-            if (c instanceof Error) {
-                throw (Error) c;
-            }
-            if (c instanceof RuntimeException) {
-                throw (RuntimeException) c;
-            }
-            throw new RuntimeException(c);
-        }
-    }
-
 
     public void saveCheckpoint(String name) throws IOException {
         LlmTrainerCheckpointIo.saveCheckpoint(this, name);
@@ -1491,31 +1401,6 @@ public final class LLMTrainer {
         return Math.min(idx, maxStart);
     }
 
-    /**
-     * В чекпоинте и при старте «лучший eval loss» часто равен {@link Float#MAX_VALUE} — признак того, что ещё не было
-     * оценки или улучшения; без этого {@code %.4f} даёт огромное «мусорное» число в логе.
-     */
-
-    /** Человекочитаемая длительность (ru-RU); если эпоха короче минуты — с долями секунды. */
-    private static String formatEpochDuration(long nanos) {
-        if (nanos <= 0L) {
-            return "0 с";
-        }
-        long totalSec = nanos / 1_000_000_000L;
-        double secExact = nanos / 1_000_000_000.0;
-        long h = totalSec / 3600L;
-        long m = (totalSec % 3600L) / 60L;
-        long s = totalSec % 60L;
-        Locale ru = Locale.forLanguageTag("ru-RU");
-        if (h > 0L) {
-            return String.format(ru, "%d ч %02d мин %02d с", h, m, s);
-        }
-        if (m > 0L) {
-            return String.format(ru, "%d мин %02d с", m, s);
-        }
-        return String.format(ru, "%.1f с", secExact);
-    }
-
     // ========== Test harness / full-GPU training API ==========
 
     /** Result of a single micro-batch forward + CE + backward. */
@@ -1597,6 +1482,5 @@ public final class LLMTrainer {
         }
         return stepped;
     }
-
 
 }

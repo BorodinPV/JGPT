@@ -8,9 +8,6 @@ import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.Objects;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 /**
  * GPU-ускоренные операции через JNI + CUDA/cuBLAS.
  *
@@ -23,167 +20,11 @@ import org.slf4j.LoggerFactory;
  * <p><b>Потокобезопасность:</b> только read-only проверки ({@link #isGpuAvailable()}, пороги) безопасны с любых потоков.
  * JNI-вызовы с записью в буферы вызывающего кода и мутации глобального CUDA-контекста требуют внешней координации:
  * один поток обучения/инференса на процесс или явная сериализация. Буфер mean-loss для CE хранится в {@code ThreadLocal}
- * и сбрасывается в {@code 0f} перед JNI в {@link #crossEntropySoftmaxGradLossGpuEx}.
+ * и сбрасывается в {@code 0f} перед JNI (см. {@link TensorOpsGpuCrossEntropyHost}).
  */
 public final class TensorOpsGPU {
-    private static final Logger LOG = LoggerFactory.getLogger(TensorOpsGPU.class);
-
     /** Совпадает с {@code cudaErrorMemoryAllocation} в CUDA Runtime (OOM при graph launch и т.п.). */
     public static final int CUDA_ERROR_MEMORY_ALLOCATION = 2;
-
-    /**
-     * Один scratch-float на поток для выхода mean CE из native ({@code lossOut[0]}). Перед каждым JNI public API сбрасывается
-     * в {@code 0f}, чтобы при досрочном return из native не вернуть значение предыдущего вызова.
-     */
-    private static final ThreadLocal<float[]> CE_LOSS_OUT = ThreadLocal.withInitial(() -> new float[1]);
-
-    private static final ThreadLocal<SdpaHostPathScratch> TL_SDPA_HOST =
-            ThreadLocal.withInitial(SdpaHostPathScratch::new);
-
-    private static final ThreadLocal<HeadsHostPathScratch> TL_HEADS_HOST =
-            ThreadLocal.withInitial(HeadsHostPathScratch::new);
-
-    /** Scratch для {@link #splitHeadsFromHost} / {@link #concatHeadsFromHost} (без JNI split/concat*GPU(float[])). */
-    private static final class HeadsHostPathScratch {
-        private GpuFloatBuffer dSrc;
-        private GpuFloatBuffer dDst;
-        private long cap = -1;
-
-        private void ensure(long need) {
-            if (dSrc != null && cap >= need) {
-                return;
-            }
-            if (dSrc != null) {
-                dSrc.close();
-                dDst.close();
-            }
-            dSrc = GpuFloatBuffer.allocate(need);
-            dDst = GpuFloatBuffer.allocate(need);
-            cap = need;
-        }
-
-        /** Закрывает device-буферы до {@link ThreadLocal#remove()} — иначе Cleaner печатает предупреждение. */
-        private void release() {
-            if (dSrc != null) {
-                dSrc.close();
-                dDst.close();
-                dSrc = null;
-                dDst = null;
-            }
-            cap = -1;
-        }
-
-        private void splitHeads(float[] src, float[] dst, int batch, int seqLen, int dModel, int numHeads) {
-            long total = (long) batch * seqLen * dModel;
-            int ni = Math.toIntExact(total);
-            ensure(total);
-            dSrc.copyFrom(src, 0, ni);
-            splitHeadsGPUDevice(dSrc.devicePointer(), dDst.devicePointer(), batch, seqLen, dModel, numHeads);
-            dDst.copyTo(dst, 0, ni);
-        }
-
-        private void concatHeads(float[] src, float[] dst, int batch, int numHeads, int seqLen, int dHead) {
-            int dModel = numHeads * dHead;
-            long total = (long) batch * seqLen * dModel;
-            int ni = Math.toIntExact(total);
-            ensure(total);
-            dSrc.copyFrom(src, 0, ni);
-            concatHeadsGPUDevice(dSrc.devicePointer(), dDst.devicePointer(), batch, numHeads, seqLen, dHead);
-            dDst.copyTo(dst, 0, ni);
-        }
-    }
-
-    /** Scratch для {@link #scaledDotProductAttentionForwardFromHost} на поток (без отдельного JNI под float[]). */
-    private static final class SdpaHostPathScratch {
-        private GpuFloatBuffer dq;
-        private GpuFloatBuffer dk;
-        private GpuFloatBuffer dv;
-        private GpuFloatBuffer dOut;
-        private long capQk = -1;
-        private long capV = -1;
-
-        private void ensureQk(long need) {
-            if (dq != null && capQk >= need) {
-                return;
-            }
-            if (dq != null) {
-                dq.close();
-                dk.close();
-            }
-            dq = GpuFloatBuffer.allocate(need);
-            dk = GpuFloatBuffer.allocate(need);
-            capQk = need;
-        }
-
-        private void ensureV(long need) {
-            if (dv != null && capV >= need) {
-                return;
-            }
-            if (dv != null) {
-                dv.close();
-                dOut.close();
-            }
-            dv = GpuFloatBuffer.allocate(need);
-            dOut = GpuFloatBuffer.allocate(need);
-            capV = need;
-        }
-
-        /** Закрывает device-буферы до {@link ThreadLocal#remove()} — иначе Cleaner печатает предупреждение. */
-        private void release() {
-            if (dq != null) {
-                dq.close();
-                dk.close();
-                dq = null;
-                dk = null;
-            }
-            if (dv != null) {
-                dv.close();
-                dOut.close();
-                dv = null;
-                dOut = null;
-            }
-            capQk = -1;
-            capV = -1;
-        }
-
-        private void run(
-                float[] q,
-                float[] k,
-                float[] v,
-                float[] mask,
-                float[] output,
-                float[] probs,
-                int batch,
-                int seqLen,
-                int dK,
-                int dV,
-                float scale,
-                boolean useFp16Softmax) {
-            long qk = (long) batch * seqLen * dK;
-            long vSz = (long) batch * seqLen * dV;
-            int qki = Math.toIntExact(qk);
-            int vzi = Math.toIntExact(vSz);
-            ensureQk(qk);
-            ensureV(vSz);
-            dq.copyFrom(q, 0, qki);
-            dk.copyFrom(k, 0, qki);
-            dv.copyFrom(v, 0, vzi);
-            scaledDotProductAttentionForwardGPUDevice(
-                    dq.devicePointer(),
-                    dk.devicePointer(),
-                    dv.devicePointer(),
-                    mask,
-                    dOut.devicePointer(),
-                    probs,
-                    batch,
-                    seqLen,
-                    dK,
-                    dV,
-                    scale,
-                    useFp16Softmax);
-            dOut.copyTo(output, 0, vzi);
-        }
-    }
 
     /**
      * Закрывает thread-local scratch для путей host→GPU ({@code splitHeads}/{@code concatHeads}, SDPA с {@code float[]}
@@ -194,10 +35,7 @@ public final class TensorOpsGPU {
      * <p>Вызывается из {@link com.veles.llm.jgpt.ops.GpuWorkspaceCleanup#releaseAllGpuWorkspacesThreadLocal()}.
      */
     public static void releaseHostPathScratchThreadLocal() {
-        TL_SDPA_HOST.get().release();
-        TL_SDPA_HOST.remove();
-        TL_HEADS_HOST.get().release();
-        TL_HEADS_HOST.remove();
+        TensorOpsGpuHostPathScratch.releaseThreadLocal();
     }
 
     /**
@@ -271,125 +109,27 @@ public final class TensorOpsGPU {
         GPU_NAME = name;
         GPU_MEMORY_MB = memory;
 
-        Boolean fp16FromEnv = null;
-        try {
-            String v = System.getenv("JGPT_FP16_MATMUL");
-            if (v != null) {
-                String t = v.trim();
-                if ("1".equals(t) || "true".equalsIgnoreCase(t)) {
-                    fp16FromEnv = true;
-                } else if ("0".equals(t) || "false".equalsIgnoreCase(t)) {
-                    fp16FromEnv = false;
-                }
-            }
-        } catch (Exception ignored) {
-            // ignore
-        }
-        boolean fp16Matmul = fp16FromEnv != null ? fp16FromEnv : false;
-        if (fp16FromEnv == null) {
-            try {
-                if (Boolean.getBoolean("jgpt.fp16.matmul")) {
-                    fp16Matmul = true;
-                }
-            } catch (Exception ignored) {
-                // ignore
-            }
-        }
-        FP16_MATMUL = fp16Matmul && available;
+        FP16_MATMUL = TensorOpsGpuInit.resolveFp16Matmul(available);
         if (FP16_MATMUL) {
             System.out.println("[TensorOpsGPU] FP16 matmul (GemmEx): включён");
         }
 
-        RMSNORM_EPS = resolveRmsNormEps(FP16_MATMUL);
+        RMSNORM_EPS = TensorOpsGpuInit.resolveRmsNormEps(FP16_MATMUL);
 
-        CE_GPU_MIN_ELEMENTS = resolveCeGpuMinElements();
+        CE_GPU_MIN_ELEMENTS = TensorOpsGpuInit.resolveCeGpuMinElements();
 
-        boolean flashAttn = false;
-        try {
-            String v = System.getenv("JGPT_FLASH_ATTENTION");
-            if (v != null && ("1".equals(v.trim()) || "true".equalsIgnoreCase(v.trim()))) {
-                flashAttn = true;
-            }
-        } catch (Exception ignored) { }
-        FLASH_ATTENTION = flashAttn && available;
+        FLASH_ATTENTION = TensorOpsGpuInit.resolveFlashAttention(available);
         if (FLASH_ATTENTION) {
             System.out.println("[TensorOpsGPU] FlashAttention-2: включён (d_head=16 обязателен)");
         }
 
-        if (!available && !allowNoGpuOverride()) {
+        if (!available && !TensorOpsGpuInit.allowNoGpuOverride()) {
             throw new ExceptionInInitializerError(
                     new IllegalStateException(
                             "CUDA / libjgpt_cuda недоступны: обучение и TensorOps требуют GPU. "
                                     + "Для JVM без GPU (CI, юнит-тесты) задайте -Djgpt.allow.no.gpu=true или "
                                     + "JGPT_ALLOW_NO_GPU=1 (Maven Surefire в проекте передаёт -Djgpt.allow.no.gpu=true)."));
         }
-    }
-
-    /**
-     * Разрешить старт без GPU (только для тестов/CI). По умолчанию {@code false}: при отсутствии CUDA класс
-     * {@link TensorOpsGPU} не загрузится.
-     */
-    private static boolean allowNoGpuOverride() {
-        try {
-            if (Boolean.getBoolean("jgpt.allow.no.gpu")) {
-                return true;
-            }
-        } catch (Exception ignored) {
-            // ignore
-        }
-        try {
-            String e = System.getenv("JGPT_ALLOW_NO_GPU");
-            if (e != null) {
-                String t = e.trim();
-                if ("1".equals(t) || "true".equalsIgnoreCase(t)) {
-                    return true;
-                }
-            }
-        } catch (Exception ignored) {
-            // ignore
-        }
-        return false;
-    }
-
-    private static float resolveRmsNormEps(boolean fp16MatmulEnabled) {
-        try {
-            String e = System.getenv("JGPT_RMSNORM_EPS");
-            if (e != null && !e.isBlank()) {
-                float v = Float.parseFloat(e.trim());
-                if (v > 0f && Float.isFinite(v) && v <= 1e-2f) {
-                    return v;
-                }
-            }
-        } catch (Exception ignored) {
-            // ignore
-        }
-        try {
-            String p = System.getProperty("jgpt.rmsnorm.eps");
-            if (p != null && !p.isBlank()) {
-                float v = Float.parseFloat(p.trim());
-                if (v > 0f && Float.isFinite(v) && v <= 1e-2f) {
-                    return v;
-                }
-            }
-        } catch (Exception ignored) {
-            // ignore
-        }
-        return fp16MatmulEnabled ? 1e-5f : 1e-6f;
-    }
-
-    private static int resolveCeGpuMinElements() {
-        try {
-            String e = System.getenv("JGPT_CE_GPU_MIN_ELEMENTS");
-            if (e != null && !e.isBlank()) {
-                int v = Integer.parseInt(e.trim());
-                if (v >= 0) {
-                    return v;
-                }
-            }
-        } catch (Exception ignored) {
-            // ignore
-        }
-        return 0;
     }
 
     // ========== NATIVE МЕТОДЫ ==========
@@ -434,7 +174,7 @@ public final class TensorOpsGPU {
     public static native void matmulGPU(float[] A, float[] B, float[] C, int M, int K, int N);
 
     /** Matmul FP16 Tensor Cores: те же буферы float, внутри конвертация в half. */
-    private static native void matmulGPUFp16(float[] A, float[] B, float[] C, int M, int K, int N);
+    static native void matmulGPUFp16(float[] A, float[] B, float[] C, int M, int K, int N);
 
     /**
      * Matmul по указателям на уже загруженные float-буферы на GPU (см. {@link GpuFloatBuffer}).
@@ -488,7 +228,7 @@ public final class TensorOpsGPU {
      */
     public static native void matmulAddReluGPU(float[] A, float[] B, float[] bias, float[] C, int M, int K, int N);
 
-    private static native void matmulAddReluGPUFp16(float[] A, float[] B, float[] bias, float[] C, int M, int K, int N);
+    static native void matmulAddReluGPUFp16(float[] A, float[] B, float[] bias, float[] C, int M, int K, int N);
 
     /**
      * Батчевый matmul: для каждого {@code i ∈ [0, batch)} независимо {@code C[i] = A[i] × B[i]}.
@@ -496,7 +236,7 @@ public final class TensorOpsGPU {
      */
     public static native void matmulBatchedGPU(float[] A, float[] B, float[] C, int M, int K, int N, int batchCount);
 
-    private static native void matmulBatchedGPUFp16(
+    static native void matmulBatchedGPUFp16(
             float[] A, float[] B, float[] C, int M, int K, int N, int batchCount);
 
     /** Add: C = A + B */
@@ -547,9 +287,7 @@ public final class TensorOpsGPU {
             int vocab,
             float gradScaleOverTotalTokens,
             boolean useFp16Softmax) {
-        float[] lossOut = CE_LOSS_OUT.get();
-        lossOut[0] = 0f;
-        crossEntropySoftmaxGradLossGPU(
+        return TensorOpsGpuCrossEntropyHost.crossEntropySoftmaxGradLossGpuEx(
                 logits,
                 targets,
                 gradOut,
@@ -557,9 +295,7 @@ public final class TensorOpsGPU {
                 seqLen,
                 vocab,
                 gradScaleOverTotalTokens,
-                lossOut,
                 useFp16Softmax);
-        return lossOut[0];
     }
 
     /**
@@ -577,31 +313,7 @@ public final class TensorOpsGPU {
             int vocab,
             float gradScaleOverTotalTokens,
             boolean useFp16Softmax) {
-        if (!isGpuAvailable()) {
-            throw new IllegalStateException("GPU not available");
-        }
-        Objects.requireNonNull(logits, "logits");
-        Objects.requireNonNull(targets, "targets");
-        Objects.requireNonNull(gradOut, "gradOut");
-        if (!logits.isDirect() || !targets.isDirect()) {
-            throw new IllegalArgumentException("logits and targets must be direct ByteBuffers");
-        }
-        int nrows = batch * seqLen;
-        int logitElems = nrows * vocab;
-        long needLogBytes = (long) logitElems * Integer.BYTES;
-        long needTgtBytes = (long) nrows * Integer.BYTES;
-        if (logitsByteOffset < 0 || logitsByteOffset + needLogBytes > logits.capacity()) {
-            throw new IllegalArgumentException("logits buffer range invalid");
-        }
-        if (targetsByteOffset < 0 || targetsByteOffset + needTgtBytes > targets.capacity()) {
-            throw new IllegalArgumentException("targets buffer range invalid");
-        }
-        if (gradOut.length < logitElems) {
-            throw new IllegalArgumentException("gradOut too small");
-        }
-        float[] lossOut = CE_LOSS_OUT.get();
-        lossOut[0] = 0f;
-        crossEntropySoftmaxGradLossGPUDirect(
+        return TensorOpsGpuCrossEntropyHost.crossEntropySoftmaxGradLossGpuDirectEx(
                 logits,
                 logitsByteOffset,
                 targets,
@@ -611,9 +323,7 @@ public final class TensorOpsGPU {
                 seqLen,
                 vocab,
                 gradScaleOverTotalTokens,
-                lossOut,
                 useFp16Softmax);
-        return lossOut[0];
     }
 
     /**
@@ -643,7 +353,7 @@ public final class TensorOpsGPU {
         copyHostFloatBufferToGpuIntTokenIds(hostFloatsAsTokenIds, byteOffset, nTokens, dst.devicePointer());
     }
 
-    private static native void crossEntropySoftmaxGradLossGPU(
+    static native void crossEntropySoftmaxGradLossGPU(
             float[] logits,
             float[] targets,
             float[] gradOut,
@@ -654,7 +364,7 @@ public final class TensorOpsGPU {
             float[] lossOut,
             boolean useFp16Softmax);
 
-    private static native void crossEntropySoftmaxGradLossGPUDirect(
+    static native void crossEntropySoftmaxGradLossGPUDirect(
             ByteBuffer logits,
             long logitsByteOffset,
             ByteBuffer targets,
@@ -693,24 +403,14 @@ public final class TensorOpsGPU {
      * com.veles.llm.jgpt.ops.TensorOps#splitHeads}.
      */
     public static void splitHeadsFromHost(float[] src, float[] dst, int batch, int seqLen, int dModel, int numHeads) {
-        if (batch <= 0 || seqLen <= 0 || dModel <= 0 || numHeads <= 0 || dModel % numHeads != 0) {
-            throw new IllegalArgumentException("splitHeadsFromHost: invalid shape");
-        }
-        Objects.requireNonNull(src, "src");
-        Objects.requireNonNull(dst, "dst");
-        TL_HEADS_HOST.get().splitHeads(src, dst, batch, seqLen, dModel, numHeads);
+        TensorOpsGpuHostPathScratch.splitHeadsFromHost(src, dst, batch, seqLen, dModel, numHeads);
     }
 
     /**
      * Обратно к {@link #splitHeadsFromHost}; вход [batch, heads, seq, d_head], выход [batch, seq, d_model].
      */
     public static void concatHeadsFromHost(float[] src, float[] dst, int batch, int numHeads, int seqLen, int dHead) {
-        if (batch <= 0 || numHeads <= 0 || seqLen <= 0 || dHead <= 0) {
-            throw new IllegalArgumentException("concatHeadsFromHost: invalid shape");
-        }
-        Objects.requireNonNull(src, "src");
-        Objects.requireNonNull(dst, "dst");
-        TL_HEADS_HOST.get().concatHeads(src, dst, batch, numHeads, seqLen, dHead);
+        TensorOpsGpuHostPathScratch.concatHeadsFromHost(src, dst, batch, numHeads, seqLen, dHead);
     }
 
     /**
@@ -1098,7 +798,7 @@ public final class TensorOpsGPU {
                 xBatchSeqD, posWeightsDevicePtr, batch, seqLen, dModel, posRowStart);
     }
 
-    private static native void addPositionEmbeddingGPUDeviceBuffersWithOffset(
+    static native void addPositionEmbeddingGPUDeviceBuffersWithOffset(
             long xDevicePtr, long posWeightsDevicePtr, int batch, int seqLen, int dModel, int posRowStart);
 
     public static void addPositionEmbeddingGPUDeviceBuffers(
@@ -1125,7 +825,7 @@ public final class TensorOpsGPU {
      */
     public static void embeddingTokenForwardGpu(
             float[] tokens, float[] weights, float[] out, int batch, int seqLen, int dModel, int vocabSize) {
-        embeddingTokenForwardGPU(tokens, weights, out, batch, seqLen, dModel, vocabSize, FP16_MATMUL);
+        TensorOpsGpuEmbeddingHost.embeddingTokenForwardGpu(tokens, weights, out, batch, seqLen, dModel, vocabSize);
     }
 
     /** Direct-буфер токенов (см. {@link #embeddingTokenForwardGPUDirect}). */
@@ -1137,8 +837,8 @@ public final class TensorOpsGPU {
             int seqLen,
             int dModel,
             int vocabSize) {
-        embeddingTokenForwardGPUDirect(
-                directTokens, weights, out, batch, seqLen, dModel, vocabSize, FP16_MATMUL);
+        TensorOpsGpuEmbeddingHost.embeddingTokenForwardGpuDirect(
+                directTokens, weights, out, batch, seqLen, dModel, vocabSize);
     }
 
     public static void embeddingTokenForwardGpuDeviceWeights(
@@ -1149,8 +849,8 @@ public final class TensorOpsGPU {
             int seqLen,
             int dModel,
             int vocabSize) {
-        embeddingTokenForwardGPUDeviceWeights(
-                tokens, weightsDevicePtr, out, batch, seqLen, dModel, vocabSize, FP16_MATMUL);
+        TensorOpsGpuEmbeddingHost.embeddingTokenForwardGpuDeviceWeights(
+                tokens, weightsDevicePtr, out, batch, seqLen, dModel, vocabSize);
     }
 
     public static void embeddingTokenForwardGpuDirectDeviceWeights(
@@ -1161,8 +861,8 @@ public final class TensorOpsGPU {
             int seqLen,
             int dModel,
             int vocabSize) {
-        embeddingTokenForwardGPUDirectDeviceWeights(
-                directTokens, weightsDevicePtr, out, batch, seqLen, dModel, vocabSize, FP16_MATMUL);
+        TensorOpsGpuEmbeddingHost.embeddingTokenForwardGpuDirectDeviceWeights(
+                directTokens, weightsDevicePtr, out, batch, seqLen, dModel, vocabSize);
     }
 
     public static void embeddingTokenForwardGpuDeviceWeightsToDevice(
@@ -1173,17 +873,8 @@ public final class TensorOpsGPU {
             int seqLen,
             int dModel,
             int vocabSize) {
-        long needOut = (long) batch * seqLen * dModel;
-        requireMinFloats(requireGpu(outDevice, "outDevice"), needOut, "outDevice");
-        embeddingTokenForwardGPUDeviceWeightsToDevice(
-                tokens,
-                weightsDevicePtr,
-                outDevice.devicePointer(),
-                batch,
-                seqLen,
-                dModel,
-                vocabSize,
-                FP16_MATMUL);
+        TensorOpsGpuEmbeddingHost.embeddingTokenForwardGpuDeviceWeightsToDevice(
+                tokens, weightsDevicePtr, outDevice, batch, seqLen, dModel, vocabSize);
     }
 
     public static void embeddingTokenForwardGpuDirectDeviceWeightsToDevice(
@@ -1194,22 +885,13 @@ public final class TensorOpsGPU {
             int seqLen,
             int dModel,
             int vocabSize) {
-        long needOut = (long) batch * seqLen * dModel;
-        requireMinFloats(requireGpu(outDevice, "outDevice"), needOut, "outDevice");
-        embeddingTokenForwardGPUDirectDeviceWeightsToDevice(
-                directTokens,
-                weightsDevicePtr,
-                outDevice.devicePointer(),
-                batch,
-                seqLen,
-                dModel,
-                vocabSize,
-                FP16_MATMUL);
+        TensorOpsGpuEmbeddingHost.embeddingTokenForwardGpuDirectDeviceWeightsToDevice(
+                directTokens, weightsDevicePtr, outDevice, batch, seqLen, dModel, vocabSize);
     }
 
     public static void addPositionEmbeddingGpuDevice(
             GpuFloatBuffer xData, GpuFloatBuffer posWeightsData, int batch, int seqLen, int dModel) {
-        addPositionEmbeddingGpuDevice(xData, posWeightsData, batch, seqLen, dModel, 0);
+        TensorOpsGpuEmbeddingHost.addPositionEmbeddingGpuDevice(xData, posWeightsData, batch, seqLen, dModel);
     }
 
     public static void addPositionEmbeddingGpuDevice(
@@ -1219,40 +901,14 @@ public final class TensorOpsGPU {
             int seqLen,
             int dModel,
             int posRowStart) {
-        if (batch <= 0 || seqLen <= 0 || dModel <= 0) {
-            throw new IllegalArgumentException("batch, seqLen, dModel must be positive");
-        }
-        if (posRowStart < 0) {
-            throw new IllegalArgumentException("posRowStart must be >= 0");
-        }
-        long needX = (long) batch * seqLen * dModel;
-        long needPos = (long) (posRowStart + seqLen) * dModel;
-        requireMinFloats(requireGpu(xData, "xData"), needX, "xData");
-        requireMinFloats(requireGpu(posWeightsData, "posWeightsData"), needPos, "posWeightsData");
-        addPositionEmbeddingGPUDeviceBuffersWithOffset(
-                xData.devicePointer(), posWeightsData.devicePointer(), batch, seqLen, dModel, posRowStart);
+        TensorOpsGpuEmbeddingHost.addPositionEmbeddingGpuDevice(
+                xData, posWeightsData, batch, seqLen, dModel, posRowStart);
     }
 
     public static void addPositionEmbeddingInPlaceHostSlice(
             float[] xBatchSeqD, float[] posRowsContiguous, int batch, int seqLen, int dModel) {
-        requireCuda("addPositionEmbeddingInPlaceHostSlice");
-        if (batch <= 0 || seqLen <= 0 || dModel <= 0) {
-            return;
-        }
-        long needX = (long) batch * seqLen * dModel;
-        long needSlice = (long) seqLen * dModel;
-        if (xBatchSeqD.length < needX || posRowsContiguous.length < needSlice) {
-            throw new IllegalArgumentException(
-                    "buffers too small: need x>="
-                            + needX
-                            + ", posSlice>="
-                            + needSlice
-                            + " got x="
-                            + xBatchSeqD.length
-                            + " pos="
-                            + posRowsContiguous.length);
-        }
-        addPositionEmbeddingGPUHostPosSlice(xBatchSeqD, posRowsContiguous, batch, seqLen, dModel);
+        TensorOpsGpuEmbeddingHost.addPositionEmbeddingInPlaceHostSlice(
+                xBatchSeqD, posRowsContiguous, batch, seqLen, dModel);
     }
 
     /** Явный выбор FP16-gather (тесты). */
@@ -1265,7 +921,8 @@ public final class TensorOpsGPU {
             int dModel,
             int vocabSize,
             boolean useFp16Gather) {
-        embeddingTokenForwardGPU(tokens, weights, out, batch, seqLen, dModel, vocabSize, useFp16Gather);
+        TensorOpsGpuEmbeddingHost.embeddingTokenForwardGpuEx(
+                tokens, weights, out, batch, seqLen, dModel, vocabSize, useFp16Gather);
     }
 
     /**
@@ -1288,23 +945,8 @@ public final class TensorOpsGPU {
             int dV,
             float scale,
             boolean useFp16Softmax) {
-        requireCuda("TensorOpsGPU.scaledDotProductAttentionForwardFromHost");
-        if (batch <= 0 || seqLen <= 0 || dK <= 0 || dV <= 0) {
-            throw new IllegalArgumentException("batch, seqLen, dK, dV must be positive");
-        }
-        long qk = (long) batch * seqLen * dK;
-        long vSz = (long) batch * seqLen * dV;
-        long probSz = (long) batch * seqLen * seqLen;
-        Objects.requireNonNull(q, "q");
-        Objects.requireNonNull(k, "k");
-        Objects.requireNonNull(v, "v");
-        Objects.requireNonNull(output, "output");
-        Objects.requireNonNull(probs, "probs");
-        if (q.length < qk || k.length < qk || v.length < vSz || output.length < vSz || probs.length < probSz) {
-            throw new IllegalArgumentException("host array length too small for attention tensors");
-        }
-        TL_SDPA_HOST.get()
-                .run(q, k, v, mask, output, probs, batch, seqLen, dK, dV, scale, useFp16Softmax);
+        TensorOpsGpuHostPathScratch.scaledDotProductAttentionForwardFromHost(
+                q, k, v, mask, output, probs, batch, seqLen, dK, dV, scale, useFp16Softmax);
     }
 
     /**
@@ -1563,10 +1205,10 @@ public final class TensorOpsGPU {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be positive");
         }
-        requireMinFloats(requireGpu(param, "param"), n, "param");
-        requireMinFloats(requireGpu(grad, "grad"), n, "grad");
-        requireMinFloats(requireGpu(m, "m"), n, "m");
-        requireMinFloats(requireGpu(v, "v"), n, "v");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(param, "param"), n, "param");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(grad, "grad"), n, "grad");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(m, "m"), n, "m");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(v, "v"), n, "v");
         adamWStepGPUDevice(
                 param.devicePointer(),
                 grad.devicePointer(),
@@ -1696,62 +1338,7 @@ public final class TensorOpsGPU {
      * {@code -Djgpt.debug.vramBeforeAlloc=true} (тогда — для любого положительного размера).
      */
     public static void logVramBeforeDeviceFloatAlloc(long numFloats, String context) {
-        if (!GPU_AVAILABLE || numFloats <= 0L) {
-            return;
-        }
-        final long thresholdFloats = 15_000_000L; /* ~57 MiB buffer */
-        boolean allSizes = Boolean.getBoolean("jgpt.debug.vramBeforeAlloc");
-        if (!allSizes && numFloats < thresholdFloats) {
-            return;
-        }
-        long needBytes = Math.multiplyExact(numFloats, 4L);
-        long needMiB = (needBytes + (1024L * 1024L - 1L)) / (1024L * 1024L);
-        long allocMiB = getGpuMemoryAllocated() / (1024L * 1024L);
-        long reservedMiB = getGpuMemoryReserved() / (1024L * 1024L);
-        String where = (context != null && !context.isEmpty()) ? " " + context : "";
-        LOG.info(
-                "[VRAM] перед аллокацией{}: needFloats={} (~{} MiB), allocated={} MiB, reserved={} MiB, shapeHint={}",
-                where,
-                numFloats,
-                needMiB,
-                allocMiB,
-                reservedMiB,
-                shapeHintForFloatPlane(numFloats));
-    }
-
-    private static String shapeHintForFloatPlane(long n) {
-        if (n <= 0L) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder();
-        long[][] rect = {
-            {6144L, 4096L},
-            {4096L, 6144L},
-            {2048L, 12288L},
-            {12288L, 2048L},
-            {8192L, 3072L},
-            {3072L, 8192L},
-            {16384L, 1536L},
-            {1536L, 16384L},
-            {32768L, 768L},
-            {768L, 32768L}
-        };
-        for (long[] p : rect) {
-            if (Math.multiplyExact(p[0], p[1]) == n) {
-                if (sb.length() > 0) {
-                    sb.append("; ");
-                }
-                sb.append(p[0]).append('×').append(p[1]).append(" float");
-            }
-        }
-        if (n % 1024L == 0L) {
-            long rows = n / 1024L;
-            if (sb.length() > 0) {
-                sb.append("; ");
-            }
-            sb.append("плоскость 1024×").append(rows).append(" (часто dModel×tokens)");
-        }
-        return sb.length() == 0 ? "(нет совпадений с типовыми прямоугольниками)" : sb.toString();
+        TensorOpsGpuVramLog.logBeforeDeviceFloatAlloc(numFloats, context);
     }
 
     public static String getGpuName() {
@@ -1806,94 +1393,23 @@ public final class TensorOpsGPU {
         return RMSNORM_EPS;
     }
 
-    @FunctionalInterface
-    private interface HostSgemmMaybeFp16 {
-        void apply(float[] a, float[] b, float[] c, int m, int k, int n);
-    }
-
-    @FunctionalInterface
-    private interface HostBatchedGemmMaybeFp16 {
-        void apply(float[] a, float[] b, float[] c, int m, int k, int n, int batchCount);
-    }
-
-    @FunctionalInterface
-    private interface HostMatmulBiasReluMaybeFp16 {
-        void apply(float[] a, float[] b, float[] bias, float[] c, int m, int k, int n);
-    }
-
-    private static final HostSgemmMaybeFp16 HOST_MATMUL =
-            FP16_MATMUL ? TensorOpsGPU::matmulGPUFp16 : TensorOpsGPU::matmulGPU;
-
-    private static final HostBatchedGemmMaybeFp16 HOST_BATCHED_MATMUL =
-            FP16_MATMUL ? TensorOpsGPU::matmulBatchedGPUFp16 : TensorOpsGPU::matmulBatchedGPU;
-
-    private static final HostMatmulBiasReluMaybeFp16 HOST_MATMUL_BIAS_RELU =
-            FP16_MATMUL ? TensorOpsGPU::matmulAddReluGPUFp16 : TensorOpsGPU::matmulAddReluGPU;
-
     /**
      * Один GEMM на GPU: при {@link #useFp16Matmul()} — FP16 compute, иначе FP32+TF32.
      */
     public static void matmulGPUMaybeFp16(float[] A, float[] B, float[] C, int M, int K, int N) {
-        HOST_MATMUL.apply(A, B, C, M, K, N);
+        TensorOpsGpuHostMatmul.matmulGPUMaybeFp16(A, B, C, M, K, N);
     }
 
     /** Батчевый GEMM: FP16 или FP32 по {@link #useFp16Matmul()}. */
     public static void matmulBatchedGPUMaybeFp16(
             float[] A, float[] B, float[] C, int M, int K, int N, int batchCount) {
-        HOST_BATCHED_MATMUL.apply(A, B, C, M, K, N, batchCount);
+        TensorOpsGpuHostMatmul.matmulBatchedGPUMaybeFp16(A, B, C, M, K, N, batchCount);
     }
 
     /** {@code matmul + bias + ReLU} на GPU: FP16 или FP32 по {@link #useFp16Matmul()}. */
     public static void matmulAddReluGPUMaybeFp16(
             float[] A, float[] B, float[] bias, float[] C, int M, int K, int N) {
-        HOST_MATMUL_BIAS_RELU.apply(A, B, bias, C, M, K, N);
-    }
-
-    private static GpuFloatBuffer requireGpu(GpuFloatBuffer b, String name) {
-        Objects.requireNonNull(b, name);
-        if (b.isClosed()) {
-            throw new IllegalStateException(name + ": GpuFloatBuffer is closed");
-        }
-        return b;
-    }
-
-    private static void requireMinFloats(GpuFloatBuffer b, long need, String name) {
-        if (need < 0) {
-            throw new IllegalArgumentException(name + ": invalid required length");
-        }
-        if (b.numFloats() < need) {
-            throw new IllegalArgumentException(
-                    name + ": buffer too small, need >= " + need + " floats, have " + b.numFloats());
-        }
-    }
-
-    private static GpuIntBuffer requireGpuInt(GpuIntBuffer b, String name) {
-        Objects.requireNonNull(b, name);
-        if (b.isClosed()) {
-            throw new IllegalStateException(name + ": GpuIntBuffer is closed");
-        }
-        return b;
-    }
-
-    private static void requireMinInts(GpuIntBuffer b, long need, String name) {
-        if (need < 0) {
-            throw new IllegalArgumentException(name + ": invalid required length");
-        }
-        if (b.numInts() < need) {
-            throw new IllegalArgumentException(
-                    name + ": buffer too small, need >= " + need + " ints, have " + b.numInts());
-        }
-    }
-
-    /**
-     * Часть JNI/нативных путей индексирует плоские буферы как {@code int}; гарантируем, что размер не выходит за
-     * {@link Integer#MAX_VALUE}.
-     */
-    private static void requireJniFlatElementCount(String name, long n) {
-        if (n < 0 || n > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException(
-                    name + " element count out of int32 range for JNI: " + n + " (max " + Integer.MAX_VALUE + ")");
-        }
+        TensorOpsGpuHostMatmul.matmulAddReluGPUMaybeFp16(A, B, bias, C, M, K, N);
     }
 
     /** In-place: {@code C += bias} по столбцам (как в {@link #addBiasBroadcastGPUDevice}). */
@@ -1901,8 +1417,8 @@ public final class TensorOpsGPU {
         if (M <= 0 || N <= 0) {
             throw new IllegalArgumentException("M and N must be positive");
         }
-        requireMinFloats(requireGpu(c, "c"), (long) M * N, "c");
-        requireMinFloats(requireGpu(bias, "bias"), N, "bias");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(c, "c"), (long) M * N, "c");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(bias, "bias"), N, "bias");
         addBiasBroadcastGPUDevice(c.devicePointer(), bias.devicePointer(), M, N);
     }
 
@@ -1919,8 +1435,8 @@ public final class TensorOpsGPU {
         if (M <= 0 || N <= 0) {
             throw new IllegalArgumentException("M and N must be positive");
         }
-        requireMinFloats(requireGpu(src, "src"), (long) M * N, "src");
-        requireMinFloats(requireGpu(dst, "dst"), N, "dst");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(src, "src"), (long) M * N, "src");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dst, "dst"), N, "dst");
         sumColumnsGPUDevice(src.devicePointer(), dst.devicePointer(), M, N, beta);
     }
 
@@ -1932,9 +1448,9 @@ public final class TensorOpsGPU {
         long needA = (long) M * K;
         long needB = (long) K * N;
         long needC = (long) M * N;
-        requireMinFloats(requireGpu(a, "a"), needA, "a");
-        requireMinFloats(requireGpu(b, "b"), needB, "b");
-        requireMinFloats(requireGpu(c, "c"), needC, "c");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(a, "a"), needA, "a");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(b, "b"), needB, "b");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(c, "c"), needC, "c");
         matmulGPUDevice(a.devicePointer(), b.devicePointer(), c.devicePointer(), M, K, N);
     }
 
@@ -1967,9 +1483,9 @@ public final class TensorOpsGPU {
         long needA = (long) M * K;
         long needB = (long) K * N;
         long needC = (long) M * N;
-        requireMinFloats(requireGpu(a, "a"), needA, "a");
-        requireMinFloats(requireGpu(b, "b"), needB, "b");
-        requireMinFloats(requireGpu(c, "c"), needC, "c");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(a, "a"), needA, "a");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(b, "b"), needB, "b");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(c, "c"), needC, "c");
         matmulGPUDeviceEx(
                 a.devicePointer(),
                 b.devicePointer(),
@@ -2005,13 +1521,13 @@ public final class TensorOpsGPU {
         long needX = (long) M * K;
         long needW = (long) K * N;
         long needOut = (long) M * N;
-        requireMinFloats(requireGpu(xNorm, "xNorm"), needX, "xNorm");
-        requireMinFloats(requireGpu(wq, "wq"), needW, "wq");
-        requireMinFloats(requireGpu(wk, "wk"), needW, "wk");
-        requireMinFloats(requireGpu(wv, "wv"), needW, "wv");
-        requireMinFloats(requireGpu(q, "q"), needOut, "q");
-        requireMinFloats(requireGpu(k, "k"), needOut, "k");
-        requireMinFloats(requireGpu(v, "v"), needOut, "v");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(xNorm, "xNorm"), needX, "xNorm");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(wq, "wq"), needW, "wq");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(wk, "wk"), needW, "wk");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(wv, "wv"), needW, "wv");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(q, "q"), needOut, "q");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(k, "k"), needOut, "k");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(v, "v"), needOut, "v");
         matmulGpuDeviceQkvProjections0(
                 xNorm.devicePointer(),
                 wq.devicePointer(),
@@ -2047,11 +1563,11 @@ public final class TensorOpsGPU {
         long needX = (long) M * K;
         long needW = (long) K * N;
         long needOut = (long) M * N;
-        requireMinFloats(requireGpu(xNorm, "xNorm"), needX, "xNorm");
-        requireMinFloats(requireGpu(w1, "w1"), needW, "w1");
-        requireMinFloats(requireGpu(w3, "w3"), needW, "w3");
-        requireMinFloats(requireGpu(h1, "h1"), needOut, "h1");
-        requireMinFloats(requireGpu(gate, "gate"), needOut, "gate");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(xNorm, "xNorm"), needX, "xNorm");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(w1, "w1"), needW, "w1");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(w3, "w3"), needW, "w3");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(h1, "h1"), needOut, "h1");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gate, "gate"), needOut, "gate");
         matmulGpuDeviceFfnW1W3Projections0(
                 xNorm.devicePointer(),
                 w1.devicePointer(),
@@ -2069,9 +1585,9 @@ public final class TensorOpsGPU {
             throw new IllegalArgumentException("outer and lastDim must be positive");
         }
         long plane = (long) outer * lastDim;
-        requireMinFloats(requireGpu(x, "x"), plane, "x");
-        requireMinFloats(requireGpu(gamma, "gamma"), lastDim, "gamma");
-        requireMinFloats(requireGpu(out, "out"), plane, "out");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(x, "x"), plane, "x");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gamma, "gamma"), lastDim, "gamma");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(out, "out"), plane, "out");
         rmsNormGPUDevice(
                 x.devicePointer(),
                 gamma.devicePointer(),
@@ -2086,8 +1602,8 @@ public final class TensorOpsGPU {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be positive");
         }
-        requireMinFloats(requireGpu(src, "src"), n, "src");
-        requireMinFloats(requireGpu(dst, "dst"), n, "dst");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(src, "src"), n, "src");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dst, "dst"), n, "dst");
         sigmoidGPUDevice(src.devicePointer(), dst.devicePointer(), n);
     }
 
@@ -2095,9 +1611,9 @@ public final class TensorOpsGPU {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be positive");
         }
-        requireMinFloats(requireGpu(a, "a"), n, "a");
-        requireMinFloats(requireGpu(b, "b"), n, "b");
-        requireMinFloats(requireGpu(c, "c"), n, "c");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(a, "a"), n, "a");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(b, "b"), n, "b");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(c, "c"), n, "c");
         multiplyGPUDevice(a.devicePointer(), b.devicePointer(), c.devicePointer(), n);
     }
 
@@ -2106,11 +1622,11 @@ public final class TensorOpsGPU {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be positive");
         }
-        requireMinFloats(requireGpu(gOut, "gOut"), n, "gOut");
-        requireMinFloats(requireGpu(a, "a"), n, "a");
-        requireMinFloats(requireGpu(b, "b"), n, "b");
-        requireMinFloats(requireGpu(gA, "gA"), n, "gA");
-        requireMinFloats(requireGpu(gB, "gB"), n, "gB");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gOut, "gOut"), n, "gOut");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(a, "a"), n, "a");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(b, "b"), n, "b");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gA, "gA"), n, "gA");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gB, "gB"), n, "gB");
         multiplyBackwardGPUDevice(
                 gOut.devicePointer(), a.devicePointer(), b.devicePointer(), gA.devicePointer(), gB.devicePointer(), n);
     }
@@ -2119,9 +1635,9 @@ public final class TensorOpsGPU {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be positive");
         }
-        requireMinFloats(requireGpu(gOut, "gOut"), n, "gOut");
-        requireMinFloats(requireGpu(inp, "inp"), n, "inp");
-        requireMinFloats(requireGpu(gIn, "gIn"), n, "gIn");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gOut, "gOut"), n, "gOut");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(inp, "inp"), n, "inp");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gIn, "gIn"), n, "gIn");
         sigmoidBackwardGPUDevice(gOut.devicePointer(), inp.devicePointer(), gIn.devicePointer(), n);
     }
 
@@ -2129,8 +1645,8 @@ public final class TensorOpsGPU {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be positive");
         }
-        requireMinFloats(requireGpu(acc, "acc"), n, "acc");
-        requireMinFloats(requireGpu(delta, "delta"), n, "delta");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(acc, "acc"), n, "acc");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(delta, "delta"), n, "delta");
         accumulateAddGPUDevice(acc.devicePointer(), delta.devicePointer(), n);
     }
 
@@ -2138,7 +1654,7 @@ public final class TensorOpsGPU {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be positive");
         }
-        requireMinFloats(requireGpu(buf, "buf"), n, "buf");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(buf, "buf"), n, "buf");
         scaleInPlaceGPUDevice(buf.devicePointer(), n, scalar);
     }
 
@@ -2146,7 +1662,7 @@ public final class TensorOpsGPU {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be positive");
         }
-        requireMinFloats(requireGpu(buf, "buf"), n, "buf");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(buf, "buf"), n, "buf");
         return sumSquaresGPUDevice(buf.devicePointer(), n);
     }
 
@@ -2185,7 +1701,7 @@ public final class TensorOpsGPU {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be positive");
         }
-        requireMinFloats(requireGpu(buf, "buf"), n, "buf");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(buf, "buf"), n, "buf");
         return anyNonFiniteGPUDevice(buf.devicePointer(), n);
     }
 
@@ -2240,10 +1756,10 @@ public final class TensorOpsGPU {
         }
         long rows = (long) batch * seqLen;
         long need = rows * vocab;
-        requireJniFlatElementCount("CE logits/grad", need);
-        requireJniFlatElementCount("CE targets row count", rows);
-        requireMinFloats(requireGpu(logits, "logits"), need, "logits");
-        requireMinFloats(requireGpu(grad, "grad"), need, "grad");
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE logits/grad", need);
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE targets row count", rows);
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, "logits"), need, "logits");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(grad, "grad"), need, "grad");
         Objects.requireNonNull(targets, "targets");
         if (targets.length < rows) {
             throw new IllegalArgumentException(
@@ -2273,11 +1789,11 @@ public final class TensorOpsGPU {
         }
         long rows = (long) batch * seqLen;
         long need = rows * vocab;
-        requireJniFlatElementCount("CE logits/grad", need);
-        requireJniFlatElementCount("CE targets row count", rows);
-        requireMinFloats(requireGpu(logits, "logits"), need, "logits");
-        requireMinFloats(requireGpu(grad, "grad"), need, "grad");
-        requireMinInts(requireGpuInt(targets, "targets"), rows, "targets");
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE logits/grad", need);
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE targets row count", rows);
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, "logits"), need, "logits");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(grad, "grad"), need, "grad");
+        TensorOpsGpuBufferChecks.requireMinInts(TensorOpsGpuBufferChecks.requireGpuInt(targets, "targets"), rows, "targets");
         return crossEntropySoftmaxGradLossGPUDeviceTargetsDevice(
                 logits.devicePointer(),
                 targets.devicePointer(),
@@ -2308,11 +1824,11 @@ public final class TensorOpsGPU {
         }
         long rows = (long) batch * seqLen;
         long need = rows * vocab;
-        requireJniFlatElementCount("CE logits/grad", need);
-        requireJniFlatElementCount("CE targets row count", rows);
-        requireMinFloats(requireGpu(logits, "logits"), need, "logits");
-        requireMinFloats(requireGpu(grad, "grad"), need, "grad");
-        requireMinInts(requireGpuInt(targets, "targets"), rows, "targets");
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE logits/grad", need);
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE targets row count", rows);
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, "logits"), need, "logits");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(grad, "grad"), need, "grad");
+        TensorOpsGpuBufferChecks.requireMinInts(TensorOpsGpuBufferChecks.requireGpuInt(targets, "targets"), rows, "targets");
         crossEntropySoftmaxGradLossGPUDeviceTargetsDeviceAsync(
                 logits.devicePointer(),
                 targets.devicePointer(),
@@ -2340,10 +1856,10 @@ public final class TensorOpsGPU {
         Objects.requireNonNull(targets, "targets");
         long rows = (long) batch * seqLen;
         long need = rows * vocab;
-        requireJniFlatElementCount("CE logits/grad", need);
-        requireJniFlatElementCount("CE targets row count", rows);
-        requireMinFloats(requireGpu(logits, "logits"), need, "logits");
-        requireMinFloats(requireGpu(grad, "grad"), need, "grad");
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE logits/grad", need);
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE targets row count", rows);
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, "logits"), need, "logits");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(grad, "grad"), need, "grad");
         if (targets.length < rows) {
             throw new IllegalArgumentException("targets too small: need " + rows + ", have " + targets.length);
         }
@@ -2367,11 +1883,11 @@ public final class TensorOpsGPU {
         }
         long logitNeed = (long) rows * vocab;
         long candidateNeed = (long) rows * candidates;
-        requireJniFlatElementCount("gather logits plane", logitNeed);
-        requireJniFlatElementCount("gather candidate plane", candidateNeed);
-        requireMinFloats(requireGpu(logits, "logits"), logitNeed, "logits");
-        requireMinInts(requireGpuInt(candidateIds, "candidateIds"), candidateNeed, "candidateIds");
-        requireMinFloats(requireGpu(candidateLogits, "candidateLogits"), candidateNeed, "candidateLogits");
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount("gather logits plane", logitNeed);
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount("gather candidate plane", candidateNeed);
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, "logits"), logitNeed, "logits");
+        TensorOpsGpuBufferChecks.requireMinInts(TensorOpsGpuBufferChecks.requireGpuInt(candidateIds, "candidateIds"), candidateNeed, "candidateIds");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(candidateLogits, "candidateLogits"), candidateNeed, "candidateLogits");
         gatherLogitsByIdsGPUDevice(
                 logits.devicePointer(),
                 candidateIds.devicePointer(),
@@ -2400,10 +1916,10 @@ public final class TensorOpsGPU {
         long hiddenNeed = (long) rows * dModel;
         long weightNeed = (long) dModel * vocab;
         long candidateNeed = (long) rows * candidates;
-        requireMinFloats(requireGpu(normedHidden, "normedHidden"), hiddenNeed, "normedHidden");
-        requireMinFloats(requireGpu(lmHeadWeights, "lmHeadWeights"), weightNeed, "lmHeadWeights");
-        requireMinInts(requireGpuInt(candidateIds, "candidateIds"), candidateNeed, "candidateIds");
-        requireMinFloats(requireGpu(candidateLogits, "candidateLogits"), candidateNeed, "candidateLogits");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(normedHidden, "normedHidden"), hiddenNeed, "normedHidden");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(lmHeadWeights, "lmHeadWeights"), weightNeed, "lmHeadWeights");
+        TensorOpsGpuBufferChecks.requireMinInts(TensorOpsGpuBufferChecks.requireGpuInt(candidateIds, "candidateIds"), candidateNeed, "candidateIds");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(candidateLogits, "candidateLogits"), candidateNeed, "candidateLogits");
         lmHeadCandidateLogitsGPUDevice(
                 normedHidden.devicePointer(),
                 lmHeadWeights.devicePointer(),
@@ -2426,9 +1942,9 @@ public final class TensorOpsGPU {
             throw new IllegalArgumentException("rows and candidates must be positive");
         }
         long need = (long) rows * candidates;
-        requireMinFloats(requireGpu(candidateLogits, "candidateLogits"), need, "candidateLogits");
-        requireMinInts(requireGpuInt(candidateIds, "candidateIds"), need, "candidateIds");
-        requireMinFloats(requireGpu(candidateGrad, "candidateGrad"), need, "candidateGrad");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(candidateLogits, "candidateLogits"), need, "candidateLogits");
+        TensorOpsGpuBufferChecks.requireMinInts(TensorOpsGpuBufferChecks.requireGpuInt(candidateIds, "candidateIds"), need, "candidateIds");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(candidateGrad, "candidateGrad"), need, "candidateGrad");
         return sampledCrossEntropyGradLossGPUDeviceFirstSlot(
                 candidateLogits.devicePointer(),
                 candidateIds.devicePointer(),
@@ -2455,12 +1971,12 @@ public final class TensorOpsGPU {
         long candNeed = (long) rows * candidates;
         long hiddenNeed = (long) rows * dModel;
         long weightNeed = (long) dModel * vocab;
-        requireMinInts(requireGpuInt(candidateIds, "candidateIds"), candNeed, "candidateIds");
-        requireMinFloats(requireGpu(candidateGrad, "candidateGrad"), candNeed, "candidateGrad");
-        requireMinFloats(requireGpu(normedHidden, "normedHidden"), hiddenNeed, "normedHidden");
-        requireMinFloats(requireGpu(lmHeadWeights, "lmHeadWeights"), weightNeed, "lmHeadWeights");
-        requireMinFloats(requireGpu(dHidden, "dHidden"), hiddenNeed, "dHidden");
-        requireMinFloats(requireGpu(dLmHead, "dLmHead"), weightNeed, "dLmHead");
+        TensorOpsGpuBufferChecks.requireMinInts(TensorOpsGpuBufferChecks.requireGpuInt(candidateIds, "candidateIds"), candNeed, "candidateIds");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(candidateGrad, "candidateGrad"), candNeed, "candidateGrad");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(normedHidden, "normedHidden"), hiddenNeed, "normedHidden");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(lmHeadWeights, "lmHeadWeights"), weightNeed, "lmHeadWeights");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dHidden, "dHidden"), hiddenNeed, "dHidden");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dLmHead, "dLmHead"), weightNeed, "dLmHead");
         sampledLmHeadBackwardGPUDevice(
                 candidateIds.devicePointer(),
                 candidateGrad.devicePointer(),
@@ -2491,11 +2007,11 @@ public final class TensorOpsGPU {
         long plane = (long) rows * dModel;
         long logitsNeed = (long) rows * vocab;
         long wNeed = (long) dModel * vocab;
-        requireMinFloats(requireGpu(x, "x"), plane, "x");
-        requireMinFloats(requireGpu(gamma, "gamma"), dModel, "gamma");
-        requireMinFloats(requireGpu(normOut, "normOut"), plane, "normOut");
-        requireMinFloats(requireGpu(w, "w"), wNeed, "w");
-        requireMinFloats(requireGpu(logits, "logits"), logitsNeed, "logits");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(x, "x"), plane, "x");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gamma, "gamma"), dModel, "gamma");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(normOut, "normOut"), plane, "normOut");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(w, "w"), wNeed, "w");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, "logits"), logitsNeed, "logits");
         rmsNormMatmulLmHeadGPUDevice(
                 x.devicePointer(),
                 gamma.devicePointer(),
@@ -2528,13 +2044,13 @@ public final class TensorOpsGPU {
         long plane = (long) rows * dModel;
         long wNeed = (long) dModel * dIntermediate;
         long mid = (long) rows * dIntermediate;
-        requireMinFloats(requireGpu(xRes1, "xRes1"), plane, "xRes1");
-        requireMinFloats(requireGpu(gamma, "gamma"), dModel, "gamma");
-        requireMinFloats(requireGpu(normOut, "normOut"), plane, "normOut");
-        requireMinFloats(requireGpu(w1, "w1"), wNeed, "w1");
-        requireMinFloats(requireGpu(w3, "w3"), wNeed, "w3");
-        requireMinFloats(requireGpu(h1, "h1"), mid, "h1");
-        requireMinFloats(requireGpu(gate, "gate"), mid, "gate");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(xRes1, "xRes1"), plane, "xRes1");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gamma, "gamma"), dModel, "gamma");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(normOut, "normOut"), plane, "normOut");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(w1, "w1"), wNeed, "w1");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(w3, "w3"), wNeed, "w3");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(h1, "h1"), mid, "h1");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gate, "gate"), mid, "gate");
         rmsNormMatmulFfnW1W3GPUDevice(
                 xRes1.devicePointer(),
                 gamma.devicePointer(),
@@ -2555,7 +2071,7 @@ public final class TensorOpsGPU {
         if (len < 0 || off < 0 || (long) off + len > host.length) {
             throw new IllegalArgumentException("host range invalid");
         }
-        requireMinFloats(requireGpu(acc, "acc"), len, "acc");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(acc, "acc"), len, "acc");
         accumulateAddFromHostGPUDevice(acc.devicePointer(), host, off, len);
     }
 
@@ -2570,8 +2086,8 @@ public final class TensorOpsGPU {
         int dHead = dModel / numHeads;
         long needSrc = (long) batch * seqLen * dModel;
         long needDst = (long) batch * numHeads * seqLen * dHead;
-        requireMinFloats(requireGpu(src, "src"), needSrc, "src");
-        requireMinFloats(requireGpu(dst, "dst"), needDst, "dst");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(src, "src"), needSrc, "src");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dst, "dst"), needDst, "dst");
         splitHeadsGPUDevice(src.devicePointer(), dst.devicePointer(), batch, seqLen, dModel, numHeads);
     }
 
@@ -2583,8 +2099,8 @@ public final class TensorOpsGPU {
         int dModel = numHeads * dHead;
         long needSrc = (long) batch * numHeads * seqLen * dHead;
         long needDst = (long) batch * seqLen * dModel;
-        requireMinFloats(requireGpu(src, "src"), needSrc, "src");
-        requireMinFloats(requireGpu(dst, "dst"), needDst, "dst");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(src, "src"), needSrc, "src");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dst, "dst"), needDst, "dst");
         concatHeadsGPUDevice(src.devicePointer(), dst.devicePointer(), batch, numHeads, seqLen, dHead);
     }
 
@@ -2603,8 +2119,8 @@ public final class TensorOpsGPU {
         if (batchIdx < 0 || batchIdx >= batch) {
             throw new IllegalArgumentException("batchIdx out of range");
         }
-        requireGpu(srcHeads4d, "srcHeads4d");
-        requireGpu(dstCache, "dstCache");
+        TensorOpsGpuBufferChecks.requireGpu(srcHeads4d, "srcHeads4d");
+        TensorOpsGpuBufferChecks.requireGpu(dstCache, "dstCache");
         copyKvHeads4dToCacheGPUDevice(
                 srcHeads4d.devicePointer(),
                 dstCache.devicePointer(),
@@ -2622,8 +2138,8 @@ public final class TensorOpsGPU {
             throw new IllegalArgumentException("batch, numHeads, seqLen, dHead must be positive");
         }
         long need = (long) batch * numHeads * seqLen * dHead;
-        requireMinFloats(requireGpu(gradY, "gradY"), need, "gradY");
-        requireMinFloats(requireGpu(gradX, "gradX"), need, "gradX");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gradY, "gradY"), need, "gradY");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gradX, "gradX"), need, "gradX");
         applyRoPEBackward4DGPUDevice(
                 gradY.devicePointer(), gradX.devicePointer(), batch, numHeads, seqLen, dHead, 0);
     }
@@ -2641,8 +2157,8 @@ public final class TensorOpsGPU {
             throw new IllegalArgumentException("batch, numHeads, seqLen, dHead must be positive");
         }
         long need = (long) batch * numHeads * seqLen * dHead;
-        requireMinFloats(requireGpu(src, "src"), need, "src");
-        requireMinFloats(requireGpu(dst, "dst"), need, "dst");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(src, "src"), need, "src");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dst, "dst"), need, "dst");
         applyRoPE4DGPUDevice(
                 src.devicePointer(),
                 dst.devicePointer(),
@@ -2673,10 +2189,10 @@ public final class TensorOpsGPU {
         }
         long qk = (long) batch * seqLen * dKDim;
         long vSz = (long) batch * seqLen * dVDim;
-        requireMinFloats(requireGpu(dQ, "dQ"), qk, "dQ");
-        requireMinFloats(requireGpu(dK, "dK"), qk, "dK");
-        requireMinFloats(requireGpu(dV, "dV"), vSz, "dV");
-        requireMinFloats(requireGpu(dOut, "dOut"), vSz, "dOut");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dQ, "dQ"), qk, "dQ");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dK, "dK"), qk, "dK");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dV, "dV"), vSz, "dV");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dOut, "dOut"), vSz, "dOut");
         if (h_probsOrNull != null) {
             int probNeed = Math.multiplyExact(Math.multiplyExact(batch, seqLen), seqLen);
             if (h_probsOrNull.length < probNeed) {
@@ -2722,20 +2238,20 @@ public final class TensorOpsGPU {
         }
         long qk = (long) batch * seqLen * dKDim;
         long vSz = (long) batch * seqLen * dVDim;
-        requireMinFloats(requireGpu(dQ, "dQ"), qk, "dQ");
-        requireMinFloats(requireGpu(dK, "dK"), qk, "dK");
-        requireMinFloats(requireGpu(dV, "dV"), vSz, "dV");
-        requireMinFloats(requireGpu(dOut, "dOut"), vSz, "dOut");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dQ, "dQ"), qk, "dQ");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dK, "dK"), qk, "dK");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dV, "dV"), vSz, "dV");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dOut, "dOut"), vSz, "dOut");
         long dMask = 0L;
         if (dMaskOrNull != null) {
             int needMask = Math.multiplyExact(seqLen, seqLen);
-            requireMinFloats(requireGpu(dMaskOrNull, "dMask"), needMask, "dMask");
+            TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dMaskOrNull, "dMask"), needMask, "dMask");
             dMask = dMaskOrNull.devicePointer();
         }
         long dProbs = 0L;
         if (dProbsOutOrNull != null) {
             int probNeed = Math.multiplyExact(Math.multiplyExact(batch, seqLen), seqLen);
-            requireMinFloats(requireGpu(dProbsOutOrNull, "dProbsOut"), probNeed, "dProbsOut");
+            TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dProbsOutOrNull, "dProbsOut"), probNeed, "dProbsOut");
             dProbs = dProbsOutOrNull.devicePointer();
         }
         scaledDotProductAttentionForwardGPUDeviceResident(
@@ -2939,14 +2455,14 @@ public final class TensorOpsGPU {
         long qk = (long) batch * seqLen * dKDim;
         long probSz = (long) batch * seqLen * seqLen;
         long vSz = (long) batch * seqLen * dVDim;
-        requireMinFloats(requireGpu(gradOut, "gradOut"), vSz, "gradOut");
-        requireMinFloats(requireGpu(probs, "probs"), probSz, "probs");
-        requireMinFloats(requireGpu(q, "q"), qk, "q");
-        requireMinFloats(requireGpu(k, "k"), qk, "k");
-        requireMinFloats(requireGpu(v, "v"), vSz, "v");
-        requireMinFloats(requireGpu(gradQ, "gradQ"), qk, "gradQ");
-        requireMinFloats(requireGpu(gradK, "gradK"), qk, "gradK");
-        requireMinFloats(requireGpu(gradV, "gradV"), vSz, "gradV");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gradOut, "gradOut"), vSz, "gradOut");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(probs, "probs"), probSz, "probs");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(q, "q"), qk, "q");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(k, "k"), qk, "k");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(v, "v"), vSz, "v");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gradQ, "gradQ"), qk, "gradQ");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gradK, "gradK"), qk, "gradK");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gradV, "gradV"), vSz, "gradV");
         scaledDotProductAttentionBackwardGPUDevice(
                 gradOut.devicePointer(),
                 probs.devicePointer(),
@@ -2978,11 +2494,11 @@ public final class TensorOpsGPU {
             throw new IllegalArgumentException("outer and lastDim must be positive");
         }
         long plane = (long) outer * lastDim;
-        requireMinFloats(requireGpu(gOut, "gOut"), plane, "gOut");
-        requireMinFloats(requireGpu(x, "x"), plane, "x");
-        requireMinFloats(requireGpu(gamma, "gamma"), lastDim, "gamma");
-        requireMinFloats(requireGpu(gX, "gX"), plane, "gX");
-        requireMinFloats(requireGpu(gGamma, "gGamma"), lastDim, "gGamma");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gOut, "gOut"), plane, "gOut");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(x, "x"), plane, "x");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gamma, "gamma"), lastDim, "gamma");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gX, "gX"), plane, "gX");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gGamma, "gGamma"), lastDim, "gGamma");
         rmsNormBackwardGPUDevice(
                 gOut.devicePointer(),
                 x.devicePointer(),

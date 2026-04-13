@@ -14,7 +14,7 @@ final class LlmTrainerTrainingFormat {
         return String.format(Locale.ROOT, "%.4f", v);
     }
 
-    /** Человекочитаемая длительность (ru-RU). */
+    /** Человекочитаемая длительность (ru-RU); если эпоха короче минуты — с долями секунды. */
     static String formatEpochDuration(long nanos) {
         if (nanos <= 0L) {
             return "0 с";

@@ -404,12 +404,15 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_softmaxLastDimBackwa
     JNIEnv* env, jclass clazz, jfloatArray h_gOut, jfloatArray h_probs, jfloatArray h_gIn, jint batch,
     jint mid, jint inner) {
     (void) clazz;
-    int nrows = batch * mid;
-    if (nrows <= 0 || inner <= 0) {
+    if (batch <= 0 || mid <= 0 || inner <= 0) {
         return;
     }
     JGPT_CUDA_GUARD_VOL3_F(batch, mid, inner, return;);
-    size_t bytes = (size_t) nrows * (size_t) inner * sizeof(float);
+    const long long nrows_ll = static_cast<long long>(batch) * static_cast<long long>(mid);
+    if (nrows_ll <= 0) {
+        return;
+    }
+    size_t bytes = static_cast<size_t>(nrows_ll) * static_cast<size_t>(inner) * sizeof(float);
     float *d_go = nullptr, *d_p = nullptr, *d_gi = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_go), bytes));
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_p), bytes));
@@ -431,7 +434,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_softmaxLastDimBackwa
     env->ReleaseFloatArrayElements(h_probs, pp, JNI_ABORT);
     env->ReleaseFloatArrayElements(h_gIn, pgi, JNI_ABORT);
 
-    launch_softmax_last_dim_bwd(d_go, d_p, d_gi, nrows, inner);
+    launch_softmax_last_dim_bwd(d_go, d_p, d_gi, nrows_ll, inner);
     pgi = env->GetFloatArrayElements(h_gIn, nullptr);
     if (!pgi) {
         cudaFree(d_go);

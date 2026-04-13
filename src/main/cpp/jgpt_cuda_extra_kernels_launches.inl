@@ -4,12 +4,18 @@
 
 // ========== Ядра (float32) ==========
 
-__global__ void softmax_last_dim_kernel(const float* src, float* dst, int nrows, int inner) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= nrows) {
+/** Линейный индекс нити в 1D-сетке в long long (избегает переполнения int при большом gridDim.x). */
+__device__ __forceinline__ long long jgpt_extra_kernel_linear_idx_ll() {
+    return (long long)blockIdx.x * (long long)blockDim.x + (long long)threadIdx.x;
+}
+
+__global__ void softmax_last_dim_kernel(
+        const float* src, float* dst, long long nrows_total, long long row_offset, int inner) {
+    const long long row = row_offset + (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= nrows_total) {
         return;
     }
-    int base = row * inner;
+    const ptrdiff_t base = (ptrdiff_t) row * inner;
     float maxv = -INFINITY;
     for (int j = 0; j < inner; j++) {
         maxv = fmaxf(maxv, src[base + j]);
@@ -30,12 +36,13 @@ __global__ void softmax_last_dim_kernel(const float* src, float* dst, int nrows,
  * Softmax по последней оси (ветка «fp16» в API): раньше exp шёл через FP16-округление диффа;
  * это давало sum=0 и Inf/NaN в вероятностях. Считаем exp в FP32, как в softmax_last_dim_kernel.
  */
-__global__ void softmax_last_dim_kernel_fp16(const float* src, float* dst, int nrows, int inner) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= nrows) {
+__global__ void softmax_last_dim_kernel_fp16(
+        const float* src, float* dst, long long nrows_total, long long row_offset, int inner) {
+    const long long row = row_offset + (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= nrows_total) {
         return;
     }
-    int base = row * inner;
+    const ptrdiff_t base = (ptrdiff_t) row * inner;
     float maxv = -INFINITY;
     for (int j = 0; j < inner; j++) {
         maxv = fmaxf(maxv, src[base + j]);
@@ -147,13 +154,16 @@ __device__ float blockReduceSum256(float v, float* smem) {
  * Запуск: gridDim.x=nrows, blockDim.x=kSoftmaxBlockDim, smem=kSoftmaxNumWarps*sizeof(float).
  */
 __global__ void softmax_last_dim_block_kernel(
-        const float* __restrict__ src, float* __restrict__ dst, int nrows, int inner) {
+        const float* __restrict__ src, float* __restrict__ dst,
+        long long nrows_total, long long row_offset, int inner) {
     extern __shared__ float smem[];
-    const int row = blockIdx.x;
-    if (row >= nrows) return;
+    const long long row = row_offset + static_cast<long long>(blockIdx.x);
+    if (row >= nrows_total) {
+        return;
+    }
     const int tid = threadIdx.x;
-    const float* rowSrc = src + (ptrdiff_t)row * inner;
-    float*       rowDst = dst + (ptrdiff_t)row * inner;
+    const float* rowSrc = src + static_cast<ptrdiff_t>(row) * inner;
+    float* rowDst = dst + static_cast<ptrdiff_t>(row) * inner;
 
     float maxv = -INFINITY;
     for (int j = tid; j < inner; j += kSoftmaxBlockDim)
@@ -168,6 +178,35 @@ __global__ void softmax_last_dim_block_kernel(
     const float inv = 1.f / fmaxf(sumv, 1e-12f);
     for (int j = tid; j < inner; j += kSoftmaxBlockDim)
         rowDst[j] = expf(rowSrc[j] - maxv) * inv;
+}
+
+static void launch_softmax_last_dim_block_chunked(
+        const float* src, float* dst, long long nrows_total, int inner, cudaStream_t stream) {
+    if (inner < 0 || nrows_total <= 0) {
+        return;
+    }
+    if (jgpt_softmax_row_inner_offset_overflows(nrows_total, inner)) {
+        fprintf(stderr, "softmax_last_dim_block: row*inner offset overflow\n");
+        return;
+    }
+    const size_t smem = static_cast<size_t>(kSoftmaxNumWarps) * sizeof(float);
+    const unsigned int chunk_cap = jgpt_extra_cuda_max_grid_x();
+    const long long chunk_ll = static_cast<long long>(chunk_cap);
+
+    for (long long row_off = 0; row_off < nrows_total; row_off += chunk_ll) {
+        const long long remain = nrows_total - row_off;
+        const unsigned int grid_x = static_cast<unsigned int>(std::min(chunk_ll, remain));
+        if (grid_x == 0u) {
+            break;
+        }
+        softmax_last_dim_block_kernel<<<grid_x, kSoftmaxBlockDim, smem, stream>>>(
+                src, dst, nrows_total, row_off, inner);
+        const cudaError_t le = cudaGetLastError();
+        if (le != cudaSuccess) {
+            fprintf(stderr, "launch_softmax_last_dim_block_chunked: %s\n", cudaGetErrorString(le));
+            return;
+        }
+    }
 }
 
 /**
@@ -304,11 +343,12 @@ static bool launch_softmax_scaled_masked_block_chunked(
 __global__ void cross_entropy_softmax_grad_loss_kernel(const float* logits, const float* targets_f,
                                                        float* grad, float scale, float* loss_sum,
                                                        unsigned int* valid_count, int nrows, int vocab) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= nrows) {
+    const long long row_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (row_ll >= (long long)nrows) {
         return;
     }
-    int base = row * vocab;
+    const int row = (int)row_ll;
+    const ptrdiff_t base = (ptrdiff_t)row * (ptrdiff_t)vocab;
     int t = (int)targets_f[row];
     if (t < 0 || t >= vocab) {
         for (int v = 0; v < vocab; ++v) {
@@ -344,11 +384,12 @@ __global__ void cross_entropy_softmax_grad_loss_kernel(const float* logits, cons
 __global__ void cross_entropy_softmax_grad_loss_kernel_fp16(const float* logits, const float* targets_f,
                                                               float* grad, float scale, float* loss_sum,
                                                               unsigned int* valid_count, int nrows, int vocab) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= nrows) {
+    const long long row_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (row_ll >= (long long)nrows) {
         return;
     }
-    int base = row * vocab;
+    const int row = (int)row_ll;
+    const ptrdiff_t base = (ptrdiff_t)row * (ptrdiff_t)vocab;
     int t = (int)targets_f[row];
     if (t < 0 || t >= vocab) {
         for (int v = 0; v < vocab; ++v) {
@@ -385,11 +426,12 @@ __global__ void cross_entropy_softmax_grad_loss_kernel_fp16(const float* logits,
 __global__ void cross_entropy_softmax_grad_loss_kernel_i32(const float* logits, const int* targets_i,
                                                            float* grad, float scale, float* loss_sum,
                                                            unsigned int* valid_count, int nrows, int vocab) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= nrows) {
+    const long long row_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (row_ll >= (long long)nrows) {
         return;
     }
-    int base = row * vocab;
+    const int row = (int)row_ll;
+    const ptrdiff_t base = (ptrdiff_t)row * (ptrdiff_t)vocab;
     int t = targets_i[row];
     if (t < 0 || t >= vocab) {
         for (int v = 0; v < vocab; ++v) {
@@ -422,11 +464,12 @@ __global__ void cross_entropy_softmax_grad_loss_kernel_i32(const float* logits, 
 __global__ void cross_entropy_softmax_grad_loss_kernel_fp16_i32(const float* logits, const int* targets_i,
                                                                 float* grad, float scale, float* loss_sum,
                                                                 unsigned int* valid_count, int nrows, int vocab) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= nrows) {
+    const long long row_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (row_ll >= (long long)nrows) {
         return;
     }
-    int base = row * vocab;
+    const int row = (int)row_ll;
+    const ptrdiff_t base = (ptrdiff_t)row * (ptrdiff_t)vocab;
     int t = targets_i[row];
     if (t < 0 || t >= vocab) {
         for (int v = 0; v < vocab; ++v) {
@@ -461,11 +504,12 @@ __global__ void cross_entropy_softmax_grad_loss_kernel_fp16_i32(const float* log
 
 __global__ void layer_norm_fwd_kernel(const float* src, const float* gamma, const float* beta,
                                      float* dst, int outer, int lastDim, float eps) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= outer) {
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)outer) {
         return;
     }
-    int base = i * lastDim;
+    const int i = (int)i_ll;
+    const ptrdiff_t base = (ptrdiff_t)i * (ptrdiff_t)lastDim;
     float mean = 0.f;
     for (int j = 0; j < lastDim; j++) {
         mean += src[base + j];
@@ -486,11 +530,12 @@ __global__ void layer_norm_fwd_kernel(const float* src, const float* gamma, cons
 
 __global__ void rms_norm_fwd_kernel(const float* src, const float* gamma, float* dst,
                                     int outer, int lastDim, float eps) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= outer) {
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)outer) {
         return;
     }
-    int base = i * lastDim;
+    const int i = (int)i_ll;
+    const ptrdiff_t base = (ptrdiff_t)i * (ptrdiff_t)lastDim;
     float sumSq = 0.f;
     for (int j = 0; j < lastDim; j++) {
         float v = src[base + j];
@@ -509,11 +554,12 @@ __global__ void rms_norm_fwd_kernel(const float* src, const float* gamma, float*
  */
 __global__ void rms_norm_fwd_kernel_fp16(const float* src, const float* gamma, float* dst,
                                          int outer, int lastDim, float eps) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= outer) {
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)outer) {
         return;
     }
-    int base = i * lastDim;
+    const int i = (int)i_ll;
+    const ptrdiff_t base = (ptrdiff_t)i * (ptrdiff_t)lastDim;
     float sumSq = 0.f;
     for (int j = 0; j < lastDim; j++) {
         float v = src[base + j];
@@ -539,17 +585,18 @@ __global__ void rms_norm_fwd_block_kernel(
     const int o = blockIdx.x;
     if (o >= outer) return;
     const int tid = threadIdx.x;
+    const ptrdiff_t rowBase = (ptrdiff_t)o * (ptrdiff_t)lastDim;
 
     float sumSq = 0.f;
     for (int j = tid; j < lastDim; j += kSoftmaxBlockDim)
-        sumSq += src[o * lastDim + j] * src[o * lastDim + j];
+        sumSq += src[rowBase + j] * src[rowBase + j];
     sumSq = blockReduceSum256(sumSq, smem);
 
     float rms = sqrtf(sumSq / (float) lastDim + eps);
     float invRms = (rms > 0.f && isfinite(rms)) ? (1.f / rms) : 0.f;
 
     for (int j = tid; j < lastDim; j += kSoftmaxBlockDim)
-        dst[o * lastDim + j] = src[o * lastDim + j] * invRms * gamma[j];
+        dst[rowBase + j] = src[rowBase + j] * invRms * gamma[j];
 }
 
 static constexpr int kRmsNormFwdBlockThreshold = 64;
@@ -605,73 +652,88 @@ __device__ float gelu_tanh_dev(float x) {
 }
 
 __global__ void gelu_kernel(const float* src, float* dst, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        dst[i] = gelu_tanh_dev(src[i]);
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
     }
+    const int i = (int)i_ll;
+    dst[i] = gelu_tanh_dev(src[i]);
 }
 
 __global__ void sigmoid_kernel(const float* src, float* dst, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        float x = src[i];
-        float s;
-        if (x >= 20.f) {
-            s = 1.f;
-        } else if (x <= -20.f) {
-            s = 0.f;
-        } else {
-            s = 1.f / (1.f + expf(-x));
-        }
-        dst[i] = s;
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
     }
+    const int i = (int)i_ll;
+    float x = src[i];
+    float s;
+    if (x >= 20.f) {
+        s = 1.f;
+    } else if (x <= -20.f) {
+        s = 0.f;
+    } else {
+        s = 1.f / (1.f + expf(-x));
+    }
+    dst[i] = s;
 }
 
 __global__ void mul_kernel(const float* a, const float* b, float* c, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        c[i] = a[i] * b[i];
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
     }
+    const int i = (int)i_ll;
+    c[i] = a[i] * b[i];
 }
 
 __global__ void mul_scalar_kernel(const float* a, float* b, int n, float scalar) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        b[i] = a[i] * scalar;
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
     }
+    const int i = (int)i_ll;
+    b[i] = a[i] * scalar;
 }
 
 __global__ void scale_inplace_kernel(float* a, int n, float scalar) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        a[i] *= scalar;
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
     }
+    const int i = (int)i_ll;
+    a[i] *= scalar;
 }
 
 __global__ void sum_squares_kernel(const float* src, float* out, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        float v = src[i];
-        atomicAdd(out, v * v);
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
     }
+    const int i = (int)i_ll;
+    float v = src[i];
+    atomicAdd(out, v * v);
 }
 
 /** Для устойчивой суммы квадратов: далее cublasDdot(dst,dst) в double. */
 __global__ void float_to_double_kernel(const float* src, double* dst, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        dst[i] = (double) src[i];
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
     }
+    const int i = (int)i_ll;
+    dst[i] = (double) src[i];
 }
 
 __global__ void adamw_step_kernel(
         float* param, const float* grad, float* m, float* v,
         float learningRate, float beta1, float beta2, float epsilon,
         float weightDecay, float invBias1, float invBias2, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) {
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
         return;
     }
+    const int i = (int)i_ll;
     float gi = grad[i];
     float mi = beta1 * m[i] + (1.f - beta1) * gi;
     float vi = beta2 * v[i] + (1.f - beta2) * gi * gi;
@@ -723,11 +785,12 @@ __global__ void adamw_step_kernel_segments(
 
 __global__ void embedding_token_fwd_kernel(
         const float* tokens, const float* weights, float* out, int batch, int seqLen, int dModel, int vocabSize) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = batch * seqLen * dModel;
-    if (idx >= total) {
+    const long long total_ll = (long long)batch * (long long)seqLen * (long long)dModel;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int j = idx % dModel;
     int t0 = idx / dModel;
     int s = t0 % seqLen;
@@ -746,11 +809,12 @@ __global__ void embedding_token_fwd_kernel(
  */
 __global__ void embedding_token_fwd_kernel_fp16(
         const float* tokens, const float* weights, float* out, int batch, int seqLen, int dModel, int vocabSize) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = batch * seqLen * dModel;
-    if (idx >= total) {
+    const long long total_ll = (long long)batch * (long long)seqLen * (long long)dModel;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int j = idx % dModel;
     int t0 = idx / dModel;
     int s = t0 % seqLen;
@@ -766,11 +830,12 @@ __global__ void embedding_token_fwd_kernel_fp16(
 __global__ void embedding_token_bwd_kernel(
         const float* tokens, const float* gradOut, float* gradWeights,
         int batch, int seqLen, int dModel, int vocabSize) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = batch * seqLen * dModel;
-    if (idx >= total) {
+    const long long total_ll = (long long)batch * (long long)seqLen * (long long)dModel;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int j = idx % dModel;
     int t0 = idx / dModel;
     int s = t0 % seqLen;
@@ -785,11 +850,12 @@ __global__ void embedding_token_bwd_kernel(
 __global__ void embedding_position_bwd_kernel(
         const float* gradCombined, float* gradWeights,
         int batch, int seqLen, int dModel) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = batch * seqLen * dModel;
-    if (idx >= total) {
+    const long long total_ll = (long long)batch * (long long)seqLen * (long long)dModel;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int j = idx % dModel;
     int t0 = idx / dModel;
     int s = t0 % seqLen;
@@ -799,11 +865,12 @@ __global__ void embedding_position_bwd_kernel(
 /** x[b,s,j] += posWeights[posRowStart + s, j] (таблица [>=posRowStart+seqLen, dModel] row-major). */
 __global__ void add_position_embedding_broadcast_kernel(
         float* x, const float* posWeights, int posRowStart, int batch, int seqLen, int dModel) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = batch * seqLen * dModel;
-    if (idx >= total) {
+    const long long total_ll = (long long)batch * (long long)seqLen * (long long)dModel;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int j = idx % dModel;
     int t0 = idx / dModel;
     int s = t0 % seqLen;
@@ -812,11 +879,12 @@ __global__ void add_position_embedding_broadcast_kernel(
 
 __global__ void apply_causal_mask_3d_kernel(const float* scores, const float* mask, float* out,
                                             int batch, int seqLen) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = batch * seqLen * seqLen;
-    if (idx >= total) {
+    const long long total_ll = (long long)batch * (long long)seqLen * (long long)seqLen;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int j = idx % seqLen;
     int i = idx / seqLen;
     int queryRow = i % seqLen;
@@ -824,11 +892,12 @@ __global__ void apply_causal_mask_3d_kernel(const float* scores, const float* ma
 }
 
 __global__ void transpose_2d_last_kernel(const float* src, float* dst, int d0, int d1, int d2) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = d0 * d1 * d2;
-    if (idx >= total) {
+    const long long total_ll = (long long)d0 * (long long)d1 * (long long)d2;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int c = idx % d2;
     int t = idx / d2;
     int b = t % d1;
@@ -838,11 +907,12 @@ __global__ void transpose_2d_last_kernel(const float* src, float* dst, int d0, i
 }
 
 __global__ void split_heads_kernel(const float* src, float* dst, int batch, int seqLen, int dModel, int numHeads) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = batch * seqLen * dModel;
-    if (idx >= total) {
+    const long long total_ll = (long long)batch * (long long)seqLen * (long long)dModel;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int dHead = dModel / numHeads;
     int j = idx % dModel;
     int t = idx / dModel;
@@ -860,11 +930,12 @@ __global__ void split_heads_kernel(const float* src, float* dst, int batch, int 
 /** Головы K или V в row-major [batch, H, seq, dHead]: копия среза батча в кэш {@code head * maxSeqLen * dHead + pos * dHead}. */
 __global__ void kv_heads4d_to_cache_kernel(
         const float* src, float* dst, int numHeads, int seqLen, int maxSeqLen, int dHead) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = numHeads * seqLen * dHead;
-    if (idx >= total) {
+    const long long total_ll = (long long)numHeads * (long long)seqLen * (long long)dHead;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int j = idx % dHead;
     int s = (idx / dHead) % seqLen;
     int h = idx / (seqLen * dHead);
@@ -874,12 +945,17 @@ __global__ void kv_heads4d_to_cache_kernel(
 }
 
 __global__ void concat_heads_kernel(const float* src, float* dst, int batch, int numHeads, int seqLen, int dHead) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int dModel = numHeads * dHead;
-    int total = batch * seqLen * dModel;
-    if (idx >= total) {
+    const long long dModel_ll = (long long)numHeads * (long long)dHead;
+    if (dModel_ll > (long long)INT_MAX) {
         return;
     }
+    const int dModel = (int)dModel_ll;
+    const long long total_ll = (long long)batch * (long long)seqLen * dModel_ll;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
+        return;
+    }
+    const int idx = (int)idx_ll;
     int j = idx % dModel;
     int t = idx / dModel;
     int i = t % seqLen;
@@ -896,12 +972,14 @@ __global__ void concat_heads_kernel(const float* src, float* dst, int batch, int
 
 __global__ void rope_4d_kernel(const float* src, float* dst, int batch, int numHeads, int seqLen, int dHead,
                                const int* positions, int posLen, int posBaseOffset) {
-    int pairIdx = blockIdx.x * blockDim.x + threadIdx.x;
-    int halfPairs = dHead / 2;
-    int total = batch * numHeads * seqLen * halfPairs;
-    if (pairIdx >= total) {
+    const int halfPairs = dHead / 2;
+    const long long total_ll =
+            (long long)batch * (long long)numHeads * (long long)seqLen * (long long)halfPairs;
+    const long long pairIdx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || pairIdx_ll >= total_ll) {
         return;
     }
+    const int pairIdx = (int)pairIdx_ll;
     int j = pairIdx % halfPairs;
     int tmp = pairIdx / halfPairs;
     int i = tmp % seqLen;
@@ -928,12 +1006,14 @@ __global__ void rope_4d_kernel(const float* src, float* dst, int batch, int numH
 
 __global__ void rope_4d_bwd_kernel(const float* gradY, float* gradX, int batch, int numHeads, int seqLen, int dHead,
                                    const int* positions, int posLen, int posBaseOffset) {
-    int pairIdx = blockIdx.x * blockDim.x + threadIdx.x;
-    int halfPairs = dHead / 2;
-    int total = batch * numHeads * seqLen * halfPairs;
-    if (pairIdx >= total) {
+    const int halfPairs = dHead / 2;
+    const long long total_ll =
+            (long long)batch * (long long)numHeads * (long long)seqLen * (long long)halfPairs;
+    const long long pairIdx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || pairIdx_ll >= total_ll) {
         return;
     }
+    const int pairIdx = (int)pairIdx_ll;
     int j = pairIdx % halfPairs;
     int tmp = pairIdx / halfPairs;
     int i = tmp % seqLen;
@@ -957,12 +1037,13 @@ __global__ void rope_4d_bwd_kernel(const float* gradY, float* gradX, int batch, 
     gradX[idx2] += -gy1 * s + gy2 * c;
 }
 
-__global__ void softmax_last_dim_bwd_kernel(const float* gOut, const float* p, float* gIn, int nrows, int inner) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= nrows) {
+__global__ void softmax_last_dim_bwd_kernel(
+        const float* gOut, const float* p, float* gIn, long long nrows_total, long long row_offset, int inner) {
+    const long long row = row_offset + (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= nrows_total) {
         return;
     }
-    int base = row * inner;
+    const ptrdiff_t base = (ptrdiff_t) row * inner;
     float dot = 0.f;
     for (int j = 0; j < inner; j++) {
         dot += p[base + j] * gOut[base + j];
@@ -1030,11 +1111,12 @@ static void launch_softmax_last_dim_bwd_block_chunked(
 /** Транспонирование последних двух измерений: [batch, d1, d2] → [batch, d2, d1] */
 static __global__ void transpose_last2_3d_kernel(const float* __restrict__ src, float* __restrict__ dst,
         int batch, int d1, int d2) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = batch * d1 * d2;
-    if (idx >= total) {
+    const long long total_ll = (long long)batch * (long long)d1 * (long long)d2;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int k = idx % d2;
     int tmp = idx / d2;
     int j = tmp % d1;
@@ -1046,20 +1128,23 @@ static __global__ void transpose_last2_3d_kernel(const float* __restrict__ src, 
 
 /** Scale inplace (extra версия для attention) */
 static __global__ void scale_inplace_kernel_extra(float* __restrict__ a, int n, float scalar) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        a[i] *= scalar;
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
     }
+    const int i = (int)i_ll;
+    a[i] *= scalar;
 }
 
 /** Добавление causal mask inplace: scores += mask */
 static __global__ void add_mask_inplace_kernel(float* __restrict__ scores, const float* __restrict__ mask,
         int batch, int seqLen) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = batch * seqLen * seqLen;
-    if (idx >= total) {
+    const long long total_ll = (long long)batch * (long long)seqLen * (long long)seqLen;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int j = idx % seqLen;
     int row = idx / seqLen;
     int i = row % seqLen;
@@ -1067,33 +1152,40 @@ static __global__ void add_mask_inplace_kernel(float* __restrict__ scores, const
 }
 
 __global__ void multiply_bwd_kernel(const float* gOut, const float* a, const float* b, float* gA, float* gB, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        gA[i] += gOut[i] * b[i];
-        gB[i] += gOut[i] * a[i];
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
     }
+    const int i = (int)i_ll;
+    gA[i] += gOut[i] * b[i];
+    gB[i] += gOut[i] * a[i];
 }
 
 __global__ void accumulate_add_kernel(float* acc, const float* delta, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        acc[i] += delta[i];
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
     }
+    const int i = (int)i_ll;
+    acc[i] += delta[i];
 }
 
 /** acc[i] += delta[i] * scale (scale = -1 для вычитания delta из acc). */
 __global__ void accumulate_scaled_add_kernel(float* acc, const float* delta, float scale, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        acc[i] += delta[i] * scale;
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
     }
+    const int i = (int)i_ll;
+    acc[i] += delta[i] * scale;
 }
 
 __global__ void gelu_bwd_kernel(const float* gOut, const float* inp, float* gIn, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) {
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
         return;
     }
+    const int i = (int)i_ll;
     float x = inp[i];
     const float SQRT_2_PI = 0.7978845608f;
     const float COEF = 0.044715f;
@@ -1107,10 +1199,11 @@ __global__ void gelu_bwd_kernel(const float* gOut, const float* inp, float* gIn,
 }
 
 __global__ void sigmoid_bwd_kernel(const float* gOut, const float* inp, float* gIn, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) {
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
         return;
     }
+    const int i = (int)i_ll;
     float x = inp[i];
     float s;
     if (x >= 20.f) {
@@ -1124,19 +1217,24 @@ __global__ void sigmoid_bwd_kernel(const float* gOut, const float* inp, float* g
 }
 
 __global__ void relu_bwd_kernel(const float* gOut, const float* inp, float* gIn, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n && inp[i] > 0.f) {
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
+    }
+    const int i = (int)i_ll;
+    if (inp[i] > 0.f) {
         gIn[i] += gOut[i];
     }
 }
 
 __global__ void layer_norm_bwd_kernel(const float* gOut, const float* x, const float* gamma, float eps,
                                       float* gX, float* gGamma, float* gBeta, int outer, int lastDim) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= outer) {
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)outer) {
         return;
     }
-    int base = i * lastDim;
+    const int i = (int)i_ll;
+    const ptrdiff_t base = (ptrdiff_t)i * (ptrdiff_t)lastDim;
     float mean = 0.f;
     for (int j = 0; j < lastDim; j++) {
         mean += x[base + j];
@@ -1173,11 +1271,12 @@ __global__ void layer_norm_bwd_kernel(const float* gOut, const float* x, const f
 
 __global__ void rms_norm_bwd_kernel(const float* gOut, const float* x, const float* gamma, float eps,
                                     float* gX, float* gGamma, int outer, int lastDim) {
-    int o = blockIdx.x * blockDim.x + threadIdx.x;
-    if (o >= outer) {
+    const long long o_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (o_ll >= (long long)outer) {
         return;
     }
-    int base = o * lastDim;
+    const int o = (int)o_ll;
+    const ptrdiff_t base = (ptrdiff_t)o * (ptrdiff_t)lastDim;
     float sumSq = 0.f;
     for (int j = 0; j < lastDim; j++) {
         float v = x[base + j];
@@ -1196,7 +1295,7 @@ __global__ void rms_norm_bwd_kernel(const float* gOut, const float* x, const flo
 
     for (int j = 0; j < lastDim; j++) {
         float xj = x[base + j];
-        int idx = base + j;
+        const ptrdiff_t idx = base + (ptrdiff_t)j;
         atomicAdd(&gGamma[j], gOut[idx] * xj * invRms);
         gX[idx] += invRms * gamma[j] * gOut[idx] - invRms * invRms * invRms * xj * meanXGrad;
     }
@@ -1215,11 +1314,12 @@ __global__ void rms_norm_bwd_block_kernel(
     const int o = blockIdx.x;
     if (o >= outer) return;
     const int tid = threadIdx.x;
+    const ptrdiff_t rowBase = (ptrdiff_t)o * (ptrdiff_t)lastDim;
 
     // Вычислить sumSq = sum(x[j]^2) по строке
     float sumSq = 0.f;
     for (int j = tid; j < lastDim; j += kSoftmaxBlockDim)
-        sumSq += x[o * lastDim + j] * x[o * lastDim + j];
+        sumSq += x[rowBase + j] * x[rowBase + j];
     sumSq = blockReduceSum256(sumSq, smem);
 
     float rms = sqrtf(sumSq / (float) lastDim + eps);
@@ -1228,13 +1328,13 @@ __global__ void rms_norm_bwd_block_kernel(
     // Вычислить sumXGrad = sum(x[j] * gamma[j] * gOut[j])
     float localXG = 0.f;
     for (int j = tid; j < lastDim; j += kSoftmaxBlockDim)
-        localXG += x[o * lastDim + j] * gamma[j] * gOut[o * lastDim + j];
+        localXG += x[rowBase + j] * gamma[j] * gOut[rowBase + j];
     float sumXGrad = blockReduceSum256(localXG, smem);
     float meanXGrad = sumXGrad / (float) lastDim;
 
     // Записать gX; gGamma накапливается атомарно (across outer строк)
     for (int j = tid; j < lastDim; j += kSoftmaxBlockDim) {
-        int idx = o * lastDim + j;
+        const ptrdiff_t idx = rowBase + (ptrdiff_t)j;
         atomicAdd(&gGamma[j], gOut[idx] * x[idx] * invRms);
         gX[idx] += invRms * gamma[j] * gOut[idx] - invRms * invRms * invRms * x[idx] * meanXGrad;
     }
@@ -1257,30 +1357,74 @@ static void launch_rms_norm_bwd(const float* gOut, const float* x, const float* 
     CUDA_KERNEL_CHECK();
 }
 
-static void launch_softmax_last_dim(const float* src, float* dst, int nrows, int inner, bool use_fp16_softmax) {
+static void launch_softmax_last_dim(const float* src, float* dst, long long nrows_ll, int inner, bool use_fp16_softmax) {
+    if (nrows_ll <= 0 || inner < 0) {
+        return;
+    }
+    if (jgpt_softmax_row_inner_offset_overflows(nrows_ll, inner)) {
+        fprintf(stderr, "launch_softmax_last_dim: row*inner offset overflow\n");
+        return;
+    }
     if (inner >= kSoftmaxBlockThreshold) {
-        size_t smem = kSoftmaxNumWarps * sizeof(float);
-        softmax_last_dim_block_kernel<<<nrows, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(src, dst, nrows, inner);
+        launch_softmax_last_dim_block_chunked(src, dst, nrows_ll, inner, kTensorCudaStream);
     } else {
-        int threads = jgpt_cuda_get_optimal_block_size();
-        int blocks = (nrows + threads - 1) / threads;
-        if (use_fp16_softmax) {
-            softmax_last_dim_kernel_fp16<<<blocks, threads, 0, kTensorCudaStream>>>(src, dst, nrows, inner);
-        } else {
-            softmax_last_dim_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(src, dst, nrows, inner);
+        const int threads = jgpt_cuda_get_optimal_block_size();
+        const unsigned int max_blocks = jgpt_extra_cuda_max_grid_x();
+        const long long max_rows_per_launch = (long long) max_blocks * (long long) threads;
+        for (long long row_off = 0; row_off < nrows_ll;) {
+            const long long remain = nrows_ll - row_off;
+            const long long chunk_rows = std::min(remain, max_rows_per_launch);
+            const unsigned int blocks = static_cast<unsigned int>((chunk_rows + (long long) threads - 1LL) / (long long) threads);
+            if (blocks == 0u) {
+                break;
+            }
+            if (use_fp16_softmax) {
+                softmax_last_dim_kernel_fp16<<<blocks, threads, 0, kTensorCudaStream>>>(
+                        src, dst, nrows_ll, row_off, inner);
+            } else {
+                softmax_last_dim_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(src, dst, nrows_ll, row_off, inner);
+            }
+            const cudaError_t le = cudaGetLastError();
+            if (le != cudaSuccess) {
+                fprintf(stderr, "launch_softmax_last_dim (small): %s\n", cudaGetErrorString(le));
+                return;
+            }
+            row_off += chunk_rows;
         }
     }
     CUDA_KERNEL_CHECK();
 }
 
-static void launch_softmax_last_dim_bwd(const float* gOut, const float* p, float* gIn, int nrows, int inner) {
+static void launch_softmax_last_dim_bwd(const float* gOut, const float* p, float* gIn, long long nrows_ll, int inner) {
+    if (nrows_ll <= 0 || inner < 0) {
+        return;
+    }
+    if (jgpt_softmax_row_inner_offset_overflows(nrows_ll, inner)) {
+        fprintf(stderr, "launch_softmax_last_dim_bwd: row*inner offset overflow\n");
+        return;
+    }
     if (inner >= kSoftmaxBlockThreshold) {
-        launch_softmax_last_dim_bwd_block_chunked(
-                gOut, p, gIn, static_cast<long long>(nrows), inner, kTensorCudaStream);
+        launch_softmax_last_dim_bwd_block_chunked(gOut, p, gIn, nrows_ll, inner, kTensorCudaStream);
     } else {
-        int threads = jgpt_cuda_get_optimal_block_size();
-        int blocks = (nrows + threads - 1) / threads;
-        softmax_last_dim_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(gOut, p, gIn, nrows, inner);
+        const int threads = jgpt_cuda_get_optimal_block_size();
+        const unsigned int max_blocks = jgpt_extra_cuda_max_grid_x();
+        const long long max_rows_per_launch = (long long) max_blocks * (long long) threads;
+        for (long long row_off = 0; row_off < nrows_ll;) {
+            const long long remain = nrows_ll - row_off;
+            const long long chunk_rows = std::min(remain, max_rows_per_launch);
+            const unsigned int blocks = static_cast<unsigned int>((chunk_rows + (long long) threads - 1LL) / (long long) threads);
+            if (blocks == 0u) {
+                break;
+            }
+            softmax_last_dim_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
+                    gOut, p, gIn, nrows_ll, row_off, inner);
+            const cudaError_t le = cudaGetLastError();
+            if (le != cudaSuccess) {
+                fprintf(stderr, "launch_softmax_last_dim_bwd (small): %s\n", cudaGetErrorString(le));
+                return;
+            }
+            row_off += chunk_rows;
+        }
     }
     CUDA_KERNEL_CHECK();
 }
@@ -1314,10 +1458,12 @@ static void launch_cross_entropy_i32(const float* logits, const int* targets_i, 
 }
 
 __global__ void float_token_ids_to_int32_kernel(const float* src, int* dst, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        dst[i] = static_cast<int>(src[i]);
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
     }
+    const int i = (int)i_ll;
+    dst[i] = static_cast<int>(src[i]);
 }
 
 static void launch_float_to_int32_targets(const float* d_float_src, int* d_int_dst, int n) {
@@ -2041,14 +2187,16 @@ static bool flash_attn_fwd_run(
 {
     const int num_q_tiles = (S + kFaBr - 1) / kFaBr;
     const long long grid_ll = (long long) BH * (long long) num_q_tiles;
-    if (grid_ll <= 0LL || grid_ll > static_cast<long long>(INT_MAX)) {
+    const long long max_grid_ll = static_cast<long long>(jgpt_extra_cuda_max_grid_x());
+    if (grid_ll <= 0LL || grid_ll > max_grid_ll) {
         fprintf(
                 stderr,
-                "flash_attn_fwd: grid overflow BH=%d S=%d num_q_tiles=%d (blocks=%lld)\n",
+                "flash_attn_fwd: grid overflow BH=%d S=%d num_q_tiles=%d (blocks=%lld max_grid=%lld)\n",
                 BH,
                 S,
                 num_q_tiles,
-                static_cast<long long>(grid_ll));
+                static_cast<long long>(grid_ll),
+                static_cast<long long>(max_grid_ll));
         return false;
     }
     const int grid = static_cast<int>(grid_ll);
@@ -2096,7 +2244,19 @@ static bool flash_attn_bwd_run(
         return false;
     }
     const int total_rows = static_cast<int>(total_rows_ll);
-    const int d_grid = (total_rows + 63) / 64;
+    const long long max_grid_ll_bwd = static_cast<long long>(jgpt_extra_cuda_max_grid_x());
+    const long long d_grid_ll = (total_rows_ll + 63LL) / 64LL;
+    if (d_grid_ll > max_grid_ll_bwd) {
+        fprintf(
+                stderr,
+                "flash_attn_bwd: D kernel grid overflow BH=%d S=%d (d_grid=%lld max_grid=%lld)\n",
+                BH,
+                S,
+                static_cast<long long>(d_grid_ll),
+                static_cast<long long>(max_grid_ll_bwd));
+        return false;
+    }
+    const int d_grid = static_cast<int>(d_grid_ll);
     flash_attn_compute_D_kernel<<<d_grid, 64, 0, kTensorCudaStream>>>(
             d_do, d_o, jgpt_extra::jgpt_extra_tls().flash_attn.d_D, BH, S);
     CUDA_KERNEL_CHECK_RV(false);
@@ -2107,14 +2267,15 @@ static bool flash_attn_bwd_run(
         + 2 * kFaBr * kFaDh * sizeof(float);                             // q + do per q_tile
     const int num_kv_tiles = (S + kFaBc - 1) / kFaBc;
     const long long grid_dkdv_ll = (long long) BH * (long long) num_kv_tiles;
-    if (grid_dkdv_ll <= 0LL || grid_dkdv_ll > static_cast<long long>(INT_MAX)) {
+    if (grid_dkdv_ll <= 0LL || grid_dkdv_ll > max_grid_ll_bwd) {
         fprintf(
                 stderr,
-                "flash_attn_bwd dkdv: grid overflow BH=%d S=%d num_kv_tiles=%d (blocks=%lld)\n",
+                "flash_attn_bwd dkdv: grid overflow BH=%d S=%d num_kv_tiles=%d (blocks=%lld max_grid=%lld)\n",
                 BH,
                 S,
                 num_kv_tiles,
-                static_cast<long long>(grid_dkdv_ll));
+                static_cast<long long>(grid_dkdv_ll),
+                static_cast<long long>(max_grid_ll_bwd));
         return false;
     }
     const int grid_dkdv = static_cast<int>(grid_dkdv_ll);
@@ -2134,14 +2295,15 @@ static bool flash_attn_bwd_run(
         + 2 * kFaBc * kFaDh * sizeof(float);                             // k + v per kv_tile
     const int num_q_tiles = (S + kFaBr - 1) / kFaBr;
     const long long grid_dq_ll = (long long) BH * (long long) num_q_tiles;
-    if (grid_dq_ll <= 0LL || grid_dq_ll > static_cast<long long>(INT_MAX)) {
+    if (grid_dq_ll <= 0LL || grid_dq_ll > max_grid_ll_bwd) {
         fprintf(
                 stderr,
-                "flash_attn_bwd dq: grid overflow BH=%d S=%d num_q_tiles=%d (blocks=%lld)\n",
+                "flash_attn_bwd dq: grid overflow BH=%d S=%d num_q_tiles=%d (blocks=%lld max_grid=%lld)\n",
                 BH,
                 S,
                 num_q_tiles,
-                static_cast<long long>(grid_dq_ll));
+                static_cast<long long>(grid_dq_ll),
+                static_cast<long long>(max_grid_ll_bwd));
         return false;
     }
     const int grid_dq = static_cast<int>(grid_dq_ll);

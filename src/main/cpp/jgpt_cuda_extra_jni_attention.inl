@@ -284,10 +284,6 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
         return;
     }
 
-    int threads = jgpt_cuda_get_optimal_block_size();
-    (void) threads;
-    int blocksProb = (batch * seqLen * seqLen + threads - 1) / threads;
-    (void) blocksProb;
     // go × V^T → dp: transB GEMM
     if (!batched_sgemm_row_major_transB(go, v, d_dp, batch, seqLen, dVDim, seqLen, 1.0f, 0.0f)) {
         return;

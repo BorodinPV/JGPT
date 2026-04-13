@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.18)
 project(jgpt_cuda LANGUAGES CXX CUDA)
 
+# Сборка: для CUDA 12.x host-компилятор обычно GCC ≤ 13 (см. cuda_runtime host_config.h).
+# При GCC 14+: задать CMAKE_CUDA_HOST_COMPILER на поддерживаемый gcc или добавить в target_compile_options
+# для CUDA языка: -allow-unsupported-compiler (на свой риск).
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
 

@@ -94,6 +94,28 @@ static inline bool jgpt_jni_long_elems_invalid(long long n_elems, size_t elem_si
     return n > smax / esz;
 }
 
+/**
+ * Произведение batch*seqLen*dModel для размеров сетки/итераторов в {@code int}:
+ * все сомножители > 0 и произведение не больше {@code INT_MAX}.
+ */
+static inline bool jgpt_bsd_product_fits_int(int batch, int seqLen, int dModel) {
+    if (batch <= 0 || seqLen <= 0 || dModel <= 0) {
+        return false;
+    }
+    const long long p =
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel);
+    return p <= static_cast<long long>(INT_MAX);
+}
+
+/** Два положительных int: {@code a*b} без переполнения {@code int} (для сеток и линейных индексов). */
+static inline bool jgpt_pair_product_fits_int(int a, int b) {
+    if (a <= 0 || b <= 0) {
+        return false;
+    }
+    const long long p = static_cast<long long>(a) * static_cast<long long>(b);
+    return p <= static_cast<long long>(INT_MAX);
+}
+
 /** JNI {@code jlong} как размер в байтах: неположительный или больше {@code SIZE_MAX}. */
 static inline bool jgpt_jni_long_bytes_invalid(long long num_bytes) {
     if (num_bytes <= 0) {

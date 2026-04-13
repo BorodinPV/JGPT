@@ -107,8 +107,12 @@ static bool any_nonfinite_flag_ensure() {
 }
 
 __global__ void any_nonfinite_kernel(const float* src, unsigned int* flag, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n && !isfinite(src[i])) {
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
+    }
+    const int i = (int)i_ll;
+    if (!isfinite(src[i])) {
         atomicOr(flag, 1u);
     }
 }
@@ -191,8 +195,12 @@ JNIEXPORT jfloat JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftma
     JNIEnv* env, jclass clazz, jlong dLogits, jfloatArray hTargets, jlong dGrad,
     jint batch, jint seqLen, jint vocab, jfloat gradScale, jboolean useFp16) {
     (void) clazz;
-    int nrows = batch * seqLen;
-    if (nrows <= 0 || vocab <= 0) return 0.f;
+    if (batch <= 0 || seqLen <= 0 || vocab <= 0) return 0.f;
+    if (!jgpt_pair_product_fits_int(batch, seqLen)) {
+        fprintf(stderr, "TensorOpsGPU CE GPUDevice: batch*seqLen exceeds INT_MAX\n");
+        return 0.f;
+    }
+    const int nrows = static_cast<int>(static_cast<long long>(batch) * static_cast<long long>(seqLen));
     JGPT_CUDA_GUARD_1D(nrows, sizeof(float), return 0.f;);
     jgpt_cuda_ensure_stream();
 
@@ -238,10 +246,14 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     JNIEnv* env, jclass clazz, jlong dLogits, jfloatArray hTargets, jlong dGrad,
     jint batch, jint seqLen, jint vocab, jfloat gradScale, jboolean useFp16) {
     (void) clazz;
-    int nrows = batch * seqLen;
-    if (nrows <= 0 || vocab <= 0) {
+    if (batch <= 0 || seqLen <= 0 || vocab <= 0) {
         return;
     }
+    if (!jgpt_pair_product_fits_int(batch, seqLen)) {
+        fprintf(stderr, "TensorOpsGPU CE async float targets: batch*seqLen exceeds INT_MAX\n");
+        return;
+    }
+    const int nrows = static_cast<int>(static_cast<long long>(batch) * static_cast<long long>(seqLen));
     JGPT_CUDA_GUARD_1D(nrows, sizeof(float), return;);
     jgpt_cuda_ensure_stream();
 
@@ -309,8 +321,12 @@ JNIEXPORT jfloat JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftma
     jint batch, jint seqLen, jint vocab, jfloat gradScale, jboolean useFp16) {
     (void) env;
     (void) clazz;
-    int nrows = batch * seqLen;
-    if (nrows <= 0 || vocab <= 0 || dTargetsInt == 0) return 0.f;
+    if (batch <= 0 || seqLen <= 0 || vocab <= 0 || dTargetsInt == 0) return 0.f;
+    if (!jgpt_pair_product_fits_int(batch, seqLen)) {
+        fprintf(stderr, "TensorOpsGPU CE GPUDevice i32 targets: batch*seqLen exceeds INT_MAX\n");
+        return 0.f;
+    }
+    const int nrows = static_cast<int>(static_cast<long long>(batch) * static_cast<long long>(seqLen));
     JGPT_CUDA_GUARD_1D(nrows, sizeof(float), return 0.f;);
     jgpt_cuda_ensure_stream();
 
@@ -346,10 +362,14 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     jint batch, jint seqLen, jint vocab, jfloat gradScale, jboolean useFp16) {
     (void) env;
     (void) clazz;
-    int nrows = batch * seqLen;
-    if (nrows <= 0 || vocab <= 0 || dTargetsInt == 0) {
+    if (batch <= 0 || seqLen <= 0 || vocab <= 0 || dTargetsInt == 0) {
         return;
     }
+    if (!jgpt_pair_product_fits_int(batch, seqLen)) {
+        fprintf(stderr, "TensorOpsGPU CE async i32 targets: batch*seqLen exceeds INT_MAX\n");
+        return;
+    }
+    const int nrows = static_cast<int>(static_cast<long long>(batch) * static_cast<long long>(seqLen));
     JGPT_CUDA_GUARD_1D(nrows, sizeof(float), return;);
     jgpt_cuda_ensure_stream();
 
@@ -415,18 +435,19 @@ __global__ void lm_head_candidate_logits_kernel(
     int dModel,
     int vocab,
     int candidates) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = rows * candidates;
-    if (idx >= total) {
+    const long long total_ll = (long long)rows * (long long)candidates;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int row = idx / candidates;
     int cid = candidateIds[idx];
     if (cid < 0 || cid >= vocab) {
         candidateLogits[idx] = -INFINITY;
         return;
     }
-    const float* hRow = normedHidden + row * dModel;
+    const float* hRow = normedHidden + (ptrdiff_t)row * (ptrdiff_t)dModel;
     const float* col = lmHead + cid;
     float acc = 0.f;
     for (int d = 0; d < dModel; d++) {
@@ -437,18 +458,19 @@ __global__ void lm_head_candidate_logits_kernel(
 
 __global__ void gather_logits_by_ids_kernel(
     const float* logits, const int* candidateIds, float* candidateLogits, int rows, int vocab, int candidates) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = rows * candidates;
-    if (idx >= total) {
+    const long long total_ll = (long long)rows * (long long)candidates;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int row = idx / candidates;
     int cid = candidateIds[idx];
     if (cid < 0 || cid >= vocab) {
         candidateLogits[idx] = -INFINITY;
         return;
     }
-    candidateLogits[idx] = logits[row * vocab + cid];
+    candidateLogits[idx] = logits[(ptrdiff_t)row * (ptrdiff_t)vocab + (ptrdiff_t)cid];
 }
 
 __global__ void sampled_ce_first_slot_kernel(
@@ -460,11 +482,12 @@ __global__ void sampled_ce_first_slot_kernel(
     int rows,
     int candidates,
     float gradScale) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= rows) {
+    const long long row_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (row_ll >= (long long)rows) {
         return;
     }
-    int base = row * candidates;
+    const int row = (int)row_ll;
+    const ptrdiff_t base = (ptrdiff_t)row * (ptrdiff_t)candidates;
     if (candidateIds[base] < 0) {
         for (int j = 0; j < candidates; j++) {
             candidateGrad[base + j] = 0.f;
@@ -515,15 +538,16 @@ __global__ void sampled_lm_head_dhidden_kernel(
     int dModel,
     int vocab,
     int candidates) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = rows * dModel;
-    if (idx >= total) {
+    const long long total_ll = (long long)rows * (long long)dModel;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int row = idx / dModel;
     int d = idx % dModel;
-    int base = row * candidates;
-    int wBase = d * vocab;
+    const ptrdiff_t base = (ptrdiff_t)row * (ptrdiff_t)candidates;
+    const ptrdiff_t wBase = (ptrdiff_t)d * (ptrdiff_t)vocab;
     float acc = 0.f;
     for (int j = 0; j < candidates; j++) {
         int cid = candidateIds[base + j];
@@ -544,11 +568,12 @@ __global__ void sampled_lm_head_dw_kernel(
     int dModel,
     int vocab,
     int candidates) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = rows * candidates;
-    if (idx >= total) {
+    const long long total_ll = (long long)rows * (long long)candidates;
+    const long long idx_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (total_ll > (long long)INT_MAX || idx_ll >= total_ll) {
         return;
     }
+    const int idx = (int)idx_ll;
     int row = idx / candidates;
     int cid = candidateIds[idx];
     if (cid < 0 || cid >= vocab) {
@@ -558,9 +583,9 @@ __global__ void sampled_lm_head_dw_kernel(
     if (grad == 0.f) {
         return;
     }
-    const float* hiddenRow = normedHidden + row * dModel;
+    const float* hiddenRow = normedHidden + (ptrdiff_t)row * (ptrdiff_t)dModel;
     for (int d = 0; d < dModel; d++) {
-        atomicAdd(&dLmHead[d * vocab + cid], hiddenRow[d] * grad);
+        atomicAdd(&dLmHead[(ptrdiff_t)d * (ptrdiff_t)vocab + (ptrdiff_t)cid], hiddenRow[d] * grad);
     }
 }
 
@@ -578,7 +603,11 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_gatherLogitsByIdsGPU
     if (logits == nullptr || candidateIds == nullptr || candidateLogits == nullptr) {
         return;
     }
-    int total = rows * candidates;
+    if (!jgpt_pair_product_fits_int(rows, candidates)) {
+        fprintf(stderr, "gatherLogitsByIdsGPUDevice: rows*candidates exceeds INT_MAX\n");
+        return;
+    }
+    const int total = static_cast<int>(static_cast<long long>(rows) * static_cast<long long>(candidates));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     gather_logits_by_ids_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
@@ -600,7 +629,11 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_lmHeadCandidateLogit
     if (normedHidden == nullptr || lmHead == nullptr || candidateIds == nullptr || candidateLogits == nullptr) {
         return;
     }
-    int total = rows * candidates;
+    if (!jgpt_pair_product_fits_int(rows, candidates)) {
+        fprintf(stderr, "lmHeadCandidateLogitsGPUDevice: rows*candidates exceeds INT_MAX\n");
+        return;
+    }
+    const int total = static_cast<int>(static_cast<long long>(rows) * static_cast<long long>(candidates));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     lm_head_candidate_logits_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
@@ -662,13 +695,21 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sampledLmHeadBackwar
             || lmHeadWeights == nullptr || dHiddenBuf == nullptr || dLmHeadBuf == nullptr) {
         return;
     }
+    if (!jgpt_pair_product_fits_int(rows, dModel)) {
+        fprintf(stderr, "sampledLmHeadBackwardGPUDevice: rows*dModel exceeds INT_MAX\n");
+        return;
+    }
+    if (!jgpt_pair_product_fits_int(rows, candidates)) {
+        fprintf(stderr, "sampledLmHeadBackwardGPUDevice: rows*candidates exceeds INT_MAX\n");
+        return;
+    }
     int threads = jgpt_cuda_get_optimal_block_size();
-    int dhTotal = rows * dModel;
+    const int dhTotal = static_cast<int>(static_cast<long long>(rows) * static_cast<long long>(dModel));
     int dhBlocks = (dhTotal + threads - 1) / threads;
     sampled_lm_head_dhidden_kernel<<<dhBlocks, threads, 0, kTensorCudaStream>>>(
             candidateIds, candidateGrad, lmHeadWeights, dHiddenBuf, rows, dModel, vocab, candidates);
     CUDA_KERNEL_CHECK();
-    int gradTotal = rows * candidates;
+    const int gradTotal = static_cast<int>(static_cast<long long>(rows) * static_cast<long long>(candidates));
     int gradBlocks = (gradTotal + threads - 1) / threads;
     sampled_lm_head_dw_kernel<<<gradBlocks, threads, 0, kTensorCudaStream>>>(
             candidateIds, candidateGrad, normedHidden, dLmHeadBuf, rows, dModel, vocab, candidates);

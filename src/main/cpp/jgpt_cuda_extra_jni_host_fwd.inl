@@ -6,15 +6,18 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_softmaxLastDimGPU(
     JNIEnv* env, jclass clazz, jfloatArray h_src, jfloatArray h_dst, jint batch, jint mid, jint inner,
     jboolean useFp16Softmax) {
     (void) clazz;
-    int nrows = batch * mid;
-    if (nrows <= 0 || inner <= 0) {
+    if (batch <= 0 || mid <= 0 || inner <= 0) {
         return;
     }
-    if (check_size_overflow((size_t) nrows, (size_t) inner, sizeof(float))) {
+    const long long nrows_ll = static_cast<long long>(batch) * static_cast<long long>(mid);
+    if (nrows_ll <= 0) {
+        return;
+    }
+    if (check_size_overflow(static_cast<size_t>(nrows_ll), static_cast<size_t>(inner), sizeof(float))) {
         fprintf(stderr, "softmaxLastDimGPU: size overflow\n");
         return;
     }
-    size_t bytes = (size_t) nrows * (size_t) inner * sizeof(float);
+    const size_t bytes = static_cast<size_t>(nrows_ll) * static_cast<size_t>(inner) * sizeof(float);
     float *d_src = nullptr, *d_dst = nullptr;
     if (!softmax_pair_ensure(bytes, &d_src, &d_dst)) {
         return;
@@ -28,7 +31,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_softmaxLastDimGPU(
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
     env->ReleaseFloatArrayElements(h_src, p_src, JNI_ABORT);
 
-    launch_softmax_last_dim(d_src, d_dst, nrows, inner, useFp16Softmax == JNI_TRUE);
+    launch_softmax_last_dim(d_src, d_dst, nrows_ll, inner, useFp16Softmax == JNI_TRUE);
     CUDA_KERNEL_CHECK();
 
     jfloat* p_dst = env->GetFloatArrayElements(h_dst, nullptr);
@@ -598,12 +601,17 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyCausalMask3DGPU
     JNIEnv* env, jclass clazz, jfloatArray h_scores, jfloatArray h_mask, jfloatArray h_out, jint batch,
     jint seqLen) {
     (void) clazz;
-    int total = batch * seqLen * seqLen;
-    if (total <= 0) {
+    if (batch <= 0 || seqLen <= 0) {
         return;
     }
     JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, seqLen, return;);
     JGPT_CUDA_GUARD_MATF(seqLen, seqLen, return;);
+    const long long total_ll = static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(seqLen);
+    if (total_ll > static_cast<long long>(INT_MAX)) {
+        fprintf(stderr, "applyCausalMask3DGPU: total element count exceeds INT_MAX\n");
+        return;
+    }
+    const int total = static_cast<int>(total_ll);
     size_t bytes_s = (size_t) total * sizeof(float);
     size_t bytes_m = (size_t) seqLen * seqLen * sizeof(float);
     float *d_s = nullptr, *d_m = nullptr, *d_o = nullptr;
@@ -644,11 +652,16 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyCausalMask3DGPU
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_transpose2DLastGPU(
     JNIEnv* env, jclass clazz, jfloatArray h_src, jfloatArray h_dst, jint d0, jint d1, jint d2) {
     (void) clazz;
-    int total = d0 * d1 * d2;
-    if (total <= 0) {
+    if (d0 <= 0 || d1 <= 0 || d2 <= 0) {
         return;
     }
     JGPT_CUDA_GUARD_VOL3_F(d0, d1, d2, return;);
+    const long long total_ll = static_cast<long long>(d0) * static_cast<long long>(d1) * static_cast<long long>(d2);
+    if (total_ll > static_cast<long long>(INT_MAX)) {
+        fprintf(stderr, "transpose2DLastGPU: total element count exceeds INT_MAX\n");
+        return;
+    }
+    const int total = static_cast<int>(total_ll);
     size_t bytes = (size_t) total * sizeof(float);
     float *d_s = nullptr, *d_d = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_s), bytes));
@@ -682,10 +695,14 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_splitHeadsGPUDevice(
     JNIEnv* env, jclass clazz, jlong dSrc, jlong dDst, jint batch, jint seqLen, jint dModel, jint numHeads) {
     (void) env;
     (void) clazz;
-    int total = batch * seqLen * dModel;
-    if (dSrc == 0 || dDst == 0 || total <= 0) {
+    if (dSrc == 0 || dDst == 0 || batch <= 0 || seqLen <= 0 || dModel <= 0) {
         return;
     }
+    const long long total_ll = static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel);
+    if (total_ll <= 0 || total_ll > static_cast<long long>(INT_MAX)) {
+        return;
+    }
+    const int total = static_cast<int>(total_ll);
     const float* src = reinterpret_cast<const float*>(static_cast<uintptr_t>(dSrc));
     float* dst = reinterpret_cast<float*>(static_cast<uintptr_t>(dDst));
     int threads = jgpt_cuda_get_optimal_block_size();
@@ -697,11 +714,20 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_concatHeadsGPUDevice
     JNIEnv* env, jclass clazz, jlong dSrc, jlong dDst, jint batch, jint numHeads, jint seqLen, jint dHead) {
     (void) env;
     (void) clazz;
-    int dModel = numHeads * dHead;
-    int total = batch * seqLen * dModel;
-    if (dSrc == 0 || dDst == 0 || total <= 0) {
+    if (dSrc == 0 || dDst == 0 || batch <= 0 || numHeads <= 0 || seqLen <= 0 || dHead <= 0) {
         return;
     }
+    const long long dModel_ll = static_cast<long long>(numHeads) * static_cast<long long>(dHead);
+    if (dModel_ll > static_cast<long long>(INT_MAX)) {
+        return;
+    }
+    const int dModel = static_cast<int>(dModel_ll);
+    const long long total_ll =
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * dModel_ll;
+    if (total_ll <= 0 || total_ll > static_cast<long long>(INT_MAX)) {
+        return;
+    }
+    const int total = static_cast<int>(total_ll);
     const float* src = reinterpret_cast<const float*>(static_cast<uintptr_t>(dSrc));
     float* dst = reinterpret_cast<float*>(static_cast<uintptr_t>(dDst));
     int threads = jgpt_cuda_get_optimal_block_size();
@@ -732,7 +758,12 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_copyKvHeads4dToCache
     const float* srcBase = reinterpret_cast<const float*>(static_cast<uintptr_t>(dSrc));
     srcBase += (size_t) batchIdx * sliceFloats;
     float* dst = reinterpret_cast<float*>(static_cast<uintptr_t>(dDst));
-    int total = numHeads * seqLen * dHead;
+    const long long total_ll =
+            static_cast<long long>(numHeads) * static_cast<long long>(seqLen) * static_cast<long long>(dHead);
+    if (total_ll <= 0 || total_ll > static_cast<long long>(INT_MAX)) {
+        return;
+    }
+    const int total = static_cast<int>(total_ll);
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     kv_heads4d_to_cache_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
@@ -747,11 +778,14 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyRoPE4DGPU(
         return;
     }
     int halfPairs = dHead / 2;
-    int total = batch * numHeads * seqLen * halfPairs;
-    if (total <= 0) {
+    JGPT_CUDA_GUARD_CHAIN4_F(batch, numHeads, seqLen, dHead, return;);
+    const long long total_ll = static_cast<long long>(batch) * static_cast<long long>(numHeads)
+            * static_cast<long long>(seqLen) * static_cast<long long>(halfPairs);
+    if (total_ll <= 0 || total_ll > static_cast<long long>(INT_MAX)) {
+        fprintf(stderr, "applyRoPE4DGPU: total element count exceeds INT_MAX\n");
         return;
     }
-    JGPT_CUDA_GUARD_CHAIN4_F(batch, numHeads, seqLen, dHead, return;);
+    const int total = static_cast<int>(total_ll);
     size_t bytes = (size_t) batch * numHeads * seqLen * dHead * sizeof(float);
     float *d_s = nullptr, *d_d = nullptr;
     int *d_pos = nullptr;
@@ -814,14 +848,16 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyRoPE4DGPUDevice
     JNIEnv* env, jclass clazz, jlong dSrc, jlong dDst, jint batch, jint numHeads, jint seqLen, jint dHead,
     jintArray h_positions, jint posBaseOffset) {
     (void) clazz;
-    if (dSrc == 0 || dDst == 0 || dHead % 2 != 0) {
+    if (dSrc == 0 || dDst == 0 || dHead % 2 != 0 || batch <= 0 || numHeads <= 0 || seqLen <= 0) {
         return;
     }
     int halfPairs = dHead / 2;
-    int total = batch * numHeads * seqLen * halfPairs;
-    if (total <= 0) {
+    const long long total_ll = static_cast<long long>(batch) * static_cast<long long>(numHeads)
+            * static_cast<long long>(seqLen) * static_cast<long long>(halfPairs);
+    if (total_ll <= 0 || total_ll > static_cast<long long>(INT_MAX)) {
         return;
     }
+    const int total = static_cast<int>(total_ll);
     float* src = reinterpret_cast<float*>(static_cast<uintptr_t>(dSrc));
     float* dst = reinterpret_cast<float*>(static_cast<uintptr_t>(dDst));
     int* d_pos = nullptr;
@@ -857,11 +893,14 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyRoPEBackward4DG
         return;
     }
     int halfPairs = dHead / 2;
-    int total = batch * numHeads * seqLen * halfPairs;
-    if (total <= 0) {
+    JGPT_CUDA_GUARD_CHAIN4_F(batch, numHeads, seqLen, dHead, return;);
+    const long long total_ll = static_cast<long long>(batch) * static_cast<long long>(numHeads)
+            * static_cast<long long>(seqLen) * static_cast<long long>(halfPairs);
+    if (total_ll <= 0 || total_ll > static_cast<long long>(INT_MAX)) {
+        fprintf(stderr, "applyRoPEBackward4DGPU: total element count exceeds INT_MAX\n");
         return;
     }
-    JGPT_CUDA_GUARD_CHAIN4_F(batch, numHeads, seqLen, dHead, return;);
+    const int total = static_cast<int>(total_ll);
     size_t bytes = (size_t) batch * numHeads * seqLen * dHead * sizeof(float);
     float *d_gy = nullptr, *d_gx = nullptr;
     int *d_pos = nullptr;
@@ -932,11 +971,13 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_applyRoPEBackward4DG
         return;
     }
     int halfPairs = dHead / 2;
-    int total = batch * numHeads * seqLen * halfPairs;
-    if (total <= 0) {
+    JGPT_CUDA_GUARD_CHAIN4_F(batch, numHeads, seqLen, dHead, return;);
+    const long long total_ll = static_cast<long long>(batch) * static_cast<long long>(numHeads)
+            * static_cast<long long>(seqLen) * static_cast<long long>(halfPairs);
+    if (total_ll <= 0 || total_ll > static_cast<long long>(INT_MAX)) {
         return;
     }
-    JGPT_CUDA_GUARD_CHAIN4_F(batch, numHeads, seqLen, dHead, return;);
+    const int total = static_cast<int>(total_ll);
     const float* gradY = reinterpret_cast<const float*>(static_cast<uintptr_t>(dGradY));
     float* gradX = reinterpret_cast<float*>(static_cast<uintptr_t>(dGradX));
     jgpt_cuda_ensure_stream();
@@ -958,6 +999,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
     JGPT_CUDA_GUARD_MATF(vocabSize, dModel, return;);
     JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     size_t tokBytes = (size_t) batch * (size_t) seqLen * sizeof(float);
     size_t wBytes = (size_t) vocabSize * (size_t) dModel * sizeof(float);
     size_t outBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
@@ -978,7 +1023,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
     env->ReleaseFloatArrayElements(h_tokens, ptok, JNI_ABORT);
     env->ReleaseFloatArrayElements(h_weights, pw, JNI_ABORT);
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     if (useFp16 == JNI_TRUE) {
@@ -1020,6 +1066,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
     JGPT_CUDA_GUARD_MATF(vocabSize, dModel, return;);
     JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     size_t wBytes = (size_t) vocabSize * (size_t) dModel * sizeof(float);
     size_t outBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     float *d_tok = nullptr, *d_w = nullptr, *d_out = nullptr;
@@ -1037,7 +1087,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     CUDA_CHECK_X(cudaMemcpyAsync(d_w, pw, wBytes, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
     env->ReleaseFloatArrayElements(h_weights, pw, JNI_ABORT);
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     if (useFp16 == JNI_TRUE) {
@@ -1073,6 +1124,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     }
     JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
     JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     size_t tokBytes = (size_t) batch * (size_t) seqLen * sizeof(float);
     size_t outBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     float *d_tok = nullptr, *d_out = nullptr;
@@ -1087,7 +1142,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     CUDA_CHECK_X(cudaMemcpyAsync(d_tok, ptok, tokBytes, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
     env->ReleaseFloatArrayElements(h_tokens, ptok, JNI_ABORT);
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     if (useFp16 == JNI_TRUE) {
@@ -1121,6 +1177,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
         return;
     }
     JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     size_t tokBytes = (size_t) batch * (size_t) seqLen * sizeof(float);
     float* d_tok = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_tok), tokBytes));
@@ -1133,7 +1193,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
     env->ReleaseFloatArrayElements(h_tokens, ptok, JNI_ABORT);
     jgpt_cuda_ensure_stream();
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     if (useFp16 == JNI_TRUE) {
@@ -1172,13 +1233,18 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
     }
     JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
     JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     size_t outBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     float *d_tok = nullptr, *d_out = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_tok), tok_bytes));
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_out), outBytes));
     CUDA_CHECK_X(cudaMemcpyAsync(d_tok, tok_host, tok_bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     if (useFp16 == JNI_TRUE) {
@@ -1221,12 +1287,17 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenForwar
         return;
     }
     JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     float* d_tok = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_tok), tok_bytes));
     CUDA_CHECK_X(cudaMemcpyAsync(d_tok, tok_host, tok_bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
     jgpt_cuda_ensure_stream();
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     if (useFp16 == JNI_TRUE) {
@@ -1252,6 +1323,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenBackwa
     }
     JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
     JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     JGPT_CUDA_GUARD_MATF(vocabSize, dModel, return;);
     size_t tokBytes = (size_t) batch * (size_t) seqLen * sizeof(float);
     size_t goBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
@@ -1274,7 +1349,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenBackwa
     env->ReleaseFloatArrayElements(h_tokens, ptok, JNI_ABORT);
     env->ReleaseFloatArrayElements(h_gradOut, pgo, JNI_ABORT);
     env->ReleaseFloatArrayElements(h_gradWeights, pgw, JNI_ABORT);
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     embedding_token_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_tok, d_go, d_gw, batch, seqLen, dModel, vocabSize);
@@ -1304,6 +1380,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenBackwa
     }
     JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
     JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     size_t tokBytes = (size_t) batch * (size_t) seqLen * sizeof(float);
     size_t goBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     float *d_tok = nullptr, *d_go = nullptr;
@@ -1321,7 +1401,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenBackwa
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
     env->ReleaseFloatArrayElements(h_tokens, ptok, JNI_ABORT);
     env->ReleaseFloatArrayElements(h_gradOut, pgo, JNI_ABORT);
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     embedding_token_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_tok, d_go, d_gw, batch, seqLen, dModel, vocabSize);
@@ -1337,6 +1418,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingPositionBac
         return;
     }
     JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     JGPT_CUDA_GUARD_MATF(seqLen, dModel, return;);
     size_t gcBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     size_t gwBytes = (size_t) seqLen * (size_t) dModel * sizeof(float);
@@ -1354,7 +1439,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingPositionBac
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
     env->ReleaseFloatArrayElements(h_gradCombined, pgc, JNI_ABORT);
     env->ReleaseFloatArrayElements(h_gradWeights, pgw, JNI_ABORT);
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     embedding_position_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_gc, d_gw, batch, seqLen, dModel);
@@ -1382,6 +1468,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingPositionBac
         return;
     }
     JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     size_t gcBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     float* d_gc = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_gc), gcBytes));
@@ -1393,7 +1483,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingPositionBac
     CUDA_CHECK_X(cudaMemcpyAsync(d_gc, pgc, gcBytes, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
     env->ReleaseFloatArrayElements(h_gradCombined, pgc, JNI_ABORT);
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     embedding_position_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_gc, d_gw, batch, seqLen, dModel);
@@ -1413,6 +1504,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenBackwa
         return;
     }
     JGPT_CUDA_GUARD_MATF(batch, seqLen, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     size_t tokBytes = (size_t) batch * (size_t) seqLen * sizeof(float);
     float* d_tok = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_tok), tokBytes));
@@ -1424,7 +1519,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingTokenBackwa
     CUDA_CHECK_X(cudaMemcpyAsync(d_tok, ptok, tokBytes, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
     env->ReleaseFloatArrayElements(h_tokens, ptok, JNI_ABORT);
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     embedding_token_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
@@ -1445,7 +1541,12 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_embeddingPositionBac
     if (d_gw == nullptr) {
         return;
     }
-    int total = batch * seqLen * dModel;
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     embedding_position_bwd_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_gc, d_gw, batch, seqLen, dModel);
@@ -1466,6 +1567,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_addPositionEmbedding
         return;
     }
     JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     size_t xBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     float* d_x = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_x), xBytes));
@@ -1478,7 +1583,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_addPositionEmbedding
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
     env->ReleaseFloatArrayElements(h_x, px, JNI_ABORT);
     jgpt_cuda_ensure_stream();
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     add_position_embedding_broadcast_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
@@ -1514,8 +1620,13 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_addPositionEmbedding
     if (d_x == nullptr || d_pw == nullptr) {
         return;
     }
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     jgpt_cuda_ensure_stream();
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     add_position_embedding_broadcast_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
@@ -1534,6 +1645,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_addPositionEmbedding
         return;
     }
     JGPT_CUDA_GUARD_VOL3_F(batch, seqLen, dModel, return;);
+    if (!jgpt_bsd_product_fits_int(batch, seqLen, dModel)) {
+        fprintf(stderr, "TensorOpsGPU JNI: batch*seqLen*dModel exceeds INT_MAX\n");
+        return;
+    }
     JGPT_CUDA_GUARD_MATF(seqLen, dModel, return;);
     size_t xBytes = (size_t) batch * (size_t) seqLen * (size_t) dModel * sizeof(float);
     size_t posBytes = (size_t) seqLen * (size_t) dModel * sizeof(float);
@@ -1560,7 +1675,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_addPositionEmbedding
     env->ReleaseFloatArrayElements(h_x, px, JNI_ABORT);
     env->ReleaseFloatArrayElements(h_pos_rows, ppos, JNI_ABORT);
     jgpt_cuda_ensure_stream();
-    int total = batch * seqLen * dModel;
+    const int total = static_cast<int>(
+            static_cast<long long>(batch) * static_cast<long long>(seqLen) * static_cast<long long>(dModel));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (total + threads - 1) / threads;
     add_position_embedding_broadcast_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(

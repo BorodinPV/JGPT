@@ -14,6 +14,7 @@
 #include "jgpt_cuda_ffn_link.h"
 #include "jgpt_cuda_graph_prewarm.h"
 #include "jgpt_cuda_size_check.cuh"
+#include "jgpt_cuda_jni_helpers.cuh"
 
 /* ========== Thread-safe cuBLAS handle per thread (extra ops / strided batched GEMM) ========== */
 static thread_local cublasHandle_t tl_extra_cublas_handle = nullptr;
@@ -2517,11 +2518,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     (void) clazz;
     int nrows = batch * seqLen;
     if (nrows <= 0 || vocab <= 0) {
-        jfloat* plo = env->GetFloatArrayElements(h_lossOut, nullptr);
-        if (plo) {
-            plo[0] = 0.f;
-            env->ReleaseFloatArrayElements(h_lossOut, plo, 0);
-        }
+        jgpt_jni_loss_out_zero(env, h_lossOut);
         return;
     }
     if (check_size_overflow((size_t) nrows, (size_t) vocab, sizeof(float))) {
@@ -2532,11 +2529,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     size_t bytes_logits = (size_t) nrows * (size_t) vocab * sizeof(float);
     size_t bytes_tgt = (size_t) nrows * sizeof(float);
     if (!ce_ensure_logits_grad_buffers(bytes_logits)) {
-        jfloat* plo = env->GetFloatArrayElements(h_lossOut, nullptr);
-        if (plo) {
-            plo[0] = 0.f;
-            env->ReleaseFloatArrayElements(h_lossOut, plo, 0);
-        }
+        jgpt_jni_loss_out_zero(env, h_lossOut);
         return;
     }
     if (bytes_tgt > tl_ce_targets_bytes) {
@@ -2554,11 +2547,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     jfloat* plog = env->GetFloatArrayElements(h_logits, nullptr);
     jfloat* ptgt = env->GetFloatArrayElements(h_targets, nullptr);
     if (!plog || !ptgt) {
-        jfloat* plo = env->GetFloatArrayElements(h_lossOut, nullptr);
-        if (plo) {
-            plo[0] = 0.f;
-            env->ReleaseFloatArrayElements(h_lossOut, plo, 0);
-        }
+        jgpt_jni_loss_out_zero(env, h_lossOut);
         return;
     }
     CUDA_CHECK_X(cudaMemcpyAsync(tl_ce_d_logits, plog, bytes_logits, cudaMemcpyHostToDevice, kTensorCudaStream));
@@ -2576,11 +2565,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
 
     jfloat* pgrad = env->GetFloatArrayElements(h_grad, nullptr);
     if (!pgrad) {
-        jfloat* plo = env->GetFloatArrayElements(h_lossOut, nullptr);
-        if (plo) {
-            plo[0] = 0.f;
-            env->ReleaseFloatArrayElements(h_lossOut, plo, 0);
-        }
+        jgpt_jni_loss_out_zero(env, h_lossOut);
         return;
     }
     CUDA_CHECK_X(cudaMemcpyAsync(pgrad, tl_ce_d_grad, bytes_logits, cudaMemcpyDeviceToHost, kTensorCudaStream));
@@ -2607,11 +2592,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     (void) clazz;
     int nrows = batch * seq_len;
     if (nrows <= 0 || vocab <= 0) {
-        jfloat* plo = env->GetFloatArrayElements(h_loss_out, nullptr);
-        if (plo) {
-            plo[0] = 0.f;
-            env->ReleaseFloatArrayElements(h_loss_out, plo, 0);
-        }
+        jgpt_jni_loss_out_zero(env, h_loss_out);
         return;
     }
     if (check_size_overflow((size_t) nrows, (size_t) vocab, sizeof(float))) {
@@ -2625,20 +2606,12 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     void* plog = jni_direct_ptr(env, logits_buf, logits_byte_off, (jlong) bytes_logits, "CE direct logits");
     void* ptgt = jni_direct_ptr(env, targets_buf, targets_byte_off, (jlong) bytes_tgt, "CE direct targets");
     if (!plog || !ptgt) {
-        jfloat* plo = env->GetFloatArrayElements(h_loss_out, nullptr);
-        if (plo) {
-            plo[0] = 0.f;
-            env->ReleaseFloatArrayElements(h_loss_out, plo, 0);
-        }
+        jgpt_jni_loss_out_zero(env, h_loss_out);
         return;
     }
 
     if (!ce_ensure_logits_grad_buffers(bytes_logits)) {
-        jfloat* plo = env->GetFloatArrayElements(h_loss_out, nullptr);
-        if (plo) {
-            plo[0] = 0.f;
-            env->ReleaseFloatArrayElements(h_loss_out, plo, 0);
-        }
+        jgpt_jni_loss_out_zero(env, h_loss_out);
         return;
     }
     if (bytes_tgt > tl_ce_targets_bytes) {
@@ -2666,11 +2639,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
 
     jfloat* pgrad = env->GetFloatArrayElements(h_grad, nullptr);
     if (!pgrad) {
-        jfloat* plo = env->GetFloatArrayElements(h_loss_out, nullptr);
-        if (plo) {
-            plo[0] = 0.f;
-            env->ReleaseFloatArrayElements(h_loss_out, plo, 0);
-        }
+        jgpt_jni_loss_out_zero(env, h_loss_out);
         return;
     }
     CUDA_CHECK_X(cudaMemcpyAsync(pgrad, tl_ce_d_grad, bytes_logits, cudaMemcpyDeviceToHost, kTensorCudaStream));

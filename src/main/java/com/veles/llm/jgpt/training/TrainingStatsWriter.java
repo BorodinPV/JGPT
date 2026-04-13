@@ -144,6 +144,17 @@ public final class TrainingStatsWriter {
         write();
     }
 
+    /**
+     * Синхронизировать {@code bestLoss} после загрузки чекпоинта.
+     * Без этого до первого {@link #onEval} в stats.json остаётся «0.0000» (артефакт {@code Float.MAX_VALUE}).
+     */
+    public void syncBestLossFromResume(float bestLoss) {
+        if (bestLoss > 0f && Float.isFinite(bestLoss)) {
+            this.bestLoss = bestLoss;
+            write();
+        }
+    }
+
     // ── События ──────────────────────────────────────────────
 
     /** Вызывать после каждого успешного шага оптимизатора. */

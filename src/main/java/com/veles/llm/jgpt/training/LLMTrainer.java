@@ -814,6 +814,7 @@ public final class LLMTrainer {
         }
         if (trainingStatsWriter != null) {
             trainingStatsWriter.syncProgressFromResume(globalStep, startEpoch + 1, config.epochs);
+            trainingStatsWriter.syncBestLossFromResume(bestLoss);
         }
 
         outer:

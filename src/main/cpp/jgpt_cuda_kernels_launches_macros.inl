@@ -1,9 +1,10 @@
 /* Kernels + launches + JNI CUDA macros
- * vec_*, relu, half convert, bias, sum_columns; CUDA_CHECK_* macros.
+ * vec_*, relu, half convert, bias, sum_columns; uses JGPT_CUDA_* macros.
  * Included only from jgpt_cuda.cu (single translation unit).
  */
 
 #include <cstddef>
+#include "jgpt_cuda_error_macros.cuh"
 
 // ========== Kernels with error checking ==========
 
@@ -176,32 +177,5 @@ static void launch_sum_columns(const float* d_src, float* d_dst, int M, int N, f
     if (err != cudaSuccess) fprintf(stderr, "launch_sum_columns error: %s\n", cudaGetErrorString(err));
 }
 
-// ========== Error macros ==========
-#define CUDA_CHECK_VOID(call) \
-    do { \
-        cudaError_t err = (call); \
-        if (err != cudaSuccess) { \
-            fprintf(stderr, "CUDA error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return; \
-        } \
-    } while (0)
-
-/** Как {@code CUDA_CHECK_VOID}, но при ошибке делает {@code ReleaseFloatArrayElements(..., JNI_ABORT)} для выходного jfloatArray. */
-#define CUDA_CHECK_VOID_JFLOAT_OUT(env, h_C, C_ptr, call) \
-    do { \
-        cudaError_t err_jfloat_out_ = (call); \
-        if (err_jfloat_out_ != cudaSuccess) { \
-            fprintf(stderr, "CUDA error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err_jfloat_out_)); \
-            if ((C_ptr) != nullptr) (env)->ReleaseFloatArrayElements((h_C), (C_ptr), JNI_ABORT); \
-            return; \
-        } \
-    } while (0)
-
-#define CUDA_KERNEL_CHECK() \
-    do { \
-        cudaError_t err = cudaGetLastError(); \
-        if (err != cudaSuccess) { \
-            fprintf(stderr, "Kernel launch error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return; \
-        } \
-    } while (0)
+// ========== Error macros — now in jgpt_cuda_error_macros.cuh ==========
+// JGPT_CUDA_CHECK, JGPT_KERNEL_LAUNCH_CHECK, JGPT_CUDA_CHECK_RELEASE_FLOAT_ARRAY

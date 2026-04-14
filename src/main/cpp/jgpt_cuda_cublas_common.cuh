@@ -9,7 +9,7 @@ namespace jgpt_cuda_detail {
 
 /**
  * Создаёт cuBLAS-дескриптор с TF32 и привязкой к единому stream TensorOpsGPU.
- * При ошибке пишет в stderr с префиксом {@code log_ctx} (например {@code "TensorOpsGPU"} или {@code "TensorOpsGPU extra"}).
+ * При ошибке пишет в stderr с префиксом {@code log_ctx}.
  * @return handle или nullptr
  */
 inline cublasHandle_t create_cublas_for_jgpt_stream(const char* log_ctx) {
@@ -39,6 +39,31 @@ inline cublasHandle_t create_cublas_for_jgpt_stream(const char* log_ctx) {
         return nullptr;
     }
     return h;
+}
+
+/** Thread-local cuBLAS handle (единый для всех translation unit). */
+inline cublasHandle_t& cublas_thread_local_handle() {
+    thread_local cublasHandle_t h = nullptr;
+    return h;
+}
+
+/** Получить или создать thread-local cuBLAS handle. */
+inline cublasHandle_t get_cublas_handle() {
+    cublasHandle_t& h = cublas_thread_local_handle();
+    if (h != nullptr) {
+        return h;
+    }
+    h = create_cublas_for_jgpt_stream("TensorOpsGPU");
+    return h;
+}
+
+/** Освободить thread-local cuBLAS handle (вызывать при очистке ресурсов потока). */
+inline void destroy_cublas_thread_local_handle() {
+    cublasHandle_t& h = cublas_thread_local_handle();
+    if (h != nullptr) {
+        cublasDestroy(h);
+        h = nullptr;
+    }
 }
 
 }  // namespace jgpt_cuda_detail

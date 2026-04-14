@@ -3,6 +3,8 @@
  * Included only from jgpt_cuda.cu (single translation unit).
  */
 
+#include <cstdarg>
+
 static std::mutex g_stream_init_mutex;
 static std::mutex g_cuda_device_caps_mutex;
 /** Указатели, выделенные {@code cudaMalloc} (fallback), чтобы {@code nativeFree} вызывал {@code cudaFree}, а не {@code cudaFreeAsync}. */
@@ -59,6 +61,28 @@ static bool jgpt_env_decoder_graph_mem_probe(void) {
 }
 
 /** NDJSON в файл только если задан {@code JGPT_DEBUG_NDJSON_LOG} (путь для append). Иначе nullptr — без I/O. */
+static FILE* jgpt_debug_ndjson_fopen(void);
+
+/** NDJSON (debug session b39372): пишет одну строку в файл из {@code JGPT_DEBUG_NDJSON_LOG}. */
+static void jgpt_ndjson_log(const char* hypothesisId, const char* location, const char* message, const char* fmt, ...) {
+    FILE* f = jgpt_debug_ndjson_fopen();
+    if (f == nullptr) {
+        return;
+    }
+    fprintf(f, "{\"sessionId\":\"b39372\",\"hypothesisId\":\"%s\",\"location\":\"%s\",\"message\":\"%s\",",
+            hypothesisId, location, message);
+    if (fmt != nullptr && fmt[0] != '\0') {
+        fprintf(f, "\"data\":{");
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(f, fmt, args);
+        va_end(args);
+        fprintf(f, "}");
+    }
+    fprintf(f, "}\n");
+    fclose(f);
+}
+
 static FILE* jgpt_debug_ndjson_fopen(void) {
     const char* p = std::getenv("JGPT_DEBUG_NDJSON_LOG");
     if (p == nullptr || p[0] == '\0') {
@@ -75,19 +99,8 @@ static void jgpt_decoder_graph_mem_probe_log(const char* tag) {
     size_t mt = 0;
     (void) cudaMemGetInfo(&mf, &mt);
     fprintf(stderr, "[JGPT_DECODER_GRAPH_MEM_PROBE] %s cudaMemGetInfo free=%zu total=%zu\n", tag, mf, mt);
-    // #region agent log
-    FILE* df = jgpt_debug_ndjson_fopen();
-    if (df != nullptr) {
-        fprintf(
-                df,
-                "{\"sessionId\":\"b39372\",\"hypothesisId\":\"H-memProbe\",\"location\":\"jgpt_cuda.cu:memProbe\","
-                "\"message\":\"%s\",\"data\":{\"free\":%zu,\"total\":%zu}}\n",
-                tag,
-                mf,
-                mt);
-        fclose(df);
-    }
-    // #endregion
+    jgpt_ndjson_log("H-memProbe", "jgpt_cuda.cu:memProbe", tag,
+                    "\"free\":%zu,\"total\":%zu", mf, mt);
 }
 
 /*
@@ -122,20 +135,9 @@ static void jgpt_cuda_trim_mem_pools_best_effort(const char* ctx_tag) {
     }
     size_t free_after = 0;
     (void) cudaMemGetInfo(&free_after, &total_b);
-    // #region agent log
-    FILE* df = jgpt_debug_ndjson_fopen();
-    if (df != nullptr) {
-        fprintf(
-                df,
-                "{\"sessionId\":\"b39372\",\"hypothesisId\":\"H6-memPoolTrim\",\"location\":\"jgpt_cuda.cu:trim\","
-                "\"message\":\"trim\",\"data\":{\"ctx\":\"%s\",\"trimmedMask\":%d,\"freeBefore\":%zu,\"freeAfter\":%zu}}\n",
-                ctx_tag != nullptr ? ctx_tag : "",
-                trimmed_mask,
-                free_before,
-                free_after);
-        fclose(df);
-    }
-    // #endregion
+    jgpt_ndjson_log("H6-memPoolTrim", "jgpt_cuda.cu:trim", "trim",
+                    "\"ctx\":\"%s\",\"trimmedMask\":%d,\"freeBefore\":%zu,\"freeAfter\":%zu",
+                    ctx_tag != nullptr ? ctx_tag : "", trimmed_mask, free_before, free_after);
 }
 #else
 static void jgpt_cuda_trim_mem_pools_best_effort(const char* ctx_tag) {

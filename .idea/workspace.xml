@@ -7,8 +7,12 @@
     <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Крупный рефакторинг">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.qwen/settings.json" beforeDir="false" afterPath="$PROJECT_DIR$/.qwen/settings.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/LLMTrainer.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/TrainingStatsWriter.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/training/TrainingStatsWriter.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_cublas_common.cuh" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_cublas_common.cuh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_device.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_device.inl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_kernels_launches.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_kernels_launches.inl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_kernels_launches_macros.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_kernels_launches_macros.inl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_runtime.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_runtime.inl" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/last_step.txt" beforeDir="false" afterPath="$PROJECT_DIR$/state/last_step.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/stats.json" beforeDir="false" afterPath="$PROJECT_DIR$/state/stats.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/training.pid" beforeDir="false" afterPath="$PROJECT_DIR$/state/training.pid" afterDir="false" />
@@ -153,7 +157,7 @@
       <workItem from="1776071856072" duration="73000" />
       <workItem from="1776083722757" duration="10076000" />
       <workItem from="1776099285185" duration="6000" />
-      <workItem from="1776112332280" duration="9814000" />
+      <workItem from="1776112332280" duration="12581000" />
     </task>
     <task id="LOCAL-00001" summary="Переработка для gpu">
       <option name="closed" value="true" />
@@ -467,7 +471,15 @@
       <option name="project" value="LOCAL" />
       <updated>1776119718165</updated>
     </task>
-    <option name="localTasksCounter" value="40" />
+    <task id="LOCAL-00040" summary="Крупный рефакторинг">
+      <option name="closed" value="true" />
+      <created>1776122598439</created>
+      <option name="number" value="00040" />
+      <option name="presentableId" value="LOCAL-00040" />
+      <option name="project" value="LOCAL" />
+      <updated>1776122598439</updated>
+    </task>
+    <option name="localTasksCounter" value="41" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

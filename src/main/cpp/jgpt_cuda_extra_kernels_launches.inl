@@ -3,6 +3,7 @@
  */
 
 // ========== Ядра (float32) ==========
+#include "jgpt_cuda_error_macros.cuh"
 
 /** Линейный индекс нити в 1D-сетке в long long (избегает переполнения int при большом gridDim.x). */
 __device__ __forceinline__ long long jgpt_extra_kernel_linear_idx_ll() {
@@ -528,32 +529,9 @@ __global__ void layer_norm_fwd_kernel(const float* src, const float* gamma, cons
     }
 }
 
+/** RMSNorm forward: один тред на строку (для small lastDim). */
 __global__ void rms_norm_fwd_kernel(const float* src, const float* gamma, float* dst,
                                     int outer, int lastDim, float eps) {
-    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
-    if (i_ll >= (long long)outer) {
-        return;
-    }
-    const int i = (int)i_ll;
-    const ptrdiff_t base = (ptrdiff_t)i * (ptrdiff_t)lastDim;
-    float sumSq = 0.f;
-    for (int j = 0; j < lastDim; j++) {
-        float v = src[base + j];
-        sumSq += v * v;
-    }
-    float rms = sqrtf(sumSq / (float) lastDim + eps);
-    float invRms = (rms > 0.f && isfinite(rms)) ? (1.f / rms) : 0.f;
-    for (int j = 0; j < lastDim; j++) {
-        dst[base + j] = src[base + j] * invRms * gamma[j];
-    }
-}
-
-/**
- * Ветка «fp16» в API: раньше x/γ округлялись до half → при больших |x| half давал Inf, далее Q/K/V и softmax ломались.
- * Считаем как rms_norm_fwd_kernel (FP32), выход по-прежнему float.
- */
-__global__ void rms_norm_fwd_kernel_fp16(const float* src, const float* gamma, float* dst,
-                                         int outer, int lastDim, float eps) {
     const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
     if (i_ll >= (long long)outer) {
         return;
@@ -601,32 +579,8 @@ __global__ void rms_norm_fwd_block_kernel(
 
 static constexpr int kRmsNormFwdBlockThreshold = 64;
 
-#define CUDA_CHECK_X(call) \
-    do { \
-        cudaError_t err = (call); \
-        if (err != cudaSuccess) { \
-            fprintf(stderr, "CUDA error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return; \
-        } \
-    } while (0)
 
-#define CUDA_KERNEL_CHECK() \
-    do { \
-        cudaError_t err = cudaGetLastError(); \
-        if (err != cudaSuccess) { \
-            fprintf(stderr, "Kernel launch error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return; \
-        } \
-    } while (0)
 
-#define CUDA_KERNEL_CHECK_RV(rv) \
-    do { \
-        cudaError_t err = cudaGetLastError(); \
-        if (err != cudaSuccess) { \
-            fprintf(stderr, "Kernel launch error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return (rv); \
-        } \
-    } while (0)
 
 static void launch_rms_norm_fwd(const float* src, const float* gamma, float* dst,
         int outer, int lastDim, float eps) {

@@ -27,11 +27,11 @@ ExtraThreadResources& jgpt_extra_tls() {
 }  // namespace jgpt_extra
 
 extern "C" void jgpt_cuda_extra_warmup_cublas(void) {
-    (void) jgpt_extra::jgpt_extra_tls().cublas.get_handle();
+    (void) jgpt_cuda_detail::get_cublas_handle();
 }
 
 static cublasHandle_t get_extra_cublas_handle() {
-    return jgpt_extra::jgpt_extra_tls().cublas.get_handle();
+    return jgpt_cuda_detail::get_cublas_handle();
 }
 
 static void ce_async_host_free() {

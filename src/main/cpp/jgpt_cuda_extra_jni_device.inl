@@ -1,18 +1,12 @@
-/* JNI device pointers: CUDA_CHECK_RV, full-GPU CE, lm-head kernels, anyNonFinite
+/* JNI device pointers: full-GPU CE, lm-head kernels, anyNonFinite
  * Include only from jgpt_cuda_extra.cu inside extern "C" { }.
  */
+
+#include "jgpt_cuda_error_macros.cuh"
 
 
 /* ========== Device-pointer JNI wrappers for full-GPU training ========== */
 
-#define CUDA_CHECK_RV(call, rv) \
-    do { \
-        cudaError_t err = (call); \
-        if (err != cudaSuccess) { \
-            fprintf(stderr, "CUDA error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return (rv); \
-        } \
-    } while (0)
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaleInPlaceGPUDevice(
     JNIEnv* env, jclass clazz, jlong dSrc, jint n, jfloat scalar) {

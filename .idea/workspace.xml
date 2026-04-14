@@ -5,71 +5,14 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="be251f5d-f1ba-4b34-9353-3685245b2d1c" name="Изменения" comment="Крупный рефакторинг">
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.qwen/settings.json" beforeDir="false" afterPath="$PROJECT_DIR$/.qwen/settings.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeCache.txt" beforeDir="false" afterPath="$PROJECT_DIR$/build-cmake/CMakeCache.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CMakeCUDACompiler.cmake" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CMakeCXXCompiler.cmake" beforeDir="false" afterPath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CMakeCXXCompiler.cmake" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CMakeDetermineCompilerABI_CUDA.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CMakeDetermineCompilerABI_CXX.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/a.out" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/CMakeCUDACompilerId.cpp1.ii" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/CMakeCUDACompilerId.cpp4.ii" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/CMakeCUDACompilerId.cudafe1.c" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/CMakeCUDACompilerId.cudafe1.cpp" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/CMakeCUDACompilerId.cudafe1.gpu" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/CMakeCUDACompilerId.cudafe1.stub.c" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/CMakeCUDACompilerId.fatbin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/CMakeCUDACompilerId.fatbin.c" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/CMakeCUDACompilerId.module_id" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/CMakeCUDACompilerId.o" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/CMakeCUDACompilerId.ptx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/CMakeCUDACompilerId.sm_52.cubin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/a_dlink.fatbin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/a_dlink.fatbin.c" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/a_dlink.o" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/a_dlink.reg.c" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/3.31.6/CompilerIdCUDA/tmp/a_dlink.sm_52.cubin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/CMakeConfigureLog.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/build-cmake/CMakeFiles/CMakeConfigureLog.yaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/CMakeDirectoryInformation.cmake" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/Makefile.cmake" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/Makefile2" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/TargetDirectories.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/progress.marks" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/DependInfo.cmake" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/build.make" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/cmake_clean.cmake" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/compiler_depend.internal" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/compiler_depend.make" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/compiler_depend.ts" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/depend.make" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/flags.make" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/includes_CUDA.rsp" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/link.d" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/link.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/linkLibs.rsp" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/objects1.rsp" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/progress.make" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.o" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/tensor_cuda.cu.o.d" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/tensor_cuda_extra.cu.o" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/CMakeFiles/tensor_cuda.dir/tensor_cuda_extra.cu.o.d" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/Makefile" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/build-cmake/cmake_install.cmake" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda.cu" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra.cu" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_attention.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_attention.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_device.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_device.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_host_fwd.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_host_fwd.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_optim.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_extra_jni_optim.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_buffers.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_buffers.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_helpers.cuh" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_helpers.cuh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_init_matmul.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_init_matmul.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_ops_graph.inl" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/cpp/jgpt_cuda_jni_ops_graph.inl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/BlockActivationCacheDevice.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/com/veles/llm/jgpt/model/BlockActivationCacheDevice.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/dashboard.html" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/state/last_step.txt" beforeDir="false" afterPath="$PROJECT_DIR$/state/last_step.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/state/stats.json" beforeDir="false" afterPath="$PROJECT_DIR$/state/stats.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/state/training.pid" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/tensor.iml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/tools/refactor_llm_trainer_apply.py" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -214,7 +157,7 @@
       <workItem from="1776112332280" duration="14020000" />
       <workItem from="1776126445780" duration="6000" />
       <workItem from="1776126460658" duration="33000" />
-      <workItem from="1776126502037" duration="7634000" />
+      <workItem from="1776126502037" duration="8464000" />
     </task>
     <task id="LOCAL-00001" summary="Переработка для gpu">
       <option name="closed" value="true" />
@@ -544,7 +487,15 @@
       <option name="project" value="LOCAL" />
       <updated>1776125151422</updated>
     </task>
-    <option name="localTasksCounter" value="42" />
+    <task id="LOCAL-00042" summary="Крупный рефакторинг">
+      <option name="closed" value="true" />
+      <created>1776159281092</created>
+      <option name="number" value="00042" />
+      <option name="presentableId" value="LOCAL-00042" />
+      <option name="project" value="LOCAL" />
+      <updated>1776159281092</updated>
+    </task>
+    <option name="localTasksCounter" value="43" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

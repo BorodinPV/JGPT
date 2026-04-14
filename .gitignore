@@ -1,10 +1,30 @@
+# Build artifacts
 /target/
 /checkpoints/
 /build/
+/build-cmake/
 /src/build/
 /src/main/cpp/build/
+
+# Logs
 *.log
 hs_err_pid*.log
+
+# IDE / editor
+/.idea/
+/.cursor/
+/.qwen/
+/.mvn/
+*.iml
+
+# Profiling
 *.qdstrm
 *.qdrep
 *.nsys-rep
+
+# Runtime state
+state/current_preset_idx
+state/training.pid
+state/last_step.txt
+state/stats.json
+state/current.env

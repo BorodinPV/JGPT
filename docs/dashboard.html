@@ -411,7 +411,7 @@
 </header>
 
 <div id="file-protocol-hint">
-  Открыт как <code>file://</code> — браузер блокирует загрузку <code>state/stats.json</code>.
+  Открыт как <code>file://</code> — браузер блокирует загрузку <code>../state/stats.json</code>.
   Запустите: <code>python3 -m http.server 8765</code> → <code>http://localhost:8765/dashboard.html</code>
 </div>
 
@@ -511,7 +511,7 @@
 <script>
 const STATS_URL = (() => {
   const q = new URLSearchParams(location.search).get('stats');
-  return (q && q.trim()) ? q.trim() : 'state/stats.json';
+  return (q && q.trim()) ? q.trim() : '../state/stats.json';
 })();
 const AUTO_REFRESH_MS = (() => {
   const q = new URLSearchParams(location.search).get('refresh');

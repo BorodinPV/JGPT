@@ -39,7 +39,8 @@
       "Bash(new_content *)",
       "Bash(f.write)",
       "Bash(pyeof)",
-      "Bash(pkill *)"
+      "Bash(pkill *)",
+      "Bash(mv *)"
     ]
   },
   "$version": 3

@@ -28,3 +28,6 @@ state/training.pid
 state/last_step.txt
 state/stats.json
 state/current.env
+
+# Training data (provide your own)
+/data/

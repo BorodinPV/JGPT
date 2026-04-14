@@ -18,6 +18,7 @@
 #include "jgpt_cuda_graph_prewarm.h"
 #include "jgpt_cuda_size_check.cuh"
 #include "jgpt_cuda_jni_helpers.cuh"
+#include "jgpt_cuda_jni_raii.cuh"
 
 namespace jgpt_extra {
 ExtraThreadResources& jgpt_extra_tls() {

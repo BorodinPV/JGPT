@@ -1,6 +1,7 @@
 /* JNI: add/sub/relu, init, graph exec, memory stats, CudaPinnedHost
- * 
+ *
  * Included only from jgpt_cuda.cu (single translation unit).
+ * RAII helpers are provided by jgpt_cuda_jni_raii.cuh (included before extern "C").
  */
 
 // ========== ADD ==========
@@ -12,32 +13,26 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_addGPU(
     if (n <= 0) return;
     JGPT_CUDA_GUARD_1D(n, sizeof(float), return;);
     size_t bytes = (size_t) n * sizeof(float);
-    float *d_a = nullptr, *d_b = nullptr, *d_c = nullptr;
-    CUDA_CHECK_VOID(cudaMalloc(&d_a, bytes));
-    CUDA_CHECK_VOID(cudaMalloc(&d_b, bytes));
-    CUDA_CHECK_VOID(cudaMalloc(&d_c, bytes));
 
-    jfloat* pa = env->GetFloatArrayElements(h_a, nullptr);
-    jfloat* pb = env->GetFloatArrayElements(h_b, nullptr);
-    if (!pa || !pb) {
-        cudaFree(d_a); cudaFree(d_b); cudaFree(d_c); return;
-    }
-    CUDA_CHECK_VOID(cudaMemcpyAsync(d_a, pa, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_VOID(cudaMemcpyAsync(d_b, pb, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
+    DeviceFloatPtr d_a, d_b, d_c;
+    CUDA_CHECK_VOID(cudaMalloc(reinterpret_cast<void**>(&d_a.ptr), bytes));
+    CUDA_CHECK_VOID(cudaMalloc(reinterpret_cast<void**>(&d_b.ptr), bytes));
+    CUDA_CHECK_VOID(cudaMalloc(reinterpret_cast<void**>(&d_c.ptr), bytes));
+
+    JniFloatArrayScope pa(env, h_a, JNI_ABORT);
+    JniFloatArrayScope pb(env, h_b, JNI_ABORT);
+    if (!pa || !pb) return;
+    CUDA_CHECK_VOID(cudaMemcpyAsync(d_a, pa.ptr, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
+    CUDA_CHECK_VOID(cudaMemcpyAsync(d_b, pb.ptr, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
-    env->ReleaseFloatArrayElements(h_a, pa, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_b, pb, JNI_ABORT);
 
     launch_vec_add(d_a, d_b, d_c, n);
-    CUDA_KERNEL_CHECK();
+    JGPT_KERNEL_LAUNCH_CHECK();
 
-    jfloat* pc = env->GetFloatArrayElements(h_c, nullptr);
-    if (!pc) { cudaFree(d_a); cudaFree(d_b); cudaFree(d_c); return; }
-    CUDA_CHECK_VOID(cudaMemcpyAsync(pc, d_c, bytes, cudaMemcpyDeviceToHost, kTensorCudaStream));
+    JniFloatArrayScope pc(env, h_c, 0);
+    if (!pc) return;
+    CUDA_CHECK_VOID(cudaMemcpyAsync(pc.ptr, d_c, bytes, cudaMemcpyDeviceToHost, kTensorCudaStream));
     CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
-    env->ReleaseFloatArrayElements(h_c, pc, 0);
-
-    cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
 }
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_subtractGPU(
@@ -47,32 +42,26 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_subtractGPU(
     if (n <= 0) return;
     JGPT_CUDA_GUARD_1D(n, sizeof(float), return;);
     size_t bytes = (size_t) n * sizeof(float);
-    float *d_a = nullptr, *d_b = nullptr, *d_c = nullptr;
-    CUDA_CHECK_VOID(cudaMalloc(&d_a, bytes));
-    CUDA_CHECK_VOID(cudaMalloc(&d_b, bytes));
-    CUDA_CHECK_VOID(cudaMalloc(&d_c, bytes));
 
-    jfloat* pa = env->GetFloatArrayElements(h_a, nullptr);
-    jfloat* pb = env->GetFloatArrayElements(h_b, nullptr);
-    if (!pa || !pb) {
-        cudaFree(d_a); cudaFree(d_b); cudaFree(d_c); return;
-    }
-    CUDA_CHECK_VOID(cudaMemcpyAsync(d_a, pa, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_VOID(cudaMemcpyAsync(d_b, pb, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
+    DeviceFloatPtr d_a, d_b, d_c;
+    CUDA_CHECK_VOID(cudaMalloc(reinterpret_cast<void**>(&d_a.ptr), bytes));
+    CUDA_CHECK_VOID(cudaMalloc(reinterpret_cast<void**>(&d_b.ptr), bytes));
+    CUDA_CHECK_VOID(cudaMalloc(reinterpret_cast<void**>(&d_c.ptr), bytes));
+
+    JniFloatArrayScope pa(env, h_a, JNI_ABORT);
+    JniFloatArrayScope pb(env, h_b, JNI_ABORT);
+    if (!pa || !pb) return;
+    CUDA_CHECK_VOID(cudaMemcpyAsync(d_a, pa.ptr, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
+    CUDA_CHECK_VOID(cudaMemcpyAsync(d_b, pb.ptr, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
-    env->ReleaseFloatArrayElements(h_a, pa, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_b, pb, JNI_ABORT);
 
     launch_vec_sub(d_a, d_b, d_c, n);
-    CUDA_KERNEL_CHECK();
+    JGPT_KERNEL_LAUNCH_CHECK();
 
-    jfloat* pc = env->GetFloatArrayElements(h_c, nullptr);
-    if (!pc) { cudaFree(d_a); cudaFree(d_b); cudaFree(d_c); return; }
-    CUDA_CHECK_VOID(cudaMemcpyAsync(pc, d_c, bytes, cudaMemcpyDeviceToHost, kTensorCudaStream));
+    JniFloatArrayScope pc(env, h_c, 0);
+    if (!pc) return;
+    CUDA_CHECK_VOID(cudaMemcpyAsync(pc.ptr, d_c, bytes, cudaMemcpyDeviceToHost, kTensorCudaStream));
     CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
-    env->ReleaseFloatArrayElements(h_c, pc, 0);
-
-    cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
 }
 
 // ========== ReLU ==========
@@ -84,26 +73,23 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_reluGPU(
     if (n <= 0) return;
     JGPT_CUDA_GUARD_1D(n, sizeof(float), return;);
     size_t bytes = (size_t) n * sizeof(float);
-    float *d_a = nullptr, *d_b = nullptr;
-    CUDA_CHECK_VOID(cudaMalloc(&d_a, bytes));
-    CUDA_CHECK_VOID(cudaMalloc(&d_b, bytes));
 
-    jfloat* pa = env->GetFloatArrayElements(h_a, nullptr);
-    if (!pa) { cudaFree(d_a); cudaFree(d_b); return; }
-    CUDA_CHECK_VOID(cudaMemcpyAsync(d_a, pa, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
+    DeviceFloatPtr d_a, d_b;
+    CUDA_CHECK_VOID(cudaMalloc(reinterpret_cast<void**>(&d_a.ptr), bytes));
+    CUDA_CHECK_VOID(cudaMalloc(reinterpret_cast<void**>(&d_b.ptr), bytes));
+
+    JniFloatArrayScope pa(env, h_a, JNI_ABORT);
+    if (!pa) return;
+    CUDA_CHECK_VOID(cudaMemcpyAsync(d_a, pa.ptr, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
-    env->ReleaseFloatArrayElements(h_a, pa, JNI_ABORT);
 
     launch_relu(d_a, d_b, n);
-    CUDA_KERNEL_CHECK();
+    JGPT_KERNEL_LAUNCH_CHECK();
 
-    jfloat* pb = env->GetFloatArrayElements(h_b, nullptr);
-    if (!pb) { cudaFree(d_a); cudaFree(d_b); return; }
-    CUDA_CHECK_VOID(cudaMemcpyAsync(pb, d_b, bytes, cudaMemcpyDeviceToHost, kTensorCudaStream));
+    JniFloatArrayScope pb(env, h_b, 0);
+    if (!pb) return;
+    CUDA_CHECK_VOID(cudaMemcpyAsync(pb.ptr, d_b, bytes, cudaMemcpyDeviceToHost, kTensorCudaStream));
     CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
-    env->ReleaseFloatArrayElements(h_b, pb, 0);
-
-    cudaFree(d_a); cudaFree(d_b);
 }
 
 // ========== GPU Info ==========

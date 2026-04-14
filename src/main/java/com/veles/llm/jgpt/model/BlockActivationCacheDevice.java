@@ -655,6 +655,14 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
     }
 
     private static boolean blockActivationCachePoolFromEnv() {
+        /*
+         * BUG-FIX: GROW_ONLY + POOL несовместимы (pool steal'ит буферы из cache,
+         * после чего growOnly не может их переиспользовать). При GROW_ONLY
+         * отключаем пул — буферы переиспользуются напрямую в cache.
+         */
+        if (blockActivationCacheGrowOnlyFromEnv()) {
+            return false;
+        }
         String e = System.getenv("JGPT_BLOCK_CACHE_POOL");
         if (e == null) {
             return false;
@@ -699,6 +707,18 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
 
     private void returnOrFreeBuffers() {
         if (!isAllocated()) {
+            return;
+        }
+        /*
+         * BUG-FIX: GROW_ONLY + POOL несовместимы. При GROW_ONLY буферы
+         * переиспользуются в cache напрямую (ensure() early return),
+         * а returnOrFreeBuffers() через stealFrom() опустошает cache,
+         * после чего isAllocatedForMode=false и growOnly больше не срабатывает.
+         * Результат — каждый forward аллоцирует новые буферы → OOM.
+         * Решение: при GROW_ONLY закрываем буферы напрямую, минуя пул.
+         */
+        if (blockActivationCacheGrowOnlyFromEnv()) {
+            closeBuffersHard();
             return;
         }
         if (blockActivationCachePoolFromEnv()) {

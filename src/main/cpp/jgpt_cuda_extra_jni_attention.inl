@@ -46,12 +46,11 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     }
 
     if (with_mask) {
-        jfloat* pm = env->GetFloatArrayElements(h_mask, nullptr);
-        if (!pm) {
+        JniFloatArrayScope pm_scope(env, h_mask, JNI_ABORT);
+        if (!pm_scope) {
             return;
         }
-        CUDA_CHECK_X(cudaMemcpyAsync(d_mask_dev, pm, bytesMask, cudaMemcpyHostToDevice, kTensorCudaStream));
-        env->ReleaseFloatArrayElements(h_mask, pm, JNI_ABORT);
+        CUDA_CHECK_X(cudaMemcpyAsync(d_mask_dev, pm_scope.ptr, bytesMask, cudaMemcpyHostToDevice, kTensorCudaStream));
     }
 
     jgpt_cuda_ensure_stream();
@@ -73,13 +72,12 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
     }
 
     if (h_probs != nullptr) {
-        jfloat* pprobs = env->GetFloatArrayElements(h_probs, nullptr);
-        if (!pprobs) {
+        JniFloatArrayScope pprobs_scope(env, h_probs, 0);
+        if (!pprobs_scope) {
             return;
         }
-        CUDA_CHECK_X(cudaMemcpyAsync(pprobs, d_probs, bytesProb, cudaMemcpyDeviceToHost, kTensorCudaStream));
+        CUDA_CHECK_X(cudaMemcpyAsync(pprobs_scope.ptr, d_probs, bytesProb, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
-        env->ReleaseFloatArrayElements(h_probs, pprobs, 0);
     }
     /* Без D2H в JVM: порядок с следующим *GPUDevice на kTensorCudaStream сохраняется; граница шага — synchronizeStream. */
 }
@@ -182,24 +180,19 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
         return;
     }
 
-    jfloat* pgo = env->GetFloatArrayElements(h_gradOut, nullptr);
-    jfloat* pp = env->GetFloatArrayElements(h_probs, nullptr);
-    jfloat* pq = env->GetFloatArrayElements(h_q, nullptr);
-    jfloat* pk = env->GetFloatArrayElements(h_k, nullptr);
-    jfloat* pv = env->GetFloatArrayElements(h_v, nullptr);
-    if (!pgo || !pp || !pq || !pk || !pv) {
+    JniFloatArrayScope pgo_scope(env, h_gradOut, JNI_ABORT);
+    JniFloatArrayScope pp_scope(env, h_probs, JNI_ABORT);
+    JniFloatArrayScope pq_scope(env, h_q, JNI_ABORT);
+    JniFloatArrayScope pk_scope(env, h_k, JNI_ABORT);
+    JniFloatArrayScope pv_scope(env, h_v, JNI_ABORT);
+    if (!pgo_scope || !pp_scope || !pq_scope || !pk_scope || !pv_scope) {
         return;
     }
-    CUDA_CHECK_X(cudaMemcpyAsync(d_go, pgo, bytesV, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_X(cudaMemcpyAsync(d_p, pp, bytesProb, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_X(cudaMemcpyAsync(d_q, pq, bytesQK, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_X(cudaMemcpyAsync(d_k, pk, bytesQK, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_X(cudaMemcpyAsync(d_v, pv, bytesV, cudaMemcpyHostToDevice, kTensorCudaStream));
-    env->ReleaseFloatArrayElements(h_gradOut, pgo, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_probs, pp, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_q, pq, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_k, pk, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_v, pv, JNI_ABORT);
+    CUDA_CHECK_X(cudaMemcpyAsync(d_go, pgo_scope.ptr, bytesV, cudaMemcpyHostToDevice, kTensorCudaStream));
+    CUDA_CHECK_X(cudaMemcpyAsync(d_p, pp_scope.ptr, bytesProb, cudaMemcpyHostToDevice, kTensorCudaStream));
+    CUDA_CHECK_X(cudaMemcpyAsync(d_q, pq_scope.ptr, bytesQK, cudaMemcpyHostToDevice, kTensorCudaStream));
+    CUDA_CHECK_X(cudaMemcpyAsync(d_k, pk_scope.ptr, bytesQK, cudaMemcpyHostToDevice, kTensorCudaStream));
+    CUDA_CHECK_X(cudaMemcpyAsync(d_v, pv_scope.ptr, bytesV, cudaMemcpyHostToDevice, kTensorCudaStream));
 
     int threads = jgpt_cuda_get_optimal_block_size();
     (void) threads;
@@ -235,19 +228,16 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAtte
         return;
     }
 
-    jfloat* pgq = env->GetFloatArrayElements(h_gradQ, nullptr);
-    jfloat* pgk = env->GetFloatArrayElements(h_gradK, nullptr);
-    jfloat* pgv = env->GetFloatArrayElements(h_gradV, nullptr);
-    if (!pgq || !pgk || !pgv) {
+    JniFloatArrayScope pgq_scope(env, h_gradQ, 0);
+    JniFloatArrayScope pgk_scope(env, h_gradK, 0);
+    JniFloatArrayScope pgv_scope(env, h_gradV, 0);
+    if (!pgq_scope || !pgk_scope || !pgv_scope) {
         return;
     }
-    CUDA_CHECK_X(cudaMemcpyAsync(pgq, d_gq, bytesQK, cudaMemcpyDeviceToHost, kTensorCudaStream));
-    CUDA_CHECK_X(cudaMemcpyAsync(pgk, d_gk, bytesQK, cudaMemcpyDeviceToHost, kTensorCudaStream));
-    CUDA_CHECK_X(cudaMemcpyAsync(pgv, d_gv, bytesV, cudaMemcpyDeviceToHost, kTensorCudaStream));
+    CUDA_CHECK_X(cudaMemcpyAsync(pgq_scope.ptr, d_gq, bytesQK, cudaMemcpyDeviceToHost, kTensorCudaStream));
+    CUDA_CHECK_X(cudaMemcpyAsync(pgk_scope.ptr, d_gk, bytesQK, cudaMemcpyDeviceToHost, kTensorCudaStream));
+    CUDA_CHECK_X(cudaMemcpyAsync(pgv_scope.ptr, d_gv, bytesV, cudaMemcpyDeviceToHost, kTensorCudaStream));
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
-    env->ReleaseFloatArrayElements(h_gradQ, pgq, 0);
-    env->ReleaseFloatArrayElements(h_gradK, pgk, 0);
-    env->ReleaseFloatArrayElements(h_gradV, pgv, 0);
 }
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_scaledDotProductAttentionBackwardGPUDevice(

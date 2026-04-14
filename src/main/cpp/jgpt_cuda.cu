@@ -25,6 +25,8 @@
 #include "jgpt_cuda_matmul_staging.inl"
 #include "jgpt_cuda_kernels_launches_macros.inl"
 
+#include "jgpt_cuda_jni_raii.cuh"
+
 // ========== JNI ==========
 #ifdef __cplusplus
 extern "C" {

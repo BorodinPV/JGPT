@@ -1,7 +1,9 @@
 /* JNI: OnLoad/Unload + matmul (host, fp16, batched, device, QKV/FFN)
- * 
+ *
  * Included only from jgpt_cuda.cu (single translation unit).
  */
+
+#include "jgpt_cuda_jni_raii.cuh"
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     (void) vm; (void) reserved;
@@ -36,35 +38,25 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGPU(
     size_t size_B = (size_t)K * N * sizeof(float);
     size_t size_C = (size_t)M * N * sizeof(float);
 
-    jfloat* A_ptr = env->GetFloatArrayElements(h_A, nullptr);
-    jfloat* B_ptr = env->GetFloatArrayElements(h_B, nullptr);
-    if (!A_ptr || !B_ptr) {
-        if (A_ptr) env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        if (B_ptr) env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        return;
-    }
+    JniFloatArrayScope A_scope(env, h_A, JNI_ABORT);
+    JniFloatArrayScope B_scope(env, h_B, JNI_ABORT);
+    if (!A_scope || !B_scope) return;
 
     float *d_A = nullptr, *d_B = nullptr, *d_C = nullptr;
-    if (mm_ensure_buffers(size_A, size_B, size_C, &d_A, &d_B, &d_C) != 0) {
-        env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        return;
-    }
+    if (mm_ensure_buffers(size_A, size_B, size_C, &d_A, &d_B, &d_C) != 0) return;
 
     float *pA = nullptr, *pB = nullptr, *pC = nullptr;
     int pin_ok = host_pin_ensure(size_A, size_B, size_C, &pA, &pB, &pC);
 
     if ((pin_ok == 0 || pin_ok == 1) && pA != nullptr && pB != nullptr && pC != nullptr) {
-        std::memcpy(pA, A_ptr, size_A);
-        std::memcpy(pB, B_ptr, size_B);
+        std::memcpy(pA, A_scope.ptr, size_A);
+        std::memcpy(pB, B_scope.ptr, size_B);
         CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, pA, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, pB, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
     } else {
-        CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, A_ptr, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
-        CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, B_ptr, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, A_scope.ptr, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, B_scope.ptr, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
     }
-    env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
 
     const float alpha = 1.0f, beta = 0.0f;
     cublasHandle_t handle = get_cublas_handle();
@@ -79,18 +71,17 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGPU(
         return;
     }
 
-    jfloat* C_ptr = env->GetFloatArrayElements(h_C, nullptr);
-    if (!C_ptr) return;
+    JniFloatArrayScope C_scope(env, h_C, 0);
+    if (!C_scope) return;
 
     if ((pin_ok == 0 || pin_ok == 1) && pC != nullptr) {
         CUDA_CHECK_VOID(cudaMemcpyAsync(pC, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
-        std::memcpy(C_ptr, pC, size_C);
+        std::memcpy(C_scope.ptr, pC, size_C);
     } else {
-        CUDA_CHECK_VOID(cudaMemcpyAsync(C_ptr, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(C_scope.ptr, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
     }
-    env->ReleaseFloatArrayElements(h_C, C_ptr, 0);
 }
 
 // ========== FP16 MATMUL ==========
@@ -114,35 +105,25 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGPUFp16(
     size_t size_B = (size_t)K * N * sizeof(float);
     size_t size_C = (size_t)M * N * sizeof(float);
 
-    jfloat* A_ptr = env->GetFloatArrayElements(h_A, nullptr);
-    jfloat* B_ptr = env->GetFloatArrayElements(h_B, nullptr);
-    if (!A_ptr || !B_ptr) {
-        if (A_ptr) env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        if (B_ptr) env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        return;
-    }
+    JniFloatArrayScope A_scope(env, h_A, JNI_ABORT);
+    JniFloatArrayScope B_scope(env, h_B, JNI_ABORT);
+    if (!A_scope || !B_scope) return;
 
     float *d_A = nullptr, *d_B = nullptr, *d_C = nullptr;
-    if (mm_ensure_buffers(size_A, size_B, size_C, &d_A, &d_B, &d_C) != 0) {
-        env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        return;
-    }
+    if (mm_ensure_buffers(size_A, size_B, size_C, &d_A, &d_B, &d_C) != 0) return;
 
     float *pA = nullptr, *pB = nullptr;
     int pin_ok = host_pin_ensure(size_A, size_B, 0, &pA, &pB, nullptr);
 
     if ((pin_ok == 0 || pin_ok == 1) && pA != nullptr && pB != nullptr) {
-        std::memcpy(pA, A_ptr, size_A);
-        std::memcpy(pB, B_ptr, size_B);
+        std::memcpy(pA, A_scope.ptr, size_A);
+        std::memcpy(pB, B_scope.ptr, size_B);
         CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, pA, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, pB, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
     } else {
-        CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, A_ptr, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
-        CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, B_ptr, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, A_scope.ptr, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, B_scope.ptr, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
     }
-    env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
 
     size_t nelemA = (size_t)M * K;
     size_t nelemB = (size_t)K * N;
@@ -174,20 +155,19 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGPUFp16(
         return;
     }
 
-    jfloat* C_ptr = env->GetFloatArrayElements(h_C, nullptr);
-    if (!C_ptr) return;
+    JniFloatArrayScope C_scope(env, h_C, 0);
+    if (!C_scope) return;
 
     float *pC = nullptr;
     int pin_c = host_pin_ensure(0, 0, size_C, nullptr, nullptr, &pC);
     if ((pin_c == 0 || pin_c == 1) && pC != nullptr) {
         CUDA_CHECK_VOID(cudaMemcpyAsync(pC, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
-        std::memcpy(C_ptr, pC, size_C);
+        std::memcpy(C_scope.ptr, pC, size_C);
     } else {
-        CUDA_CHECK_VOID(cudaMemcpyAsync(C_ptr, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(C_scope.ptr, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
     }
-    env->ReleaseFloatArrayElements(h_C, C_ptr, 0);
 }
 
 // ========== BATCHED MATMUL (FULL VERSION) ==========
@@ -232,35 +212,25 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulBatchedGPU(
     size_t size_B = numB * sizeof(float);
     size_t size_C = numC * sizeof(float);
 
-    jfloat* A_ptr = env->GetFloatArrayElements(h_A, nullptr);
-    jfloat* B_ptr = env->GetFloatArrayElements(h_B, nullptr);
-    if (!A_ptr || !B_ptr) {
-        if (A_ptr) env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        if (B_ptr) env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        return;
-    }
+    JniFloatArrayScope A_scope(env, h_A, JNI_ABORT);
+    JniFloatArrayScope B_scope(env, h_B, JNI_ABORT);
+    if (!A_scope || !B_scope) return;
 
     float *d_A = nullptr, *d_B = nullptr, *d_C = nullptr;
-    if (mb_ensure_buffers(size_A, size_B, size_C, &d_A, &d_B, &d_C) != 0) {
-        env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        return;
-    }
+    if (mb_ensure_buffers(size_A, size_B, size_C, &d_A, &d_B, &d_C) != 0) return;
 
     float *pA = nullptr, *pB = nullptr, *pC = nullptr;
     int pin_ok = host_pin_ensure(size_A, size_B, size_C, &pA, &pB, &pC);
 
     if ((pin_ok == 0 || pin_ok == 1) && pA != nullptr && pB != nullptr && pC != nullptr) {
-        std::memcpy(pA, A_ptr, size_A);
-        std::memcpy(pB, B_ptr, size_B);
+        std::memcpy(pA, A_scope.ptr, size_A);
+        std::memcpy(pB, B_scope.ptr, size_B);
         CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, pA, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, pB, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
     } else {
-        CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, A_ptr, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
-        CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, B_ptr, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, A_scope.ptr, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, B_scope.ptr, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
     }
-    env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
 
     const float alpha = 1.0f;
     const float beta = 0.0f;
@@ -282,18 +252,17 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulBatchedGPU(
         return;
     }
 
-    jfloat* C_ptr = env->GetFloatArrayElements(h_C, nullptr);
-    if (!C_ptr) return;
+    JniFloatArrayScope C_scope(env, h_C, 0);
+    if (!C_scope) return;
 
     if ((pin_ok == 0 || pin_ok == 1) && pC != nullptr) {
         CUDA_CHECK_VOID(cudaMemcpyAsync(pC, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
-        std::memcpy(C_ptr, pC, size_C);
+        std::memcpy(C_scope.ptr, pC, size_C);
     } else {
-        CUDA_CHECK_VOID(cudaMemcpyAsync(C_ptr, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(C_scope.ptr, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
     }
-    env->ReleaseFloatArrayElements(h_C, C_ptr, 0);
 }
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulBatchedGPUFp16(
@@ -336,35 +305,25 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulBatchedGPUFp16
     size_t size_B = numB * sizeof(float);
     size_t size_C = numC * sizeof(float);
 
-    jfloat* A_ptr = env->GetFloatArrayElements(h_A, nullptr);
-    jfloat* B_ptr = env->GetFloatArrayElements(h_B, nullptr);
-    if (!A_ptr || !B_ptr) {
-        if (A_ptr) env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        if (B_ptr) env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        return;
-    }
+    JniFloatArrayScope A_scope(env, h_A, JNI_ABORT);
+    JniFloatArrayScope B_scope(env, h_B, JNI_ABORT);
+    if (!A_scope || !B_scope) return;
 
     float *d_A = nullptr, *d_B = nullptr, *d_C = nullptr;
-    if (mb_ensure_buffers(size_A, size_B, size_C, &d_A, &d_B, &d_C) != 0) {
-        env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        return;
-    }
+    if (mb_ensure_buffers(size_A, size_B, size_C, &d_A, &d_B, &d_C) != 0) return;
 
     float *pA = nullptr, *pB = nullptr;
     int pin_ok = host_pin_ensure(size_A, size_B, 0, &pA, &pB, nullptr);
 
     if ((pin_ok == 0 || pin_ok == 1) && pA != nullptr && pB != nullptr) {
-        std::memcpy(pA, A_ptr, size_A);
-        std::memcpy(pB, B_ptr, size_B);
+        std::memcpy(pA, A_scope.ptr, size_A);
+        std::memcpy(pB, B_scope.ptr, size_B);
         CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, pA, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, pB, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
     } else {
-        CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, A_ptr, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
-        CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, B_ptr, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, A_scope.ptr, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, B_scope.ptr, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
     }
-    env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
 
     if (numA > (size_t) INT_MAX || numB > (size_t) INT_MAX) {
         fprintf(stderr, "[TensorOpsGPU] matmulBatchedGPUFp16: buffer too large for int kernel count\n");
@@ -400,20 +359,19 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulBatchedGPUFp16
         return;
     }
 
-    jfloat* C_ptr = env->GetFloatArrayElements(h_C, nullptr);
-    if (!C_ptr) return;
+    JniFloatArrayScope C_scope(env, h_C, 0);
+    if (!C_scope) return;
 
     float *pC = nullptr;
     int pin_c = host_pin_ensure(0, 0, size_C, nullptr, nullptr, &pC);
     if ((pin_c == 0 || pin_c == 1) && pC != nullptr) {
         CUDA_CHECK_VOID(cudaMemcpyAsync(pC, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
-        std::memcpy(C_ptr, pC, size_C);
+        std::memcpy(C_scope.ptr, pC, size_C);
     } else {
-        CUDA_CHECK_VOID(cudaMemcpyAsync(C_ptr, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(C_scope.ptr, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
     }
-    env->ReleaseFloatArrayElements(h_C, C_ptr, 0);
 }
 
 // ========== MATMUL + ADD + RELU ==========
@@ -441,46 +399,28 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulAddReluGPU(
     size_t size_C = (size_t) M * (size_t) N * sizeof(float);
     size_t biasBytes = (size_t) N * sizeof(float);
 
-    jfloat* A_ptr = env->GetFloatArrayElements(h_A, nullptr);
-    jfloat* B_ptr = env->GetFloatArrayElements(h_B, nullptr);
-    jfloat* bias_ptr = env->GetFloatArrayElements(h_bias, nullptr);
-    if (!A_ptr || !B_ptr || !bias_ptr) {
-        if (A_ptr) env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        if (B_ptr) env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        if (bias_ptr) env->ReleaseFloatArrayElements(h_bias, bias_ptr, JNI_ABORT);
-        return;
-    }
+    JniFloatArrayScope A_scope(env, h_A, JNI_ABORT);
+    JniFloatArrayScope B_scope(env, h_B, JNI_ABORT);
+    JniFloatArrayScope bias_scope(env, h_bias, JNI_ABORT);
+    if (!A_scope || !B_scope || !bias_scope) return;
 
     float *d_A = nullptr, *d_B = nullptr, *d_C = nullptr;
-    if (mm_ensure_buffers(size_A, size_B, size_C, &d_A, &d_B, &d_C) != 0) {
-        env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        env->ReleaseFloatArrayElements(h_bias, bias_ptr, JNI_ABORT);
-        return;
-    }
-    if (ensure_bias_device(biasBytes) != 0) {
-        env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        env->ReleaseFloatArrayElements(h_bias, bias_ptr, JNI_ABORT);
-        return;
-    }
+    if (mm_ensure_buffers(size_A, size_B, size_C, &d_A, &d_B, &d_C) != 0) return;
+    if (ensure_bias_device(biasBytes) != 0) return;
 
-    CUDA_CHECK_VOID(cudaMemcpyAsync(tl_mm_dBias, bias_ptr, biasBytes, cudaMemcpyHostToDevice, kTensorCudaStream));
+    CUDA_CHECK_VOID(cudaMemcpyAsync(tl_mm_dBias, bias_scope.ptr, biasBytes, cudaMemcpyHostToDevice, kTensorCudaStream));
 
     float *pA = nullptr, *pB = nullptr, *pC = nullptr;
     int pin_ok = host_pin_ensure(size_A, size_B, size_C, &pA, &pB, &pC);
     if ((pin_ok == 0 || pin_ok == 1) && pA != nullptr && pB != nullptr && pC != nullptr) {
-        std::memcpy(pA, A_ptr, size_A);
-        std::memcpy(pB, B_ptr, size_B);
+        std::memcpy(pA, A_scope.ptr, size_A);
+        std::memcpy(pB, B_scope.ptr, size_B);
         CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, pA, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, pB, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
     } else {
-        CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, A_ptr, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
-        CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, B_ptr, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, A_scope.ptr, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, B_scope.ptr, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
     }
-    env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_bias, bias_ptr, JNI_ABORT);
 
     const float alpha = 1.0f;
     const float beta = 0.0f;
@@ -497,17 +437,16 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulAddReluGPU(
     launch_bias_relu_inplace(d_C, tl_mm_dBias, M, N);
     CUDA_KERNEL_CHECK();
 
-    jfloat* C_ptr = env->GetFloatArrayElements(h_C, nullptr);
-    if (!C_ptr) return;
+    JniFloatArrayScope C_scope(env, h_C, 0);
+    if (!C_scope) return;
     if ((pin_ok == 0 || pin_ok == 1) && pC != nullptr) {
         CUDA_CHECK_VOID(cudaMemcpyAsync(pC, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
-        std::memcpy(C_ptr, pC, size_C);
+        std::memcpy(C_scope.ptr, pC, size_C);
     } else {
-        CUDA_CHECK_VOID(cudaMemcpyAsync(C_ptr, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(C_scope.ptr, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
     }
-    env->ReleaseFloatArrayElements(h_C, C_ptr, 0);
 }
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulAddReluGPUFp16(
@@ -533,46 +472,28 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulAddReluGPUFp16
     size_t size_C = (size_t) M * (size_t) N * sizeof(float);
     size_t biasBytes = (size_t) N * sizeof(float);
 
-    jfloat* A_ptr = env->GetFloatArrayElements(h_A, nullptr);
-    jfloat* B_ptr = env->GetFloatArrayElements(h_B, nullptr);
-    jfloat* bias_ptr = env->GetFloatArrayElements(h_bias, nullptr);
-    if (!A_ptr || !B_ptr || !bias_ptr) {
-        if (A_ptr) env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        if (B_ptr) env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        if (bias_ptr) env->ReleaseFloatArrayElements(h_bias, bias_ptr, JNI_ABORT);
-        return;
-    }
+    JniFloatArrayScope A_scope(env, h_A, JNI_ABORT);
+    JniFloatArrayScope B_scope(env, h_B, JNI_ABORT);
+    JniFloatArrayScope bias_scope(env, h_bias, JNI_ABORT);
+    if (!A_scope || !B_scope || !bias_scope) return;
 
     float *d_A = nullptr, *d_B = nullptr, *d_C = nullptr;
-    if (mm_ensure_buffers(size_A, size_B, size_C, &d_A, &d_B, &d_C) != 0) {
-        env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        env->ReleaseFloatArrayElements(h_bias, bias_ptr, JNI_ABORT);
-        return;
-    }
-    if (ensure_bias_device(biasBytes) != 0) {
-        env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-        env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-        env->ReleaseFloatArrayElements(h_bias, bias_ptr, JNI_ABORT);
-        return;
-    }
+    if (mm_ensure_buffers(size_A, size_B, size_C, &d_A, &d_B, &d_C) != 0) return;
+    if (ensure_bias_device(biasBytes) != 0) return;
 
-    CUDA_CHECK_VOID(cudaMemcpyAsync(tl_mm_dBias, bias_ptr, biasBytes, cudaMemcpyHostToDevice, kTensorCudaStream));
+    CUDA_CHECK_VOID(cudaMemcpyAsync(tl_mm_dBias, bias_scope.ptr, biasBytes, cudaMemcpyHostToDevice, kTensorCudaStream));
 
     float *pA = nullptr, *pB = nullptr;
     int pin_ok = host_pin_ensure(size_A, size_B, 0, &pA, &pB, nullptr);
     if ((pin_ok == 0 || pin_ok == 1) && pA != nullptr && pB != nullptr) {
-        std::memcpy(pA, A_ptr, size_A);
-        std::memcpy(pB, B_ptr, size_B);
+        std::memcpy(pA, A_scope.ptr, size_A);
+        std::memcpy(pB, B_scope.ptr, size_B);
         CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, pA, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, pB, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
     } else {
-        CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, A_ptr, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
-        CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, B_ptr, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(d_A, A_scope.ptr, size_A, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(d_B, B_scope.ptr, size_B, cudaMemcpyHostToDevice, kTensorCudaStream));
     }
-    env->ReleaseFloatArrayElements(h_A, A_ptr, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_B, B_ptr, JNI_ABORT);
-    env->ReleaseFloatArrayElements(h_bias, bias_ptr, JNI_ABORT);
 
     size_t nelemA = (size_t) M * (size_t) K;
     size_t nelemB = (size_t) K * (size_t) N;
@@ -605,19 +526,18 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulAddReluGPUFp16
     launch_bias_relu_inplace(d_C, tl_mm_dBias, M, N);
     CUDA_KERNEL_CHECK();
 
-    jfloat* C_ptr = env->GetFloatArrayElements(h_C, nullptr);
-    if (!C_ptr) return;
+    JniFloatArrayScope C_scope(env, h_C, 0);
+    if (!C_scope) return;
     float *pC = nullptr;
     int pin_c = host_pin_ensure(0, 0, size_C, nullptr, nullptr, &pC);
     if ((pin_c == 0 || pin_c == 1) && pC != nullptr) {
         CUDA_CHECK_VOID(cudaMemcpyAsync(pC, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
-        std::memcpy(C_ptr, pC, size_C);
+        std::memcpy(C_scope.ptr, pC, size_C);
     } else {
-        CUDA_CHECK_VOID(cudaMemcpyAsync(C_ptr, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
+        CUDA_CHECK_VOID(cudaMemcpyAsync(C_scope.ptr, d_C, size_C, cudaMemcpyDeviceToHost, kTensorCudaStream));
         CUDA_CHECK_VOID(cudaStreamSynchronize(kTensorCudaStream));
     }
-    env->ReleaseFloatArrayElements(h_C, C_ptr, 0);
 }
 
 // ========== DEVICE-POINTER MATMUL (zero-copy) ==========

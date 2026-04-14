@@ -42,39 +42,29 @@ JNIEXPORT jdouble JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sumSquaresGPUDevi
     if (nBufs <= 0) {
         return 0.0;
     }
-    jlong* pp = env->GetLongArrayElements(dPtrs, nullptr);
-    jint* ll = env->GetIntArrayElements(lens, nullptr);
+    JniLongArrayScope pp(env, dPtrs, JNI_ABORT);
+    JniIntArrayScope ll(env, lens, JNI_ABORT);
     if (!pp || !ll) {
-        if (pp) {
-            env->ReleaseLongArrayElements(dPtrs, pp, JNI_ABORT);
-        }
-        if (ll) {
-            env->ReleaseIntArrayElements(lens, ll, JNI_ABORT);
-        }
         return 0.0;
     }
     jgpt_cuda_ensure_stream();
     cublasHandle_t h = get_extra_cublas_handle();
     if (h == nullptr) {
-        env->ReleaseLongArrayElements(dPtrs, pp, JNI_ABORT);
-        env->ReleaseIntArrayElements(lens, ll, JNI_ABORT);
         return 0.0;
     }
     double acc = 0.0;
     for (jint i = 0; i < nBufs; i++) {
-        jint n = ll[i];
+        jint n = ll.ptr[i];
         if (n <= 0) {
             continue;
         }
-        uintptr_t up = static_cast<uintptr_t>(pp[i]);
+        uintptr_t up = static_cast<uintptr_t>(pp.ptr[i]);
         if (up == 0) {
             continue;
         }
         float* x = reinterpret_cast<float*>(up);
         acc += sum_squares_float_device_chunked_double_acc(h, x, n);
     }
-    env->ReleaseLongArrayElements(dPtrs, pp, JNI_ABORT);
-    env->ReleaseIntArrayElements(lens, ll, JNI_ABORT);
     CUDA_CHECK_RV(cudaStreamSynchronize(kTensorCudaStream), 0.0);
     return static_cast<jdouble>(acc);
 }
@@ -120,18 +110,14 @@ JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_anyNonFiniteGPUD
     if (nBufs <= 0) {
         return JNI_FALSE;
     }
-    jlong* pp = env->GetLongArrayElements(dPtrs, nullptr);
-    jint*  ll = env->GetIntArrayElements(lens, nullptr);
+    JniLongArrayScope pp(env, dPtrs, JNI_ABORT);
+    JniIntArrayScope ll(env, lens, JNI_ABORT);
     if (!pp || !ll) {
-        if (pp) env->ReleaseLongArrayElements(dPtrs, pp, JNI_ABORT);
-        if (ll) env->ReleaseIntArrayElements(lens,  ll, JNI_ABORT);
         return JNI_FALSE;
     }
 
     jgpt_cuda_ensure_stream();
     if (!any_nonfinite_flag_ensure()) {
-        env->ReleaseLongArrayElements(dPtrs, pp, JNI_ABORT);
-        env->ReleaseIntArrayElements(lens, ll, JNI_ABORT);
         return JNI_FALSE;
     }
     /* Единственный memset перед всеми ядрами. */
@@ -139,17 +125,14 @@ JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_anyNonFiniteGPUD
 
     int threads = jgpt_cuda_get_optimal_block_size();
     for (jint i = 0; i < nBufs; i++) {
-        jint n = ll[i];
+        jint n = ll.ptr[i];
         if (n <= 0) continue;
-        uintptr_t up = static_cast<uintptr_t>(pp[i]);
+        uintptr_t up = static_cast<uintptr_t>(pp.ptr[i]);
         if (up == 0) continue;
         float* src = reinterpret_cast<float*>(up);
         int blocks = (n + threads - 1) / threads;
         any_nonfinite_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(src, g_any_nonfinite_flag, n);
     }
-
-    env->ReleaseLongArrayElements(dPtrs, pp, JNI_ABORT);
-    env->ReleaseIntArrayElements(lens,  ll, JNI_ABORT);
 
     unsigned int h_flag = 0;
     CUDA_CHECK_RV(cudaMemcpyAsync(&h_flag, g_any_nonfinite_flag, sizeof(unsigned int),
@@ -214,10 +197,9 @@ JNIEXPORT jfloat JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftma
         CUDA_CHECK_RV(cudaMalloc(reinterpret_cast<void**>(&jgpt_extra::jgpt_extra_tls().ce.d_valid), sizeof(unsigned int)), 0.f);
     }
 
-    jfloat* ptgt = env->GetFloatArrayElements(hTargets, nullptr);
-    if (!ptgt) return 0.f;
-    CUDA_CHECK_RV(cudaMemcpyAsync(jgpt_extra::jgpt_extra_tls().ce.d_targets, ptgt, bytes_tgt, cudaMemcpyHostToDevice, kTensorCudaStream), 0.f);
-    env->ReleaseFloatArrayElements(hTargets, ptgt, JNI_ABORT);
+    JniFloatArrayScope ptgt_scope(env, hTargets, JNI_ABORT);
+    if (!ptgt_scope) return 0.f;
+    CUDA_CHECK_RV(cudaMemcpyAsync(jgpt_extra::jgpt_extra_tls().ce.d_targets, ptgt_scope.ptr, bytes_tgt, cudaMemcpyHostToDevice, kTensorCudaStream), 0.f);
     /* No cudaStreamSynchronize here: same-stream order queues memset/kernel after H2D; one sync below before D2H loss. */
 
     CUDA_CHECK_RV(cudaMemsetAsync(jgpt_extra::jgpt_extra_tls().ce.d_loss_sum, 0, sizeof(float), kTensorCudaStream), 0.f);
@@ -276,12 +258,11 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
         return;
     }
 
-    jfloat* ptgt = env->GetFloatArrayElements(hTargets, nullptr);
-    if (!ptgt) {
+    JniFloatArrayScope ptgt_scope(env, hTargets, JNI_ABORT);
+    if (!ptgt_scope) {
         return;
     }
-    std::memcpy(jgpt_extra::jgpt_extra_tls().ce.h_pinned_flt_targets, ptgt, bytes_tgt);
-    env->ReleaseFloatArrayElements(hTargets, ptgt, JNI_ABORT);
+    std::memcpy(jgpt_extra::jgpt_extra_tls().ce.h_pinned_flt_targets, ptgt_scope.ptr, bytes_tgt);
 
     CUDA_CHECK_X(cudaMemcpyAsync(
             jgpt_extra::jgpt_extra_tls().ce.d_targets,
@@ -714,15 +695,14 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_accumulateAddFromHos
     (void) clazz;
     if (len <= 0 || dAcc == 0) return;
     JGPT_CUDA_GUARD_1D(len, sizeof(float), return;);
+    JniFloatArrayScope pd_scope(env, hDelta, JNI_ABORT);
+    if (!pd_scope) return;
     float* acc = reinterpret_cast<float*>(static_cast<uintptr_t>(dAcc));
-    jfloat* pd = env->GetFloatArrayElements(hDelta, nullptr);
-    if (!pd) return;
     size_t bytes = (size_t) len * sizeof(float);
     float* d_tmp = nullptr;
     CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_tmp), bytes));
-    CUDA_CHECK_X(cudaMemcpyAsync(d_tmp, pd + off, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
+    CUDA_CHECK_X(cudaMemcpyAsync(d_tmp, pd_scope.ptr + off, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
-    env->ReleaseFloatArrayElements(hDelta, pd, JNI_ABORT);
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (len + threads - 1) / threads;
     accumulate_add_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(acc, d_tmp, len);

@@ -26,14 +26,17 @@ final class TensorOpsGpuDeviceFusedLayout {
         long wNeed = (long) dModel * vocab;
         TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(x, "x"), plane, "x");
         TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(gamma, "gamma"), dModel, "gamma");
-        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(normOut, "normOut"), plane, "normOut");
+        if (normOut != null) {
+            TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(normOut, "normOut"), plane, "normOut");
+        }
         TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(w, "w"), wNeed, "w");
         TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, "logits"), logitsNeed, "logits");
+        long dNormOut = normOut != null ? normOut.devicePointer() : 0L;
         TensorOpsGPU.rmsNormMatmulLmHeadGPUDevice(
                 x.devicePointer(),
                 gamma.devicePointer(),
                 eps,
-                normOut.devicePointer(),
+                dNormOut,
                 w.devicePointer(),
                 logits.devicePointer(),
                 rows,

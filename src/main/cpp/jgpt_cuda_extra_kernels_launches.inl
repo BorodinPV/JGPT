@@ -126,33 +126,52 @@ __device__ __forceinline__ float warpReduceSum32(float v) {
     return v;
 }
 
+// Вызывается всеми kSoftmaxBlockDim нитями; возвращает {broadcast-max, broadcast-sum} блока.
+// Fused версия: один проход shared memory вместо двух — 2 __syncthreads вместо 4.
+__device__ __forceinline__ void blockReduceMaxSum256(float val, float* smem, float& outMax, float& outSum) {
+    // Warp-level reduction
+    float wMax = warpReduceMax32(val);
+    float wSum = warpReduceSum32(val);
+    // Запись результатов warps в shared memory
+    if ((threadIdx.x & 31) == 0) {
+        smem[threadIdx.x >> 5] = wMax;
+        smem[kSoftmaxNumWarps + (threadIdx.x >> 5)] = wSum;
+    }
+    __syncthreads();
+    // Первый warp читает и финально редьюсит
+    if (threadIdx.x < 32) {
+        float bMax = (threadIdx.x < kSoftmaxNumWarps) ? smem[threadIdx.x] : -INFINITY;
+        float bSum = (threadIdx.x < kSoftmaxNumWarps) ? smem[kSoftmaxNumWarps + threadIdx.x] : 0.f;
+        bMax = warpReduceMax32(bMax);
+        bSum = warpReduceSum32(bSum);
+        if (threadIdx.x == 0) {
+            smem[0] = bMax;
+            smem[kSoftmaxNumWarps] = bSum;
+        }
+    }
+    __syncthreads();
+    outMax = smem[0];
+    outSum = smem[kSoftmaxNumWarps];
+}
+
 // Вызывается всеми kSoftmaxBlockDim нитями; возвращает broadcast-max блока.
 __device__ float blockReduceMax256(float v, float* smem) {
-    v = warpReduceMax32(v);
-    if ((threadIdx.x & 31) == 0) smem[threadIdx.x >> 5] = v;
-    __syncthreads();
-    float bv = (threadIdx.x < kSoftmaxNumWarps) ? smem[threadIdx.x] : -INFINITY;
-    if (threadIdx.x < 32) bv = warpReduceMax32(bv);
-    if (threadIdx.x == 0) smem[0] = bv;
-    __syncthreads();
-    return smem[0];
+    float maxv, sumv;
+    blockReduceMaxSum256(v, smem, maxv, sumv);
+    return maxv;
 }
 
 // Вызывается всеми kSoftmaxBlockDim нитями; возвращает broadcast-sum блока.
 __device__ float blockReduceSum256(float v, float* smem) {
-    v = warpReduceSum32(v);
-    if ((threadIdx.x & 31) == 0) smem[threadIdx.x >> 5] = v;
-    __syncthreads();
-    float bv = (threadIdx.x < kSoftmaxNumWarps) ? smem[threadIdx.x] : 0.f;
-    if (threadIdx.x < 32) bv = warpReduceSum32(bv);
-    if (threadIdx.x == 0) smem[0] = bv;
-    __syncthreads();
-    return smem[0];
+    float maxv, sumv;
+    blockReduceMaxSum256(v, smem, maxv, sumv);
+    return sumv;
 }
 
 /**
  * Softmax по последней оси, block-per-row.
- * Запуск: gridDim.x=nrows, blockDim.x=kSoftmaxBlockDim, smem=kSoftmaxNumWarps*sizeof(float).
+ * Запуск: gridDim.x=nrows, blockDim.x=kSoftmaxBlockDim, smem=2*kSoftmaxNumWarps*sizeof(float).
+ * Использует fused blockReduceMaxSum256 где возможно (2 __syncthreads вместо 4).
  */
 __global__ void softmax_last_dim_block_kernel(
         const float* __restrict__ src, float* __restrict__ dst,
@@ -190,7 +209,8 @@ static void launch_softmax_last_dim_block_chunked(
         fprintf(stderr, "softmax_last_dim_block: row*inner offset overflow\n");
         return;
     }
-    const size_t smem = static_cast<size_t>(kSoftmaxNumWarps) * sizeof(float);
+    // 2*kSoftmaxNumWarps для fused blockReduceMaxSum256 (max + sum в одном shared буфере)
+    const size_t smem = static_cast<size_t>(kSoftmaxNumWarps * 2) * sizeof(float);
     const unsigned int chunk_cap = jgpt_extra_cuda_max_grid_x();
     const long long chunk_ll = static_cast<long long>(chunk_cap);
 
@@ -585,7 +605,8 @@ static constexpr int kRmsNormFwdBlockThreshold = 64;
 static void launch_rms_norm_fwd(const float* src, const float* gamma, float* dst,
         int outer, int lastDim, float eps) {
     if (lastDim >= kRmsNormFwdBlockThreshold) {
-        size_t smem = kSoftmaxNumWarps * sizeof(float);
+        // 2*kSoftmaxNumWarps для fused blockReduceMaxSum256
+        size_t smem = kSoftmaxNumWarps * 2 * sizeof(float);
         rms_norm_fwd_block_kernel<<<outer, kSoftmaxBlockDim, smem, kTensorCudaStream>>>(
                 src, gamma, dst, outer, lastDim, eps);
     } else {
@@ -595,6 +616,52 @@ static void launch_rms_norm_fwd(const float* src, const float* gamma, float* dst
                 src, gamma, dst, outer, lastDim, eps);
     }
     CUDA_KERNEL_CHECK();
+}
+
+/**
+ * Fused RMSNorm + Matmul: один kernel нормализует строку и сразу умножает на W.
+ * Экономит запись/чтение промежуточного буфера dNormOut (rows×dModel floats).
+ * W [dModel × vocab] row-major: W[d, v] по адресу lmHead + d*vocab + v.
+ * logits [rows × vocab] row-major.
+ */
+__global__ void fused_rms_norm_matmul_kernel(
+        const float* __restrict__ x,
+        const float* __restrict__ gamma,
+        const float* __restrict__ lmHead,
+        float* __restrict__ logits,
+        int rows,
+        int dModel,
+        int vocab,
+        float eps) {
+    const long long row_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (row_ll >= (long long)rows) {
+        return;
+    }
+    const int row = (int)row_ll;
+    const ptrdiff_t xBase = (ptrdiff_t)row * (ptrdiff_t)dModel;
+    const ptrdiff_t outBase = (ptrdiff_t)row * (ptrdiff_t)vocab;
+
+    // Шаг 1: RMSNorm — считаем rms для строки
+    float sumSq = 0.f;
+    for (int d = 0; d < dModel; d++) {
+        float v = x[xBase + d];
+        sumSq += v * v;
+    }
+    float rms = sqrtf(sumSq / (float)dModel + eps);
+    float invRms = (rms > 0.f && isfinite(rms)) ? (1.f / rms) : 0.f;
+
+    // Шаг 2: Matmul — нормализованная строка @ W
+    // normed[d] = x[xBase+d] * invRms * gamma[d]
+    // logits[row, v] = sum_d normed[d] * W[d, v]
+    // W[d, v] = lmHead[d * vocab + v]
+    for (int v = 0; v < vocab; v++) {
+        float acc = 0.f;
+        for (int d = 0; d < dModel; d++) {
+            float normed = x[xBase + d] * invRms * gamma[d];
+            acc += normed * lmHead[(ptrdiff_t)d * (ptrdiff_t)vocab + v];
+        }
+        logits[outBase + v] = acc;
+    }
 }
 
 __device__ float gelu_tanh_dev(float x) {

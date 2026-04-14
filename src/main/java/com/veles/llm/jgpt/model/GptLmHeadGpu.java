@@ -44,6 +44,9 @@ final class GptLmHeadGpu {
     /**
      * Предпочитает fused JNI при {@link #fusedLmHeadFromEnv()}; при {@link Throwable} — один раз в лог и откат на
      * раздельный путь.
+     *
+     * <p>Fused path: normScratch=null → dNormOut=0 → один fused kernel без промежуточного буфера.
+     * Split path: normScratch != null → RMSNorm + cuBLAS GEMM (обратная совместимость).
      */
     static void applyFusedPreferredThenSplit(
             GpuFloatBuffer xBeforeNorm,
@@ -60,11 +63,12 @@ final class GptLmHeadGpu {
             return;
         }
         try {
+            // Fused path: передаём null для normScratch → dNormOut=0 → fused kernel
             TensorOpsGPU.rmsNormMatmulLmHeadGpuDevice(
                     xBeforeNorm,
                     gamma,
                     eps,
-                    normScratch,
+                    null,  // fused path: без промежуточного буфера
                     w,
                     logitsOut,
                     rows,

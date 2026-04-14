@@ -30,7 +30,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_softmaxLastDimGPU(
         return;
     }
     CUDA_CHECK_X(cudaMemcpyAsync(d_src, p_src_raii1.ptr, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
+    /* No sync: kernel launch on same stream is ordered after H2D automatically. */
 
     launch_softmax_last_dim(d_src, d_dst, nrows_ll, inner, useFp16Softmax == JNI_TRUE);
     CUDA_KERNEL_CHECK();
@@ -83,7 +83,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     }
     CUDA_CHECK_X(cudaMemcpyAsync(jgpt_extra::jgpt_extra_tls().ce.d_logits, plog_raii3.ptr, bytes_logits, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaMemcpyAsync(jgpt_extra::jgpt_extra_tls().ce.d_targets, ptgt_raii4.ptr, bytes_tgt, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
+    /* No sync: kernel launch on same stream is ordered after H2D automatically. */
 
     CUDA_CHECK_X(cudaMemsetAsync(jgpt_extra::jgpt_extra_tls().ce.d_loss_sum, 0, sizeof(float), kTensorCudaStream));
     CUDA_CHECK_X(cudaMemsetAsync(jgpt_extra::jgpt_extra_tls().ce.d_valid, 0, sizeof(unsigned int), kTensorCudaStream));
@@ -155,7 +155,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
 
     CUDA_CHECK_X(cudaMemcpyAsync(jgpt_extra::jgpt_extra_tls().ce.d_logits, plog, bytes_logits, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaMemcpyAsync(jgpt_extra::jgpt_extra_tls().ce.d_targets, ptgt, bytes_tgt, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
+    /* No sync: kernel launch on same stream is ordered after H2D automatically. */
 
     CUDA_CHECK_X(cudaMemsetAsync(jgpt_extra::jgpt_extra_tls().ce.d_loss_sum, 0, sizeof(float), kTensorCudaStream));
     CUDA_CHECK_X(cudaMemsetAsync(jgpt_extra::jgpt_extra_tls().ce.d_valid, 0, sizeof(unsigned int), kTensorCudaStream));
@@ -236,7 +236,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_layerNormGPU(
     CUDA_CHECK_X(cudaMemcpyAsync(d_x, px_raii9.ptr, bytes_x, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaMemcpyAsync(d_g, pg_raii10.ptr, bytes_g, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaMemcpyAsync(d_b, pb_raii11.ptr, bytes_g, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
+    /* No sync: kernel launch on same stream is ordered after H2D automatically. */
 
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (outer + threads - 1) / threads;
@@ -285,7 +285,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormGPU(
     }
     CUDA_CHECK_X(cudaMemcpyAsync(d_x, px_raii13.ptr, bytes_x, cudaMemcpyHostToDevice, kTensorCudaStream));
     CUDA_CHECK_X(cudaMemcpyAsync(d_g, pg_raii14.ptr, bytes_g, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
+    /* No sync: kernel launch on same stream is ordered after H2D automatically. */
 
     int threads = jgpt_cuda_get_optimal_block_size();
     (void) threads;
@@ -336,7 +336,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormMatmulLmHeadG
     jboolean useFp16Rms) {
     (void) env;
     (void) clazz;
-    if (dX == 0 || dGamma == 0 || dNormOut == 0 || dW == 0 || dLogits == 0) {
+    if (dX == 0 || dGamma == 0 || dW == 0 || dLogits == 0) {
         return;
     }
     if (rows <= 0 || dModel <= 0 || vocab <= 0) {
@@ -345,23 +345,34 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormMatmulLmHeadG
     jgpt_cuda_ensure_stream();
     const float* x = reinterpret_cast<const float*>(static_cast<uintptr_t>(dX));
     const float* gamma = reinterpret_cast<const float*>(static_cast<uintptr_t>(dGamma));
-    float* normOut = reinterpret_cast<float*>(static_cast<uintptr_t>(dNormOut));
     const float* w = reinterpret_cast<const float*>(static_cast<uintptr_t>(dW));
     float* logits = reinterpret_cast<float*>(static_cast<uintptr_t>(dLogits));
-    int threads = jgpt_cuda_get_optimal_block_size();
-    (void) threads;
-    launch_rms_norm_fwd(x, gamma, normOut, rows, dModel, eps);
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    cublasHandle_t handle = get_extra_cublas_handle();
-    if (handle == nullptr) {
-        fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: cuBLAS handle unavailable\n");
-        return;
-    }
-    cublasStatus_t st =
-            cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, vocab, rows, dModel, &alpha, w, vocab, normOut, dModel, &beta, logits, vocab);
-    if (st != CUBLAS_STATUS_SUCCESS) {
-        fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: cublasSgemm failed (status %d)\n", (int) st);
+
+    if (dNormOut == 0) {
+        // Fused path: один kernel без промежуточного буфера
+        int threads = jgpt_cuda_get_optimal_block_size();
+        int blocks = (rows + threads - 1) / threads;
+        fused_rms_norm_matmul_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
+                x, gamma, w, logits, rows, dModel, vocab, eps);
+        CUDA_KERNEL_CHECK();
+    } else {
+        // Classic path: RMSNorm → промежуточный буфер → cuBLAS GEMM
+        float* normOut = reinterpret_cast<float*>(static_cast<uintptr_t>(dNormOut));
+        int threads = jgpt_cuda_get_optimal_block_size();
+        (void) threads;
+        launch_rms_norm_fwd(x, gamma, normOut, rows, dModel, eps);
+        const float alpha = 1.0f;
+        const float beta = 0.0f;
+        cublasHandle_t handle = get_extra_cublas_handle();
+        if (handle == nullptr) {
+            fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: cuBLAS handle unavailable\n");
+            return;
+        }
+        cublasStatus_t st =
+                cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, vocab, rows, dModel, &alpha, w, vocab, normOut, dModel, &beta, logits, vocab);
+        if (st != CUBLAS_STATUS_SUCCESS) {
+            fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: cublasSgemm failed (status %d)\n", (int) st);
+        }
     }
 }
 
@@ -423,7 +434,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_geluGPU(
         return;
     }
     CUDA_CHECK_X(cudaMemcpyAsync(d_a, pa_raii16.ptr, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
+    /* No sync: kernel launch on same stream is ordered after H2D automatically. */
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (n + threads - 1) / threads;
     gelu_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_a, d_b, n);
@@ -457,7 +468,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sigmoidGPU(
         return;
     }
     CUDA_CHECK_X(cudaMemcpyAsync(d_a, pa_raii18.ptr, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
+    /* No sync: kernel launch on same stream is ordered after H2D automatically. */
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (n + threads - 1) / threads;
     sigmoid_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_a, d_b, n);
@@ -559,7 +570,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_multiplyScalarGPU(
         return;
     }
     CUDA_CHECK_X(cudaMemcpyAsync(d_a, pa_raii23.ptr, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
-    CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
+    /* No sync: kernel launch on same stream is ordered after H2D automatically. */
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (n + threads - 1) / threads;
     mul_scalar_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_a, d_b, n, scalar);

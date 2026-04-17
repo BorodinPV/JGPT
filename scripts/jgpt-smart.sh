@@ -33,6 +33,7 @@ jgpt__maven_opts() {
     if [[ -n "${JGPT_JAVA_MEM:-}" ]]; then
         export MAVEN_OPTS="${JGPT_JAVA_MEM} ${MAVEN_OPTS:-}"
     fi
+    export JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64
 }
 
 jgpt__export_train_env() {

@@ -189,7 +189,7 @@ public final class LLMConfig {
     /**
      * Runtime override from env {@code JGPT_MAX_SEQ_LEN}.
      * <p>
-     * Позволяет уменьшить контекст без перекомпиляции. Актуально при OOM: на RTX 3080 10 ГиБ
+     * Позволяет уменьшить контекст без перекомпиляции. Актуально при OOM:
      * с 20 слоями и 24 головами кэш attention для backward = {@code heads × seq² × 2 bytes × layers}.
      * При seq=2048 → ~4 ГиБ; при seq=1024 → ~1 ГиБ.
      * <p>Пример: {@code JGPT_MAX_SEQ_LEN=1024 ./scripts/jgpt-smart.sh}

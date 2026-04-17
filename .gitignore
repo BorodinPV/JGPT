@@ -15,6 +15,7 @@ hs_err_pid*.log
 /.cursor/
 /.qwen/
 /.mvn/
+/.gigaide/
 *.iml
 
 # Profiling
@@ -31,3 +32,4 @@ state/current.env
 
 # Training data (provide your own)
 /data/
+/clean_corpus/

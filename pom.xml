@@ -96,7 +96,6 @@
                     <mainClass>${exec.mainClass}</mainClass>
                     <classpathScope>runtime</classpathScope>
                     <includeProjectDependencies>true</includeProjectDependencies>
-                    <argLine>--add-modules=jdk.incubator.vector --enable-preview --sun-misc-unsafe-memory-access=allow</argLine>
                 </configuration>
             </plugin>
 

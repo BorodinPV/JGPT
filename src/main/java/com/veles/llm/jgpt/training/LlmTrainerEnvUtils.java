@@ -70,6 +70,18 @@ final class LlmTrainerEnvUtils {
         return 500;
     }
 
+    static int readVramCleanupEveryStepsFromEnv() {
+        try {
+            String e = System.getenv("JGPT_VRAM_CLEANUP_EVERY_STEPS");
+            if (e != null && !e.isBlank()) {
+                int v = Integer.parseInt(e.trim());
+                return Math.max(0, v);
+            }
+        } catch (Exception ignored) {
+        }
+        return 1000;
+    }
+
     static boolean batchPrefetchEnabled() {
         if (Boolean.getBoolean("jgpt.batch.prefetch")) {
             return true;

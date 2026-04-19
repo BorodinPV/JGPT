@@ -1184,6 +1184,25 @@ public final class LLMTrainer {
                     TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
                 }
 
+                /* Периодическая очистка активационных кэшей модели каждые N шагов для предотвращения
+                 * утечки VRAM при GROW_ONLY=1. Буферы в blockCachesDevice[] растут до максимума
+                 * и не освобождаются автоматически в течение эпохи.
+                 * Настраивается через JGPT_VRAM_CLEANUP_EVERY_STEPS (по умолчанию 1000, 0 - отключить). */
+                int vramCleanupEverySteps = LlmTrainerEnvUtils.readVramCleanupEveryStepsFromEnv();
+                if (vramCleanupEverySteps > 0 && globalStep % vramCleanupEverySteps == 0 && model.isGpuResident()) {
+                    if (log.isDebugEnabled()) {
+                        log.debug("{} периодическая очистка VRAM на шаге {}", LogFmt.badge("VRAM"), globalStep);
+                    }
+                    /* Очистка ThreadLocal пула и активационных кэшей модели */
+                    BlockActivationCacheDevice.purgeThreadLocalPool();
+                    model.prepareForTrainingAfterInteractiveGeneration();
+                    GpuPendingGradients.cleanupThreadLocal();
+                    GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
+                    TensorOpsGPU.synchronizeStream();
+                    TensorOpsGPU.drainDeferredGpuBuffers();
+                    TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+                }
+
                 if (globalStep % config.saveEverySteps == 0) {
                     saveCheckpoint("step_" + globalStep);
                 }
@@ -1265,6 +1284,21 @@ public final class LLMTrainer {
             /* Очистка ThreadLocal пула BlockActivationCacheDevice для предотвращения утечки VRAM.
              * Пул накапливает буферы при POOL=1, которые не освобождаются при смерти потоков. */
             BlockActivationCacheDevice.purgeThreadLocalPool();
+            if (log.isInfoEnabled()) {
+                log.info("{} очистка VRAM после эпохи: пул BlockActivationCacheDevice очищен", LogFmt.badge("VRAM"));
+            }
+
+            /* Очистка активационных кэшей модели для предотвращения утечки VRAM при GROW_ONLY=1.
+             * Буферы в blockCachesDevice[] растут до максимального размера и не освобождаются между эпохами. */
+            if (model.isGpuResident()) {
+                model.prepareForTrainingAfterInteractiveGeneration();
+                TensorOpsGPU.synchronizeStream();
+                TensorOpsGPU.drainDeferredGpuBuffers();
+                TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+                if (log.isInfoEnabled()) {
+                    log.info("{} очистка VRAM после эпохи: активационные кэши модели очищены", LogFmt.badge("VRAM"));
+                }
+            }
 
             /* Очистка ThreadLocal GpuPendingGradients для предотвращения утечки VRAM. */
             GpuPendingGradients.cleanupThreadLocal();

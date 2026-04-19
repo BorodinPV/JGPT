@@ -128,6 +128,22 @@ cat state/current_preset_idx
 
 ---
 
+## Производительность (RTX 3080, пресет 02-stable)
+
+| Метрика | Значение |
+|---------|----------|
+| Throughput | ~26 000 tokens/sec |
+| Время шага | ~1250 мс (forward 600 + CE 9 + backward 620 + optimizer 35) |
+| VRAM | ~5.2 GB / 10 GB |
+
+### Ключевые оптимизации
+
+- **FlashAttention-2** — tile size 128, полностью fused attention
+- **Optimized CE** — block-per-row kernel, 12x faster (~110ms → ~9ms)
+- **Warp-level reduction** — для embedding gradients, 32x less atomic contention
+- **CUDA Graph** — на уровне декодер-слоёв, уменьшает CPU launch overhead
+- **cuBLAS GEMM** — FP16 Tensor Cores для всех матричных операций
+
 ## Ключевые параметры (в `env/*.env`)
 
 | Переменная | Описание |
@@ -136,7 +152,7 @@ cat state/current_preset_idx
 | `JGPT_SAMPLED_CE_CANDIDATES` | Кандидаты sampled CE |
 | `JGPT_FP16_DYNAMIC_INITIAL` | Начальный loss scale |
 | `JGPT_FP16_DYNAMIC_GROWTH_INTERVAL` | Интервал роста scale |
-| `JGPT_DECODER_LAYER_CUDA_GRAPH` | CUDA graph на декодер-слой (1/0) |
+| `JGPT_DECODER_LAYER_CUDA_GRAPH` | CUDA graph на декодер-слой (1/0). Включено по умолчанию — даёт +5-10% скорости |
 
 ---
 

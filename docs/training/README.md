@@ -10,6 +10,8 @@
 | С явного пресета | `./scripts/jgpt-smart.sh 01-aggressive` |
 | Напрямую через Maven | `mvn -q compile exec:java -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain -Dexec.args='--boo .'` (после `cmake` и экспорта `JGPT_*`) |
 
+**Производительность:** ~26k tokens/sec на RTX 3080 (10 GB) с пресетом 02-stable.
+
 ### Как работает `jgpt-smart.sh`
 
 Один скрипт в `scripts/`:

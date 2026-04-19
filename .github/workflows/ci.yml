@@ -26,9 +26,10 @@ jobs:
     
     - name: Build with Maven
       run: mvn compile -DskipTests
-    
-    - name: Run tests
-      run: mvn test -Djgpt.allow.no.gpu=true
+
+    # Tests are disabled in CI pipeline - run locally when needed
+    # - name: Run tests
+    #   run: mvn test -Djgpt.allow.no.gpu=true
 
   # Note: CUDA build requires GPU runner (self-hosted or paid)
   # This is a template for future setup

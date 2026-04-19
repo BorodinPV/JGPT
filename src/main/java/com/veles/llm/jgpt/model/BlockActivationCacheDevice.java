@@ -113,6 +113,12 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
     private static final ThreadLocal<Map<ArchKey, ArrayDeque<PooledBuffers>>> BLOCK_CACHE_POOL =
             ThreadLocal.withInitial(HashMap::new);
 
+    /** Счетчик использования пула для текущего потока - для периодической очистки. */
+    private static final ThreadLocal<Long> POOL_ACCESS_COUNT = ThreadLocal.withInitial(() -> 0L);
+
+    /** Интервал очистки пула (в количестве обращений). По умолчанию 100. */
+    private static final int POOL_CLEANUP_INTERVAL = blockCachePoolCleanupIntervalFromEnv();
+
     public BlockActivationCacheDevice() {}
 
     /** Как фактически выделен кэш после {@link #ensure}; до ensure — {@code false}. */
@@ -705,6 +711,23 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         }
     }
 
+    private static int blockCachePoolCleanupIntervalFromEnv() {
+        String e = System.getenv("JGPT_BLOCK_CACHE_POOL_CLEANUP_INTERVAL");
+        if (e == null) {
+            return 100;
+        }
+        String t = e.trim();
+        if (t.isEmpty()) {
+            return 100;
+        }
+        try {
+            int v = Integer.parseInt(t);
+            return v < 1 ? 100 : v;
+        } catch (NumberFormatException ex) {
+            return 100;
+        }
+    }
+
     private void returnOrFreeBuffers() {
         if (!isAllocated()) {
             return;
@@ -751,6 +774,14 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         if (!blockActivationCachePoolFromEnv()) {
             return null;
         }
+
+        // Периодическая очистка пула для предотвращения утечки VRAM
+        long accessCount = POOL_ACCESS_COUNT.get() + 1;
+        POOL_ACCESS_COUNT.set(accessCount);
+        if (accessCount % POOL_CLEANUP_INTERVAL == 0) {
+            cleanupStalePooledBuffers();
+        }
+
         Map<ArchKey, ArrayDeque<PooledBuffers>> m = BLOCK_CACHE_POOL.get();
         ArchKey key = new ArchKey(dModel, numHeads, dIntermediate, fp16);
         ArrayDeque<PooledBuffers> q = m.get(key);
@@ -769,6 +800,67 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         }
         q.addAll(keep);
         return found;
+    }
+
+    /**
+     * Очищает "устаревшие" буферы из пула - закрывает буферы, которые превышают лимит размера пула.
+     * Вызывается периодически для предотвращения бесконечного роста потребления VRAM.
+     */
+    private static void cleanupStalePooledBuffers() {
+        if (!blockActivationCachePoolFromEnv()) {
+            return;
+        }
+        Map<ArchKey, ArrayDeque<PooledBuffers>> m = BLOCK_CACHE_POOL.get();
+        if (m.isEmpty()) {
+            return;
+        }
+
+        int cap = blockActivationCachePoolMaxFromEnv();
+        long totalFreed = 0;
+
+        for (ArrayDeque<PooledBuffers> q : m.values()) {
+            // Оставляем только половину от максимального размера пула
+            int targetSize = Math.max(1, cap / 2);
+            while (q.size() > targetSize) {
+                PooledBuffers ev = q.pollLast();
+                if (ev != null) {
+                    ev.closeAll();
+                    totalFreed++;
+                }
+            }
+        }
+
+        if (totalFreed > 0 && CACHE_LOG.isLoggable(Level.FINE)) {
+            CACHE_LOG.log(Level.FINE, "Cleaned up {0} stale pooled buffers from thread-local pool", totalFreed);
+        }
+    }
+
+    /**
+     * Явная очистка всех пулов текущего потока.
+     * Должна вызываться при завершении эпохи или при OOM.
+     */
+    public static void purgeThreadLocalPool() {
+        Map<ArchKey, ArrayDeque<PooledBuffers>> m = BLOCK_CACHE_POOL.get();
+        if (m.isEmpty()) {
+            return;
+        }
+
+        long totalFreed = 0;
+        for (ArrayDeque<PooledBuffers> q : m.values()) {
+            while (!q.isEmpty()) {
+                PooledBuffers p = q.poll();
+                if (p != null) {
+                    p.closeAll();
+                    totalFreed++;
+                }
+            }
+        }
+        m.clear();
+        POOL_ACCESS_COUNT.set(0L);
+
+        if (totalFreed > 0) {
+            CACHE_LOG.log(Level.INFO, "Purged {0} pooled buffers from thread-local pool", totalFreed);
+        }
     }
 
     private static final class ArchKey {

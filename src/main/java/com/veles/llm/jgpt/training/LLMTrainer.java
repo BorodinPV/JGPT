@@ -8,6 +8,7 @@ import com.veles.llm.jgpt.cuda.GpuPendingGradients;
 import com.veles.llm.jgpt.cuda.GpuTensor;
 import com.veles.llm.jgpt.cuda.TensorCudaLibrary;
 import com.veles.llm.jgpt.data.DataLoader;
+import com.veles.llm.jgpt.model.BlockActivationCacheDevice;
 import com.veles.llm.jgpt.model.GPTModel;
 import com.veles.llm.jgpt.ops.GpuWorkspaceCleanup;
 import com.veles.llm.jgpt.ops.TensorOps;
@@ -1252,14 +1253,18 @@ public final class LLMTrainer {
             saveCheckpoint("epoch_" + (epoch + 1));
             dataLoader.reset();
             /* После каждой эпохи сбрасываем async memory pool — иначе при большом batch (batch>1) пул
+            /* После каждой эпохи сбрасываем async memory pool — иначе при большом batch (batch>1) пул
              * накапливает фрагментацию между eval-вызовами: eval+trim происходит 1 раз в ~batch/1 эпох,
              * а временные буферы forward/backward занимают пул между trimами. */
             if (model.isGpuResident() && TensorOpsGPU.isGpuAvailable()) {
                 TensorOpsGPU.drainDeferredGpuBuffers();
                 TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
             }
-        }
 
+            /* Очистка ThreadLocal пула BlockActivationCacheDevice для предотвращения утечки VRAM.
+             * Пул накапливает буферы при POOL=1, которые не освобождаются при смерти потоков. */
+            BlockActivationCacheDevice.purgeThreadLocalPool();
+        }
         if (trainingStoppedEarly) {
             log.info("{} обучение остановлено по раннему критерию", LogFmt.badge("STOP"));
         } else {

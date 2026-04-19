@@ -47,6 +47,10 @@ foreach (TGT jgpt_cuda jgpt_cuda_extra)
             -diag-suppress=177
         >
     )
+    # FlashAttention tile size from environment (default 144)
+    if(DEFINED ENV{JGPT_FA_TILE_SIZE})
+        target_compile_definitions(${TGT} PRIVATE JGPT_FA_TILE_SIZE=$ENV{JGPT_FA_TILE_SIZE})
+    endif()
 endforeach ()
 
 # libjgpt_cuda.so подтягивает libjgpt_cuda_extra.so из того же каталога (build/), плюс системный CUDA.

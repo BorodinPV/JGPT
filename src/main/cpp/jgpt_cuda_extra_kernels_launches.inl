@@ -1900,9 +1900,14 @@ static bool attn_fwd_run_core(
 //  Tile sizes: Br = Bc = kFaBr.  Head dim: kFaDh (compile-time).
 // ============================================================
 
-static constexpr int kFaDh = 16;    // d_head
-static constexpr int kFaBr = 128;    // query tile rows  (= block size for fwd / dQ)
-static constexpr int kFaBc = 128;    // KV tile rows     (= block size for dKdV)
+// FlashAttention tile sizes (configurable via JGPT_FA_TILE_SIZE env var, default 144)
+// Valid values: 64, 96, 128, 144, 160, 192, 208 (limited by shared memory)
+static constexpr int kFaDh = 16;    // d_head (compile-time fixed)
+#ifndef JGPT_FA_TILE_SIZE
+#define JGPT_FA_TILE_SIZE 144
+#endif
+static constexpr int kFaBr = JGPT_FA_TILE_SIZE;    // query tile rows
+static constexpr int kFaBc = JGPT_FA_TILE_SIZE;    // KV tile rows
 
 static_assert(kFaDh > 0 && (kFaDh % 2) == 0, "FlashAttention: d_head must be positive even");
 

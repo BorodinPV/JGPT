@@ -66,6 +66,9 @@ public final class LlmTextGeneration {
         for (int i = 0; i < n; i++) {
             tokens[i] = (int) buf[i];
         }
-        return tokenizer.decode(tokens);
+        String text = tokenizer.decode(tokens);
+        // Нормализуем пробелы: модель часто генерирует двойные/тройные пробелы
+        // (особенно после знаков пунктуации)
+        return text.replaceAll("\\s{2,}", " ").trim();
     }
 }

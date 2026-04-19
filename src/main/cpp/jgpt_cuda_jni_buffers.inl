@@ -357,8 +357,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyHtoDFloa
     JNIEnv* env, jclass clazz, jlong devicePtr, jobject floatBuf, jlong floatOffset, jlong numFloats) {
     (void) clazz;
     if (devicePtr == 0 || floatBuf == nullptr || numFloats <= 0) return;
-    if (floatOffset < 0 || jgpt_jni_long_elems_invalid(floatOffset, sizeof(float))
-            || jgpt_jni_long_elems_invalid(numFloats, sizeof(float))) {
+    if (floatOffset < 0 || jgpt_jni_long_elems_invalid(numFloats, sizeof(float))) {
         return;
     }
     jgpt_cuda_ensure_stream();
@@ -386,8 +385,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_GpuFloatBuffer_nativeCopyDtoHFloa
     JNIEnv* env, jclass clazz, jlong devicePtr, jobject floatBuf, jlong floatOffset, jlong numFloats) {
     (void) clazz;
     if (devicePtr == 0 || floatBuf == nullptr || numFloats <= 0) return;
-    if (floatOffset < 0 || jgpt_jni_long_elems_invalid(floatOffset, sizeof(float))
-            || jgpt_jni_long_elems_invalid(numFloats, sizeof(float))) {
+    if (floatOffset < 0 || jgpt_jni_long_elems_invalid(numFloats, sizeof(float))) {
         return;
     }
     jgpt_cuda_ensure_stream();

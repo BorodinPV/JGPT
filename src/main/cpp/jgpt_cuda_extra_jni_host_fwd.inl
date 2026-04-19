@@ -106,7 +106,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
 
 
-    JniFloatArrayScope plo_raii6(env, h_lossOut, JNI_ABORT);
+    JniFloatArrayScope plo_raii6(env, h_lossOut, 0);
     if (plo_raii6.ptr) {
         plo_raii6.ptr[0] = (h_valid == 0U) ? 0.f : (h_loss_sum / (float)h_valid);
     }
@@ -178,7 +178,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_crossEntropySoftmaxG
     CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
 
 
-    JniFloatArrayScope plo_raii8(env, h_loss_out, JNI_ABORT);
+    JniFloatArrayScope plo_raii8(env, h_loss_out, 0);
     if (plo_raii8.ptr) {
         plo_raii8.ptr[0] = (h_valid == 0U) ? 0.f : (h_loss_sum / (float) h_valid);
     }

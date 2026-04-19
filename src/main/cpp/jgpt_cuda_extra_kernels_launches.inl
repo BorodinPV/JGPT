@@ -980,29 +980,8 @@ __global__ void embedding_token_bwd_kernel(
     if (token < 0 || token >= vocabSize) {
         return;
     }
-    
-    // Optimized: warp-level aggregation before atomicAdd
     float grad = gradOut[idx];
-    
-    // Find all threads in warp with same (token, j) and sum their gradients
-    int warpId = threadIdx.x / 32;
-    int laneId = threadIdx.x % 32;
-    int key = token * dModel + j;
-    
-    // Warp-level reduction using shfl
-    #pragma unroll
-    for (int offset = 16; offset > 0; offset /= 2) {
-        int otherKey = __shfl_down_sync(0xffffffff, key, offset);
-        float otherGrad = __shfl_down_sync(0xffffffff, grad, offset);
-        if (otherKey == key) {
-            grad += otherGrad;
-        }
-    }
-    
-    // Only lane 0 does atomicAdd for each unique (token, j) in warp
-    if (laneId == 0) {
-        atomicAdd(&gradWeights[token * dModel + j], grad);
-    }
+    atomicAdd(&gradWeights[token * dModel + j], grad);
 }
 
 __global__ void embedding_position_bwd_kernel(
@@ -1017,26 +996,9 @@ __global__ void embedding_position_bwd_kernel(
     int j = idx % dModel;
     int t0 = idx / dModel;
     int s = t0 % seqLen;
-    
-    // Optimized: warp-level aggregation before atomicAdd
-    float grad = gradCombined[idx];
     int posIdx = s * dModel + j;
-    
-    // Warp-level reduction using shfl
-    int laneId = threadIdx.x % 32;
-    #pragma unroll
-    for (int offset = 16; offset > 0; offset /= 2) {
-        int otherPosIdx = __shfl_down_sync(0xffffffff, posIdx, offset);
-        float otherGrad = __shfl_down_sync(0xffffffff, grad, offset);
-        if (otherPosIdx == posIdx) {
-            grad += otherGrad;
-        }
-    }
-    
-    // Only lane 0 does atomicAdd for each unique position in warp
-    if (laneId == 0) {
-        atomicAdd(&gradWeights[posIdx], grad);
-    }
+    float grad = gradCombined[idx];
+    atomicAdd(&gradWeights[posIdx], grad);
 }
 
 /** x[b,s,j] += posWeights[posRowStart + s, j] (таблица [>=posRowStart+seqLen, dModel] row-major). */

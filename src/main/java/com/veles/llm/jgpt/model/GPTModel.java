@@ -605,22 +605,15 @@ public final class GPTModel {
             return;
         }
         int m = 0;
-        if (decoderBwdGradPing != null && !decoderBwdGradPing.isClosed()) {
-            decoderBwdGradPing.clear();
-            m |= 1;
-        }
-        if (decoderBwdGradPong != null && !decoderBwdGradPong.isClosed()) {
-            decoderBwdGradPong.clear();
-            m |= 2;
-        }
-        if (decoderChainPing != null && !decoderChainPing.isClosed()) {
-            decoderChainPing.clear();
-            m |= 4;
-        }
-        if (decoderChainPong != null && !decoderChainPong.isClosed()) {
-            decoderChainPong.clear();
-            m |= 8;
-        }
+        // Close all decoder scratch buffers to prevent VRAM leak — they will be reallocated at training size
+        decoderBwdGradPing = closeGpuBuffer(decoderBwdGradPing);
+        m |= 1;
+        decoderBwdGradPong = closeGpuBuffer(decoderBwdGradPong);
+        m |= 2;
+        decoderChainPing = closeGpuBuffer(decoderChainPing);
+        m |= 4;
+        decoderChainPong = closeGpuBuffer(decoderChainPong);
+        m |= 8;
         // Close eval-only buffers to free VRAM — they will be reallocated on next forward pass at training size
         lmHeadNormScratchGpu = closeGpuBuffer(lmHeadNormScratchGpu);
         m |= 16;

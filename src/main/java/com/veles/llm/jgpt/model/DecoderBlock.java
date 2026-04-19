@@ -22,6 +22,9 @@ final class DecoderBlock {
     private final Tensor norm1;
     private final Tensor norm2;
     private final int numHeads;
+    private float residualDropout = 0f;
+    private float attentionDropout = 0f;
+    private long dropoutSeed = 42L;
 
     DecoderBlock(int dModel, int numHeads, int dIntermediate, float projScale, float ffnScale) {
         this.numHeads = numHeads;
@@ -60,6 +63,12 @@ final class DecoderBlock {
         norm2.zeroGrad();
     }
 
+
+    void setDropout(float residual, float attention, long layerIdx) {
+        this.residualDropout = Math.max(0f, Math.min(1f, residual));
+        this.attentionDropout = Math.max(0f, Math.min(1f, attention));
+        this.dropoutSeed = 42L + layerIdx * 1000L;
+    }
     Tensor getWq() {
         return Wq;
     }
@@ -157,7 +166,13 @@ final class DecoderBlock {
                                     xNorm1, Wq, Wk, Wv, Wo, numHeads, mask, true, hostCache)
                             : TensorOps.multiHeadAttention(xNorm1, Wq, Wk, Wv, Wo, numHeads, mask);
         }
-        Tensor xRes1 = TensorOps.add(x, attnOut);
+        Tensor attnAfterDropout;
+        if (attentionDropout > 0f) {
+            attnAfterDropout = com.veles.llm.jgpt.ops.TensorOps.dropout(attnOut, attentionDropout, dropoutSeed);
+        } else {
+            attnAfterDropout = attnOut;
+        }
+        Tensor xRes1 = TensorOps.add(x, attnAfterDropout);
         Tensor xNorm2;
         Tensor ffnOut;
         Tensor out;
@@ -176,7 +191,13 @@ final class DecoderBlock {
         } else {
             xNorm2 = TensorOps.rmsNorm(xRes1, norm2, eps);
             ffnOut = TensorOps.feedForwardSwiGLU(xNorm2, W1, W2, W3, hostCache);
-            out = TensorOps.add(xRes1, ffnOut);
+            Tensor ffnAfterDropout;
+            if (residualDropout > 0f) {
+                ffnAfterDropout = com.veles.llm.jgpt.ops.TensorOps.dropout(ffnOut, residualDropout, dropoutSeed + 1L);
+            } else {
+                ffnAfterDropout = ffnOut;
+            }
+            out = TensorOps.add(xRes1, ffnAfterDropout);
         }
         int[] xShape = x.getShape();
         int rows = xShape[0] * xShape[1];
@@ -278,7 +299,13 @@ final class DecoderBlock {
                             vCacheLayer,
                             ropeOffset);
         }
-        Tensor xRes1 = TensorOps.add(x, attnOut);
+        Tensor attnAfterDropout;
+        if (attentionDropout > 0f) {
+            attnAfterDropout = com.veles.llm.jgpt.ops.TensorOps.dropout(attnOut, attentionDropout, dropoutSeed);
+        } else {
+            attnAfterDropout = attnOut;
+        }
+        Tensor xRes1 = TensorOps.add(x, attnAfterDropout);
         TensorOps.FfnForwardResult fusedFfn =
                 ffnResident != null
                         ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(xRes1, ffnResident, cache)
@@ -362,7 +389,13 @@ final class DecoderBlock {
                             cacheLenBefore,
                             ropePosition);
         }
-        Tensor xRes1 = TensorOps.add(x, attnOut);
+        Tensor attnAfterDropout;
+        if (attentionDropout > 0f) {
+            attnAfterDropout = com.veles.llm.jgpt.ops.TensorOps.dropout(attnOut, attentionDropout, dropoutSeed);
+        } else {
+            attnAfterDropout = attnOut;
+        }
+        Tensor xRes1 = TensorOps.add(x, attnAfterDropout);
         TensorOps.FfnForwardResult fusedFfn =
                 ffnResident != null
                         ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(xRes1, ffnResident, cache)
@@ -398,7 +431,13 @@ final class DecoderBlock {
         if (attnOut == null) {
             throw new IllegalStateException("GPU KV VRAM prefill path failed");
         }
-        Tensor xRes1 = TensorOps.add(x, attnOut);
+        Tensor attnAfterDropout;
+        if (attentionDropout > 0f) {
+            attnAfterDropout = com.veles.llm.jgpt.ops.TensorOps.dropout(attnOut, attentionDropout, dropoutSeed);
+        } else {
+            attnAfterDropout = attnOut;
+        }
+        Tensor xRes1 = TensorOps.add(x, attnAfterDropout);
         TensorOps.FfnForwardResult fusedFfn =
                 ffnResident != null
                         ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(xRes1, ffnResident, cache)
@@ -442,7 +481,13 @@ final class DecoderBlock {
         if (attnOut == null) {
             throw new IllegalStateException("GPU KV VRAM decode path failed");
         }
-        Tensor xRes1 = TensorOps.add(x, attnOut);
+        Tensor attnAfterDropout;
+        if (attentionDropout > 0f) {
+            attnAfterDropout = com.veles.llm.jgpt.ops.TensorOps.dropout(attnOut, attentionDropout, dropoutSeed);
+        } else {
+            attnAfterDropout = attnOut;
+        }
+        Tensor xRes1 = TensorOps.add(x, attnAfterDropout);
         TensorOps.FfnForwardResult fusedFfn =
                 ffnResident != null
                         ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(xRes1, ffnResident, cache)

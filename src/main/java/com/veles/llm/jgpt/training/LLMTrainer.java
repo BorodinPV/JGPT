@@ -340,6 +340,7 @@ public final class LLMTrainer {
         this.exitedDueToSupervisorRequest = false;
         this.model = model;
         this.config = config;
+        model.setDropout(config.residualDropout, config.attentionDropout, config.embeddingDropout);
         this.dataLoader = dataLoader;
         this.evalDataLoader = evalDataLoader;
         this.trainingEventCallback =

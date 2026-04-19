@@ -494,6 +494,86 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_sigmoidGPUDevice(
     sigmoid_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(src, dst, n);
 }
 
+JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_dropoutGPU(
+    JNIEnv* env, jclass clazz, jfloatArray h_src, jfloatArray h_dst, jint n, jfloat p, jlong seed) {
+    (void) clazz;
+    if (n <= 0) {
+        return;
+    }
+    if (p <= 0.f) {
+        /* No dropout: just copy */
+        JniFloatArrayScope pa_raii(env, h_src, JNI_ABORT);
+        JniFloatArrayScope pb_raii(env, h_dst, 0);
+        if (!pa_raii || !pb_raii) return;
+        size_t bytes = (size_t) n * sizeof(float);
+        CUDA_CHECK_X(cudaMemcpyAsync(pb_raii.ptr, pa_raii.ptr, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
+        CUDA_CHECK_X(cudaMemcpyAsync(pb_raii.ptr, pb_raii.ptr, bytes, cudaMemcpyDeviceToHost, kTensorCudaStream));
+        (void) seed;
+        return;
+    }
+    if (p >= 1.f) {
+        /* Drop everything: zero out */
+        JniFloatArrayScope pb_raii(env, h_dst, 0);
+        if (!pb_raii) return;
+        CUDA_CHECK_X(cudaMemsetAsync(pb_raii.ptr, 0, (size_t) n * sizeof(float), kTensorCudaStream));
+        CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
+        return;
+    }
+    JGPT_CUDA_GUARD_1D(n, sizeof(float), return;);
+    size_t bytes = (size_t) n * sizeof(float);
+    float *d_a = nullptr, *d_b = nullptr;
+    CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_a), bytes));
+    CUDA_CHECK_X(cudaMalloc(reinterpret_cast<void**>(&d_b), bytes));
+    JniFloatArrayScope pa_raii(env, h_src, JNI_ABORT);
+    if (!pa_raii) {
+        cudaFree(d_a);
+        cudaFree(d_b);
+        return;
+    }
+    CUDA_CHECK_X(cudaMemcpyAsync(d_a, pa_raii.ptr, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
+    int threads = jgpt_cuda_get_optimal_block_size();
+    int blocks = (n + threads - 1) / threads;
+    dropout_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_a, d_b, n, p, (unsigned int) seed);
+    JniFloatArrayScope pb_raii2(env, h_dst, 0);
+    if (!pb_raii2) {
+        cudaFree(d_a);
+        cudaFree(d_b);
+        return;
+    }
+    CUDA_CHECK_X(cudaMemcpyAsync(pb_raii2.ptr, d_b, bytes, cudaMemcpyDeviceToHost, kTensorCudaStream));
+    CUDA_CHECK_X(cudaStreamSynchronize(kTensorCudaStream));
+    cudaFree(d_a);
+    cudaFree(d_b);
+}
+
+JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_dropoutGPUDevice(
+    JNIEnv* env, jclass clazz, jlong dSrc, jlong dDst, jint n, jfloat p, jlong seed) {
+    (void) env;
+    (void) clazz;
+    if (dSrc == 0 || dDst == 0 || n <= 0) {
+        return;
+    }
+    if (p <= 0.f) {
+        /* No dropout: just copy */
+        const float* src = reinterpret_cast<const float*>(static_cast<uintptr_t>(dSrc));
+        float* dst = reinterpret_cast<float*>(static_cast<uintptr_t>(dDst));
+        CUDA_CHECK_X(cudaMemcpyAsync(dst, src, (size_t) n * sizeof(float), cudaMemcpyDeviceToDevice, kTensorCudaStream));
+        (void) seed;
+        return;
+    }
+    if (p >= 1.f) {
+        /* Drop everything: zero out */
+        float* dst = reinterpret_cast<float*>(static_cast<uintptr_t>(dDst));
+        CUDA_CHECK_X(cudaMemsetAsync(dst, 0, (size_t) n * sizeof(float), kTensorCudaStream));
+        return;
+    }
+    const float* src = reinterpret_cast<const float*>(static_cast<uintptr_t>(dSrc));
+    float* dst = reinterpret_cast<float*>(static_cast<uintptr_t>(dDst));
+    int threads = jgpt_cuda_get_optimal_block_size();
+    int blocks = (n + threads - 1) / threads;
+    dropout_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(src, dst, n, p, (unsigned int) seed);
+}
+
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_multiplyGPU(
     JNIEnv* env, jclass clazz, jfloatArray h_a, jfloatArray h_b, jfloatArray h_c, jint n) {
     (void) clazz;

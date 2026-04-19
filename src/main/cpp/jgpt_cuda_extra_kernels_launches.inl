@@ -814,6 +814,21 @@ __global__ void sigmoid_kernel(const float* src, float* dst, int n) {
     dst[i] = s;
 }
 
+/** Inverted dropout: out = src * mask / (1 - p), mask ~ Bernoulli(1-p). */
+__global__ void dropout_kernel(const float* src, float* dst, int n, float p, unsigned int seed) {
+    const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
+    if (i_ll >= (long long)n) {
+        return;
+    }
+    const int i = (int)i_ll;
+    /* Simple XOR-shift RNG per thread */
+    unsigned int s = seed ^ (unsigned int)(i * 268582165773631ULL);
+    s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+    float u = (float)(s & 0xFFFFFF) / (float)0x1000000; /* [0,1) */
+    float scale = (u >= p) ? (1.0f / (1.0f - p)) : 0.0f;
+    dst[i] = src[i] * scale;
+}
+
 __global__ void mul_kernel(const float* a, const float* b, float* c, int n) {
     const long long i_ll = jgpt_extra_kernel_linear_idx_ll();
     if (i_ll >= (long long)n) {

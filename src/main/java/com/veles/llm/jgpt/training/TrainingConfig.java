@@ -20,6 +20,12 @@ public final class TrainingConfig {
     public final float warmupRatio;
     public final float weightDecay;
     public final float maxGradNorm;
+    /** Вероятность dropout для residual connections (применяется после attention и FFN). */
+    public final float residualDropout;
+    /** Вероятность dropout для attention weights (после softmax). */
+    public final float attentionDropout;
+    /** Вероятность dropout для embedding (после gather). */
+    public final float embeddingDropout;
 
     public final int saveEverySteps;
     public final int evalEverySteps;
@@ -119,6 +125,9 @@ public final class TrainingConfig {
             float warmupRatio,
             float weightDecay,
             float maxGradNorm,
+            float residualDropout,
+            float attentionDropout,
+            float embeddingDropout,
             int saveEverySteps,
             int evalEverySteps,
             LearningRateSchedule lrSchedule,
@@ -151,6 +160,9 @@ public final class TrainingConfig {
         this.warmupRatio = warmupRatio;
         this.weightDecay = weightDecay;
         this.maxGradNorm = maxGradNorm;
+        this.residualDropout = clampDropout(residualDropout);
+        this.attentionDropout = clampDropout(attentionDropout);
+        this.embeddingDropout = clampDropout(embeddingDropout);
         this.saveEverySteps = saveEverySteps;
         this.evalEverySteps = evalEverySteps;
         this.lrSchedule = lrSchedule != null ? lrSchedule : LearningRateSchedule.COSINE;
@@ -182,6 +194,12 @@ public final class TrainingConfig {
                 sampledCeNegativeMode != null
                         ? sampledCeNegativeMode
                         : SampledNegativeMode.BATCH_SHARED_UNIFORM;
+    }
+
+    private static float clampDropout(float p) {
+        if (p < 0f) return 0f;
+        if (p > 1f) return 1f;
+        return p;
     }
 
     /** Полная конфигурация (ранний останов + GPU-флаги). */
@@ -229,6 +247,9 @@ public final class TrainingConfig {
                 warmupRatio,
                 weightDecay,
                 maxGradNorm,
+                0.1f,
+                0.1f,
+                0.1f,
                 saveEverySteps,
                 evalEverySteps,
                 lrSchedule,
@@ -291,6 +312,9 @@ public final class TrainingConfig {
                 warmupRatio,
                 weightDecay,
                 maxGradNorm,
+                0.1f,
+                0.1f,
+                0.1f,
                 saveEverySteps,
                 evalEverySteps,
                 lrSchedule,
@@ -348,6 +372,9 @@ public final class TrainingConfig {
                 warmupRatio,
                 weightDecay,
                 maxGradNorm,
+                0.1f,
+                0.1f,
+                0.1f,
                 saveEverySteps,
                 evalEverySteps,
                 lrSchedule,
@@ -363,7 +390,10 @@ public final class TrainingConfig {
                 false,
                 false,
                 false,
-                false);
+                false,
+                TrainLossMode.FULL,
+                128,
+                SampledNegativeMode.BATCH_SHARED_UNIFORM);
     }
 
     private static float clampRatio(float r) {
@@ -392,6 +422,9 @@ public final class TrainingConfig {
                 0.1f,
                 0.01f,
                 1.0f,
+                0.1f,
+                0.1f,
+                0.1f,
                 100,
                 50,
                 LearningRateSchedule.COSINE,
@@ -407,7 +440,10 @@ public final class TrainingConfig {
                 false,
                 false,
                 false,
-                false);
+                false,
+                TrainLossMode.FULL,
+                128,
+                SampledNegativeMode.BATCH_SHARED_UNIFORM);
     }
 
     public boolean usesSampledTrainLoss() {

@@ -372,6 +372,10 @@ public final class TensorOpsGPU {
 
     public static native void sigmoidGPU(float[] src, float[] dst, int n);
 
+    public static native void dropoutGPU(float[] src, float[] dst, int n, float dropoutProb, long seed);
+
+    public static native void dropoutGPUDevice(long dSrc, long dDst, int n, float dropoutProb, long seed);
+
     public static native void multiplyGPU(float[] a, float[] b, float[] c, int n);
 
     public static native void multiplyScalarGPU(float[] a, float[] b, int n, float scalar);

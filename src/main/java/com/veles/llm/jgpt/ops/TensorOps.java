@@ -369,6 +369,32 @@ public final class TensorOps {
     }
 
     /**
+     * Inverted dropout: масштабирует входы на {@code 1/(1-p)} и случайно зануляет долю {@code p}.
+     * При {@code p=0} — копия без изменений; при обучении используется scaling для компенсации.
+     *
+     * @param a входной тензор
+     * @param dropoutProb вероятность зануления (0..1)
+     * @param seed seed для воспроизводимости
+     */
+    public static Tensor dropout(Tensor a, float dropoutProb, long seed) {
+        Objects.requireNonNull(a, "a cannot be null");
+        if (dropoutProb <= 0f) {
+            Tensor result = new Tensor(a.getShape());
+            System.arraycopy(a.internalBuffer(), 0, result.internalBuffer(), 0, a.size());
+            return result;
+        }
+        Tensor result = new Tensor(a.getShape());
+        float[] src = a.internalBuffer();
+        float[] dst = result.internalBuffer();
+        if (src.length <= 0) {
+            return result;
+        }
+        TensorOpsGPU.requireCuda("TensorOps.dropout");
+        TensorOpsGPU.dropoutGPU(src, dst, src.length, dropoutProb, seed);
+        return result;
+    }
+
+    /**
      * SwiGLU: {@code (x W₁) ⊙ SiLU(x W₃)} {@code W₂}, где {@code SiLU(t)=t·σ(t)}.
      *
      * @param x  [batch, seq_len, d_model]

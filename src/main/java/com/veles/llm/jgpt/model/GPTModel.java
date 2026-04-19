@@ -70,6 +70,12 @@ public final class GPTModel {
      * {@link GptGpuWeights} для путей вроде {@link #forwardGpuLmHead(Tensor)} без H2D весов на каждый шаг.
      */
     private final boolean gpuResident;
+    /** Dropout probability for residual connections (applied after attention and FFN). */
+    private float residualDropout = 0f;
+    /** Dropout probability for attention weights (after softmax). */
+    private float attentionDropout = 0f;
+    /** Dropout probability for embedding (after gather). */
+    private float embeddingDropout = 0f;
 
     private final GptGpuWeights gpuResidentHead;
 
@@ -484,6 +490,22 @@ public final class GPTModel {
 
     /** Освобождает {@link GpuTensor} финальных весов; после вызова {@link #isGpuResident()} остаётся {@code true}, но
      * {@link #forwardGpuLmHead(Tensor)} бросит (буферы закрыты). */
+
+    /**
+     * Задаёт вероятности dropout для обучения. Вызывается из {@link LLMTrainer} после создания модели.
+     *
+     * @param residualDropout вероятность dropout для residual connections
+     * @param attentionDropout вероятность dropout для attention weights
+     * @param embeddingDropout вероятность dropout для embedding
+     */
+    public void setDropout(float residualDropout, float attentionDropout, float embeddingDropout) {
+        this.residualDropout = Math.max(0f, Math.min(1f, residualDropout));
+        this.attentionDropout = Math.max(0f, Math.min(1f, attentionDropout));
+        this.embeddingDropout = Math.max(0f, Math.min(1f, embeddingDropout));
+        for (int i = 0; i < blocks.length; i++) {
+            blocks[i].setDropout(residualDropout, attentionDropout, i);
+        }
+    }
     public void closeGpuResidentWeights() {
         invalidateGpuParamMapCache();
         tokenEmbedding.closeGpuWeights();

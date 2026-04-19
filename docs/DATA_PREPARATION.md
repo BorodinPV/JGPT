@@ -38,19 +38,170 @@ def fix_ellipsis(text):
 
 ## 2. Очистка артефактов
 
-### 2.1 Удаление мусора
+### 2.1 Кодировка UTF-8
+
+**Все файлы должны быть в UTF-8.** Это критично для корректной работы токенизатора.
+
 ```python
-def remove_artifacts(text):
-    # Удалить/control символы (кроме \n, \t)
+import chardet
+
+def ensure_utf8(filepath):
+    """Проверить и конвертировать файл в UTF-8."""
+    # Определить теку кодировку
+    with open(filepath, 'rb') as f:
+        raw = f.read()
+    
+    detected = chardet.detect(raw)
+    encoding = detected['encoding']
+    confidence = detected['confidence']
+    
+    if encoding and encoding.lower() != 'utf-8':
+        print(f"  Конвертация {filepath}: {encoding} ({confidence:.0%}) → UTF-8")
+        # Прочитать в старой кодировке
+        text = raw.decode(encoding, errors='replace')
+        # Записать в UTF-8
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(text)
+        return True
+    return False
+
+def convert_directory_to_utf8(directory):
+    """Конвертировать все .txt файлы в директории в UTF-8."""
+    from pathlib import Path
+    
+    for txt_file in Path(directory).glob('**/*.txt'):
+        try:
+            ensure_utf8(txt_file)
+        except Exception as e:
+            print(f"  ⚠ Ошибка {txt_file}: {e}")
+```
+
+**Как проверить кодировку файла:**
+```bash
+file -i data/books/*.txt        # Linux
+chardet data/books/*.txt        # Python chardet
+```
+
+### 2.2 Поиск и удаление мусорных символов
+
+Полный список мусорных Unicode символов которые нужно удалить:
+
+```python
+def remove_garbage_chars(text):
+    """Удалить все мусорные и проблемные символы."""
+    
+    # 1. Control символы (кроме \n, \t, \r)
+    # \x00-\x08: NULL, BACKSPACE, etc
+    # \x0b\x0c: VERTICAL TAB, FORM FEED
+    # \x0e-\x1f: SHIFT OUT, etc
+    # \x7f: DEL
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-    # Удалить Unicode мусор
-    text = re.sub(r'[\ufffd\ufffe\uffff\ufeff]', '', text)
-    # Удалить HTML/XML теги
-    text = re.sub(r'<[^>]+>', '', text)
+    
+    # 2. Unicode replacement character (появляется при ошибках декодирования)
+    text = text.replace('\ufffd', '')  # U+FFFD REPLACEMENT CHARACTER
+    
+    # 3. Unicode BOM и специальные маркеры
+    text = text.replace('\ufeff', '')  # U+FEFF BYTE ORDER MARK / ZERO WIDTH NO-BREAK SPACE
+    text = text.replace('\ufffe', '')  # U+FFFE (invalid, often appears from bad conversion)
+    text = text.replace('\uffff', '')  # U+FFFF (noncharacter)
+    
+    # 4. Zero-width characters (невидимые, но могут ломать токенизацию)
+    text = re.sub(r'[\u200b\u200c\u200d\u2060\ufeff]', '', text)  # ZERO WIDTH SPACE, etc
+    
+    # 5. Soft hyphen и другие невидимые разделители
+    text = text.replace('\u00ad', '')  # SOFT HYPHEN
+    text = re.sub(r'[\u00a0\u2000-\u200a\u202f\u205f]', ' ', text)  # разные пробелы → обычный
+    
+    # 6. Directional marks (могут ломать отображение)
+    text = re.sub(r'[\u200e\u200f\u202a-\u202e]', '', text)  # LRM, RLM, embedding marks
+    
+    # 7. Private Use Area (специальные символы шрифтов, не универсальные)
+    text = re.sub(r'[\ue000-\uf8ff]', '', text)  # Private Use Area U+E000-U+F8FF
+    text = re.sub(r'[\U000f0000-\U000ffffd]', '', text)  # Supplementary Private Use
+    
+    # 8. Specials и noncharacters
+    text = re.sub(r'[\ufff0-\ufffb]', '', text)  # U+FFF0-U+FFFB (noncharacters)
+    
+    # 9. Variation selectors (не нужны для обучения)
+    text = re.sub(r'[\ufe00-\ufe0f]', '', text)  # Variation Selectors-1..16
+    
+    # 10. Combining characters (диакритика которая может дублироваться)
+    # Оставить только если текст на языке где нужна диакритика
+    # text = re.sub(r'[\u0300-\u036f]', '', text)  # Combining Diacritical Marks
+    
     return text
 ```
 
-### 2.2 Исправление повторяющейся пунктуации
+**Расширенный поиск мусора в файлах:**
+```python
+def scan_for_garbage(filepath):
+    """Просканировать файл на наличие мусорных символов."""
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        text = f.read()
+    
+    garbage_chars = set()
+    for i, char in enumerate(text):
+        code = ord(char)
+        # Control chars (кроме \n, \t, \r)
+        if (code < 32 and char not in '\n\t\r') or code == 127:
+            garbage_chars.add(f"U+{code:04X} (control)")
+        # BOM, replacement, noncharacters
+        elif code in (0xFFFD, 0xFFFE, 0xFFFF, 0xFEFF):
+            garbage_chars.add(f"U+{code:04X}")
+        # Zero-width
+        elif 0x200B <= code <= 0x200D or code == 0xFEFF:
+            garbage_chars.add(f"U+{code:04X} (zero-width)")
+        # Private Use
+        elif 0xE000 <= code <= 0xF8FF:
+            garbage_chars.add(f"U+{code:04X} (private use)")
+    
+    if garbage_chars:
+        print(f"⚠ {filepath}:")
+        for gc in sorted(garbage_chars):
+            print(f"   - {gc}")
+        return True
+    return False
+```
+
+### 2.3 Удаление HTML/XML тегов и markup
+```python
+def remove_artifacts(text):
+    # Удалить HTML/XML теги
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    # Удалить Markdown разметку (опционально)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold**
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)      # *italic*
+    text = re.sub(r'__([^_]+)__', r'\1', text)      # __bold__
+    text = re.sub(r'_([^_]+)_', r'\1', text)        # _italic_
+    
+    # Удалить URL
+    text = re.sub(r'https?://\S+', '', text)
+    text = re.sub(r'www\.\S+', '', text)
+    
+    # Удалить email
+    text = re.sub(r'\S+@\S+\.\S+', '', text)
+    
+    return text
+```
+
+### 2.4 Итоговая функция удаления мусора
+```python
+def clean_garbage(text):
+    """Полная очистка от мусорных символов и артефактов."""
+    # 1. Удалить control и special chars
+    text = remove_garbage_chars(text)
+    
+    # 2. Удалить HTML/markup
+    text = remove_artifacts(text)
+    
+    # 3. Удалить пустые строки и строки с только пробелами
+    lines = text.split('\n')
+    lines = [line for line in lines if line.strip()]
+    text = '\n'.join(lines)
+    
+    return text
+```
 ```python
 def fix_repeated_punctuation(text):
     # Заменить ", ," или ". ." на одинарные
@@ -119,12 +270,17 @@ def clean_text(text):
 
 Перед обучением проверить:
 
+- [ ] **Все файлы в UTF-8** (проверить через `file -i` или `chardet`)
+- [ ] Нет BOM символов (U+FEFF)
+- [ ] Нет replacement characters (U+FFFD)
+- [ ] Нет control символов (кроме \n, \t)
+- [ ] Нет zero-width characters
+- [ ] Нет private use area символов
+- [ ] Нет HTML/XML тегов
 - [ ] Нет двойных пробелов
 - [ ] Нет пробелов перед знаками пунктуации (кроме тире)
 - [ ] Нет повторяющихся знаков пунктуации (,, ,, . . .)
 - [ ] Многоточие единое (...) а не . . .
-- [ ] Нет control символов
-- [ ] Нет HTML тегов
 - [ ] Текст в нижнем регистре (токенизатор сделает, но лучше заранее)
 
 ## 6. Примеры плохих паттернов
@@ -211,8 +367,10 @@ def validate_cleaned_text(text, filename='unknown'):
 ## 9. Рекомендации
 
 1. **Всегда очищайте данные перед обучением** — модель учится на всём что есть в текстах
-2. **Один проход очистки** — лучше чем переучивать модель на плохих данных
-3. **Сохраняйте оригиналы** — храните сырые и очищенные тексты отдельно
-4. **Проверяйте после очистки** — запустите валидацию на нескольких файлах
-5. **Минимальная длина** — убирайте строки короче 10 символов (мусор)
-6. **Кодировка** — убедитесь что все файлы в UTF-8
+2. **Конвертируйте в UTF-8** — все файлы должны быть в одной кодировке
+3. **Сканируйте на мусор** — запустите `scan_for_garbage()` перед очисткой
+4. **Один проход очистки** — лучше чем переучивать модель на плохих данных
+5. **Сохраняйте оригиналы** — храните сырые и очищенные тексты отдельно
+6. **Проверяйте после очистки** — запустите валидацию на нескольких файлах
+7. **Минимальная длина** — убирайте строки короче 10 символов (мусор)
+8. **Кодировка** — убедитесь что все файлы в UTF-8 перед токенизацией

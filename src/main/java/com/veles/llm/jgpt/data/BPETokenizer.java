@@ -342,7 +342,9 @@ public final class BPETokenizer {
                 }
             }
             sb.append(core);
-            pendingSpace = wordEnd;
+            // Сбрасываем pendingSpace если токен состоит только из пробелов —
+            // иначе следующий токен получит лишний пробел.
+            pendingSpace = wordEnd && !core.isBlank();
         }
         return sb.toString();
     }

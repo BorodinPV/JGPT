@@ -621,26 +621,17 @@ public final class GPTModel {
             decoderChainPong.clear();
             m |= 8;
         }
-        if (lmHeadNormScratchGpu != null && !lmHeadNormScratchGpu.isClosed()) {
-            lmHeadNormScratchGpu.clear();
-            m |= 16;
-        }
-        if (lastHiddenGpu != null && !lastHiddenGpu.isClosed()) {
-            lastHiddenGpu.clear();
-            m |= 32;
-        }
-        if (xBeforeFinalNormGpu != null && !xBeforeFinalNormGpu.isClosed()) {
-            xBeforeFinalNormGpu.clear();
-            m |= 64;
-        }
-        if (lastLogitsGpu != null && !lastLogitsGpu.isClosed()) {
-            lastLogitsGpu.clear();
-            m |= 128;
-        }
-        if (lastLogitsGradGpu != null && !lastLogitsGradGpu.isClosed()) {
-            lastLogitsGradGpu.clear();
-            m |= 256;
-        }
+        // Close eval-only buffers to free VRAM — they will be reallocated on next forward pass at training size
+        lmHeadNormScratchGpu = closeGpuBuffer(lmHeadNormScratchGpu);
+        m |= 16;
+        lastHiddenGpu = closeGpuBuffer(lastHiddenGpu);
+        m |= 32;
+        xBeforeFinalNormGpu = closeGpuBuffer(xBeforeFinalNormGpu);
+        m |= 64;
+        lastLogitsGpu = closeGpuBuffer(lastLogitsGpu);
+        m |= 128;
+        lastLogitsGradGpu = closeGpuBuffer(lastLogitsGradGpu);
+        m |= 256;
         GptModelDebugLog.scratchHandoff(m);
     }
 

@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.18)
 project(jgpt_cuda LANGUAGES CXX CUDA)
 
+# Allow GCC 15+ with CUDA (unsupported but works)
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -allow-unsupported-compiler")
+
 # Сборка: для CUDA 12.x host-компилятор обычно GCC ≤ 13 (см. cuda_runtime host_config.h).
 # При GCC 14+: задать CMAKE_CUDA_HOST_COMPILER на поддерживаемый gcc или добавить в target_compile_options
 # для CUDA языка: -allow-unsupported-compiler (на свой риск).
@@ -45,6 +48,7 @@ foreach (TGT jgpt_cuda jgpt_cuda_extra)
         $<$<COMPILE_LANGUAGE:CUDA>:
             -diag-suppress=550
             -diag-suppress=177
+            -allow-unsupported-compiler
         >
     )
     # FlashAttention tile size from environment (default 144)

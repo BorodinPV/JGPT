@@ -1904,7 +1904,7 @@ static bool attn_fwd_run_core(
 // Valid values: 64, 96, 128, 144, 160, 192, 208 (limited by shared memory)
 static constexpr int kFaDh = 16;    // d_head (compile-time fixed)
 #ifndef JGPT_FA_TILE_SIZE
-#define JGPT_FA_TILE_SIZE 144
+#define JGPT_FA_TILE_SIZE 128
 #endif
 static constexpr int kFaBr = JGPT_FA_TILE_SIZE;    // query tile rows
 static constexpr int kFaBc = JGPT_FA_TILE_SIZE;    // KV tile rows

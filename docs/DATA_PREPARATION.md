@@ -202,6 +202,8 @@ def clean_garbage(text):
     
     return text
 ```
+
+### 2.5 Исправление повторяющейся пунктуации
 ```python
 def fix_repeated_punctuation(text):
     # Заменить ", ," или ". ." на одинарные
@@ -212,16 +214,143 @@ def fix_repeated_punctuation(text):
     return text
 ```
 
-## 3. Нормализация текста
+## 3. Удаление издательских данных и метаданных
 
-### 3.1 Регистр
+### 3.1 Что удалять
+
+Из книг нужно **обязательно удалять**:
+
+| Тип | Пример | Зачем удалять |
+|-----|--------|--------------|
+| **Copyright** | `© Иванов И.И., 2020` | Модель запомнит имена/годы |
+| **ISBN** | `ISBN 978-5-123456-78-9` | Цифровой мусор |
+| **ББК/УДК** | `УДК 821.161.1 ББК 84(2Рос=Рус)` | Библиотечные коды |
+| **Издательство** | `Издательство "АСТ", Москва` | Реклама/метаданные |
+| **Тираж** | `Тираж 5000 экз.` | Техническая информация |
+| **Оглавление** | `Содержание: Глава 1... Глава 2...` | Структура, не текст |
+| **Предисловие редактора** | `От издателя: Этот замечательный текст...` | Не основной текст |
+| **Послесловие** | `Примечания: Роман написан в...` | Комментарии не автора |
+| **Реклама** | `Читайте также: ...` | Реклама других книг |
+| **Выходные данные** | `60x90/16. Гарнитура Times. Печать офсетная` | Печатная информация |
+
+### 3.2 Автоматическое удаление паттернов
+
+```python
+def remove_publisher_data(text):
+    """Удалить издательские данные и метаданные."""
+    lines = text.split('\n')
+    cleaned_lines = []
+    
+    skip_next = False
+    for line in lines:
+        line = line.strip()
+        
+        # Пропуск пустых строк
+        if not line:
+            continue
+        
+        # 1. ISBN
+        if re.match(r'ISBN[\s\d\-]+', line, re.IGNORECASE):
+            continue
+            
+        # 2. УДК/ББК
+        if re.match(r'(УДК|ББК)\s+[\d\.\(\)]+', line):
+            continue
+            
+        # 3. Copyright
+        if re.match(r'©\s+.+\s*,\s*\d{4}', line):
+            continue
+        if re.match(r'Copyright\s+', line, re.IGNORECASE):
+            continue
+            
+        # 4. Тираж
+        if re.match(r'Тираж\s+\d+', line, re.IGNORECASE):
+            continue
+            
+        # 5. Издательство
+        if re.match(r'(Издательство|Изд\.?\s+)', line, re.IGNORECASE):
+            continue
+            
+        # 6. Выходные данные (печать)
+        if re.match(r'\d+x\d+/\d+', line):  # 60x90/16
+            continue
+        if re.match(r'(Гарнитура|Формат|Бумага|Печать)', line, re.IGNORECASE):
+            continue
+            
+        # 7. Оглавление/Содержание
+        if re.match(r'(Оглавление|Содержание)', line, re.IGNORECASE):
+            skip_next = True  # Пропустить следующие строки (оглавление)
+            continue
+        if skip_next and re.match(r'(Глава|Раздел|\d+\.)', line, re.IGNORECASE):
+            continue
+        else:
+            skip_next = False
+            
+        # 8. Реклама
+        if re.match(r'(Читайте также|Смотрите также|Рекомендуем)', line, re.IGNORECASE):
+            continue
+            
+        # 9. От издателя/редактора
+        if re.match(r'(От (издателя|редактора|составителя))', line, re.IGNORECASE):
+            continue
+            
+        cleaned_lines.append(line)
+    
+    return '\n'.join(cleaned_lines)
+```
+
+### 3.3 Удаление блоков по маркерам
+
+Иногда метаданные идут блоками в начале/конце файла:
+
+```python
+def remove_metadata_blocks(text):
+    """Удалить блоки метаданных в начале и конце файла."""
+    paragraphs = text.split('\n\n')
+    
+    if not paragraphs:
+        return text
+    
+    # Удалить первые параграфы если они содержат метаданные
+    start_idx = 0
+    for i, para in enumerate(paragraphs[:10]):  # Проверить первые 10
+        metadata_indicators = [
+            'isbn', 'удк', 'ббк', 'copyright', '©', 'тираж', 
+            'издательств', 'гарнитура', 'формат', 'печать',
+            'оглавление', 'содержание'
+        ]
+        para_lower = para.lower()
+        if any(ind in para_lower for ind in metadata_indicators):
+            start_idx = i + 1
+        else:
+            break
+    
+    # Удалить последние параграфы если они содержат метаданные
+    end_idx = len(paragraphs)
+    for i, para in enumerate(reversed(paragraphs[-5:])):  # Проверить последние 5
+        metadata_indicators = [
+            'isbn', 'удк', 'ббк', 'тираж', 'издательств',
+            'читайте также', 'рекомендуем', 'примечания'
+        ]
+        para_lower = para.lower()
+        if any(ind in para_lower for ind in metadata_indicators):
+            end_idx = len(paragraphs) - i - 1
+        else:
+            break
+    
+    return '\n\n'.join(paragraphs[start_idx:end_idx])
+```
+
+## 4. Нормализация текста
+
+### 4.1 Регистр
 ```python
 def normalize_case(text):
     # Привести к нижнему регистру (токенизатор делает это сам)
     return text.lower()
 ```
 
-### 3.2 Кавычки
+### 4.2 Кавычки
 ```python
 def normalize_quotes(text):
     # Заменить ёлочки на обычные (опционально)
@@ -231,7 +360,7 @@ def normalize_quotes(text):
     return text
 ```
 
-### 3.3 Дефис vs тире
+### 4.3 Дефис vs тире
 ```python
 def normalize_dashes(text):
     # Заменить все виды тире на единый вариант
@@ -240,33 +369,40 @@ def normalize_dashes(text):
     return text
 ```
 
-## 4. Полный pipeline очистки
+## 5. Полный pipeline очистки
 
 ```python
 def clean_text(text):
     """Полная очистка текста перед обучением."""
-    # 1. Удалить артефакты
+    # 1. Удалить control и special символы
+    text = remove_garbage_chars(text)
+    
+    # 2. Удалить HTML/markup
     text = remove_artifacts(text)
     
-    # 2. Нормализовать пробелы
+    # 3. Удалить издательские данные и метаданные
+    text = remove_publisher_data(text)
+    text = remove_metadata_blocks(text)
+    
+    # 4. Нормализовать пробелы
     text = normalize_whitespace(text)
     
-    # 3. Исправить пунктуацию
+    # 5. Исправить пунктуацию
     text = fix_punctuation_spacing(text)
     text = fix_repeated_punctuation(text)
     text = fix_ellipsis(text)
     
-    # 4. Нормализовать кавычки и тире
+    # 6. Нормализовать кавычки и тире
     text = normalize_quotes(text)
     text = normalize_dashes(text)
     
-    # 5. Финальная нормализация пробелов
+    # 7. Финальная нормализация пробелов
     text = normalize_whitespace(text)
     
     return text
 ```
 
-## 5. Чеклист проверки данных
+## 6. Чеклист проверки данных
 
 Перед обучением проверить:
 
@@ -283,7 +419,7 @@ def clean_text(text):
 - [ ] Многоточие единое (...) а не . . .
 - [ ] Текст в нижнем регистре (токенизатор сделает, но лучше заранее)
 
-## 6. Примеры плохих паттернов
+## 7. Примеры плохих паттернов
 
 ### ❌ Плохо:
 ```
@@ -299,7 +435,7 @@ def clean_text(text):
 что-то, я не знаю
 ```
 
-## 7. Обработка больших файлов
+## 8. Обработка больших файлов
 
 ```python
 import os
@@ -334,7 +470,7 @@ if __name__ == '__main__':
     clean_all_books()
 ```
 
-## 8. Валидация после очистки
+## 9. Валидация после очистки
 
 ```python
 def validate_cleaned_text(text, filename='unknown'):
@@ -364,7 +500,7 @@ def validate_cleaned_text(text, filename='unknown'):
         return True
 ```
 
-## 9. Рекомендации
+## 10. Рекомендации
 
 1. **Всегда очищайте данные перед обучением** — модель учится на всём что есть в текстах
 2. **Конвертируйте в UTF-8** — все файлы должны быть в одной кодировке

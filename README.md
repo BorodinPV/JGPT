@@ -66,6 +66,9 @@ GPT-модель (decoder-only transformer) с **полным обучением
 
 - [Архитектура и обучение](docs/training/README.md) — полное описание модели, пресетов, мониторинга
 - [Тренировочный рунбук](docs/TRAIN_RUNBOOK.md) — практическое руководство по обучению
+- [FAQ](FAQ.md) — частые вопросы и решения проблем
+- [Contributing](CONTRIBUTING.md) — как внести вклад в проект
+- [Changelog](CHANGELOG.md) — история изменений
 
 ---
 

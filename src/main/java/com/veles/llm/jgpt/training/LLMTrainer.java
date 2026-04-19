@@ -125,6 +125,7 @@ public final class LLMTrainer {
             TensorOpsGPU.synchronizeStream();
         }
         GpuPendingGradients.cleanupThreadLocal();
+            GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
         GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
         optimizer.releaseGpuMomentBuffers();
         if (ceTargetsDevice != null) {
@@ -1264,6 +1265,10 @@ public final class LLMTrainer {
             /* Очистка ThreadLocal пула BlockActivationCacheDevice для предотвращения утечки VRAM.
              * Пул накапливает буферы при POOL=1, которые не освобождаются при смерти потоков. */
             BlockActivationCacheDevice.purgeThreadLocalPool();
+
+            /* Очистка ThreadLocal GpuPendingGradients для предотвращения утечки VRAM. */
+            GpuPendingGradients.cleanupThreadLocal();
+            GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
         }
         if (trainingStoppedEarly) {
             log.info("{} обучение остановлено по раннему критерию", LogFmt.badge("STOP"));
@@ -1296,6 +1301,7 @@ public final class LLMTrainer {
             }
             GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
             GpuPendingGradients.cleanupThreadLocal();
+            GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
             if (TensorOpsGPU.isGpuAvailable()) {
                 TensorOpsGPU.synchronizeStream();
                 TensorOpsGPU.drainDeferredGpuBuffers();

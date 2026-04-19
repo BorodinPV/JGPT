@@ -40,8 +40,9 @@ GPT-модель (decoder-only transformer) с **полным обучением
 ## ⚡ GPU-ускорение
 
 - **FP16 GEMM** — cuBLAS GemmEx + Tensor Cores
-- **FlashAttention-2** — fused QKV attention
-- **Fused-операции** — RMSNorm + FFN, RMSNorm + LM head
+- **FlashAttention-2** — fused QKV attention (tile size 128)
+- **Optimized kernels** — block-per-row CE, warp-level reduction for embeddings
+- **Fused-операции** — RMSNorm + FFN, RMSNorm + LM head via cuBLAS
 - **Полный GPU-цикл** — forward, backward, optimiser — всё на VRAM
 - **Decoder pipeline** — слой-за-слоем без D2H
 - **CUDA Graph** — на слои декодера (опционально)
@@ -55,9 +56,9 @@ GPT-модель (decoder-only transformer) с **полным обучением
 
 | Метрика | Значение |
 |---------|----------|
-| Tokens/sec | ~11 500 |
-| Шаг | ~715 мс (forward 368 + CE 4 + backward 314 + optimiser 29) |
-| VRAM | ~3700 / 9873 МБ |
+| Tokens/sec | ~26 000 |
+| Шаг | ~1250 мс (forward 600 + CE 9 + backward 620 + optimiser 29) |
+| VRAM | ~5200 / 10000 МБ |
 
 ---
 

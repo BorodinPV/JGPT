@@ -396,6 +396,36 @@ struct GraphSdpaWarmupScratch {
     }
 };
 
+struct LmHeadNormBuffer {
+    float* d_buffer = nullptr;
+    size_t capacity = 0;
+    
+    float* ensure(size_t needBytes) {
+        if (needBytes <= capacity && d_buffer != nullptr) {
+            return d_buffer;
+        }
+        if (d_buffer != nullptr) {
+            cudaFree(d_buffer);
+        }
+        capacity = 0;
+        d_buffer = nullptr;
+        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&d_buffer), needBytes);
+        if (err != cudaSuccess) {
+            return nullptr;
+        }
+        capacity = needBytes;
+        return d_buffer;
+    }
+    
+    void free() {
+        if (d_buffer != nullptr) {
+            cudaFree(d_buffer);
+            d_buffer = nullptr;
+            capacity = 0;
+        }
+    }
+};
+
 struct ExtraThreadResources {
     ExtraCublas cublas;
     CeLossBuffers ce;
@@ -406,6 +436,7 @@ struct ExtraThreadResources {
     AttnFwdScratch attn_fwd;
     FlashAttnScratch flash_attn;
     GraphSdpaWarmupScratch graph_sdpa_warmup;
+    LmHeadNormBuffer lm_head_norm;
 };
 
 /** One aggregate per host thread; defined in jgpt_cuda_extra.cu. */

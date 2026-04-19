@@ -865,7 +865,29 @@ __global__ void embedding_token_bwd_kernel(
     if (token < 0 || token >= vocabSize) {
         return;
     }
-    atomicAdd(&gradWeights[token * dModel + j], gradOut[idx]);
+    
+    // Optimized: warp-level aggregation before atomicAdd
+    float grad = gradOut[idx];
+    
+    // Find all threads in warp with same (token, j) and sum their gradients
+    int warpId = threadIdx.x / 32;
+    int laneId = threadIdx.x % 32;
+    int key = token * dModel + j;
+    
+    // Warp-level reduction using shfl
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset /= 2) {
+        int otherKey = __shfl_down_sync(0xffffffff, key, offset);
+        float otherGrad = __shfl_down_sync(0xffffffff, grad, offset);
+        if (otherKey == key) {
+            grad += otherGrad;
+        }
+    }
+    
+    // Only lane 0 does atomicAdd for each unique (token, j) in warp
+    if (laneId == 0) {
+        atomicAdd(&gradWeights[token * dModel + j], grad);
+    }
 }
 
 __global__ void embedding_position_bwd_kernel(
@@ -1725,8 +1747,8 @@ static bool attn_fwd_run_core(
 // ============================================================
 
 static constexpr int kFaDh = 16;    // d_head
-static constexpr int kFaBr = 64;    // query tile rows  (= block size for fwd / dQ)
-static constexpr int kFaBc = 64;    // KV tile rows     (= block size for dKdV)
+static constexpr int kFaBr = 128;    // query tile rows  (= block size for fwd / dQ)
+static constexpr int kFaBc = 128;    // KV tile rows     (= block size for dKdV)
 
 static_assert(kFaDh > 0 && (kFaDh % 2) == 0, "FlashAttention: d_head must be positive even");
 

@@ -336,6 +336,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormMatmulLmHeadG
     jboolean useFp16Rms) {
     (void) env;
     (void) clazz;
+    (void) dNormOut;  // Ignored - always use cuBLAS path with cached buffer
     if (dX == 0 || dGamma == 0 || dW == 0 || dLogits == 0) {
         return;
     }
@@ -348,31 +349,26 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormMatmulLmHeadG
     const float* w = reinterpret_cast<const float*>(static_cast<uintptr_t>(dW));
     float* logits = reinterpret_cast<float*>(static_cast<uintptr_t>(dLogits));
 
-    if (dNormOut == 0) {
-        // Fused path: один kernel без промежуточного буфера
-        int threads = jgpt_cuda_get_optimal_block_size();
-        int blocks = (rows + threads - 1) / threads;
-        fused_rms_norm_matmul_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(
-                x, gamma, w, logits, rows, dModel, vocab, eps);
-        CUDA_KERNEL_CHECK();
-    } else {
-        // Classic path: RMSNorm → промежуточный буфер → cuBLAS GEMM
-        float* normOut = reinterpret_cast<float*>(static_cast<uintptr_t>(dNormOut));
-        int threads = jgpt_cuda_get_optimal_block_size();
-        (void) threads;
-        launch_rms_norm_fwd(x, gamma, normOut, rows, dModel, eps);
-        const float alpha = 1.0f;
-        const float beta = 0.0f;
-        cublasHandle_t handle = get_extra_cublas_handle();
-        if (handle == nullptr) {
-            fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: cuBLAS handle unavailable\n");
-            return;
-        }
-        cublasStatus_t st =
-                cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, vocab, rows, dModel, &alpha, w, vocab, normOut, dModel, &beta, logits, vocab);
-        if (st != CUBLAS_STATUS_SUCCESS) {
-            fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: cublasSgemm failed (status %d)\n", (int) st);
-        }
+    // Always use cuBLAS path: RMSNorm → cached buffer → cuBLAS GEMM
+    size_t normOutBytes = (size_t) rows * (size_t) dModel * sizeof(float);
+    float* normOut = jgpt_extra::jgpt_extra_tls().lm_head_norm.ensure(normOutBytes);
+    if (normOut == nullptr) {
+        fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: failed to allocate temp buffer (%zu bytes)\n", normOutBytes);
+        return;
+    }
+    
+    launch_rms_norm_fwd(x, gamma, normOut, rows, dModel, eps);
+    
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    cublasHandle_t handle = get_extra_cublas_handle();
+    if (handle == nullptr) {
+        fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: cuBLAS handle unavailable\n");
+        return;
+    }
+    cublasStatus_t st = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, vocab, rows, dModel, &alpha, w, vocab, normOut, dModel, &beta, logits, vocab);
+    if (st != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: cublasSgemm failed (status %d)\n", (int) st);
     }
 }
 

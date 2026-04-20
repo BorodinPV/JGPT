@@ -48,7 +48,7 @@ public final class TrainingProfiler {
     }
 
     private static int profileDetailStepsFromEnv() {
-        int detail = 20;
+        int detail = Integer.MAX_VALUE;
         String ds = System.getenv("JGPT_PROFILE_STEPS");
         if (ds != null && !ds.isBlank()) {
             try {

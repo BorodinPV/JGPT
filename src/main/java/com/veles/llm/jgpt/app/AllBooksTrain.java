@@ -135,6 +135,9 @@ public final class AllBooksTrain {
                 allTexts.add(readUtf8(p));
             }
             tokenizer = BPETokenizer.train(allTexts, llm.vocabSize);
+            // Освобождаем память immediately после обучения
+            allTexts.clear();
+            System.gc();
             Files.createDirectories(tokenizerPath.getParent());
             tokenizer.save(tokenizerPath.toString());
             log.info("[DATA] токенизатор сохранён: {} (vocab={})",
@@ -148,27 +151,26 @@ public final class AllBooksTrain {
         DataLoader dataLoader = new DataLoader(tokenizer, llm.maxSeqLen, llm.batchSize);
 
         int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
-        log.info("[DATA] параллельное кодирование: {} потоков", threads);
+        log.info("[DATA] кодирование: {} потоков (последовательно для экономии памяти)", threads);
         ExecutorService pool = Executors.newFixedThreadPool(threads);
 
-        // Запускаем кодирование всех книг параллельно
-        List<Future<int[]>> futures = new ArrayList<>(books.size());
-        for (Path p : books) {
-            futures.add(pool.submit((Callable<int[]>) () -> {
-                String text = readUtf8(p);
-                return tokenizer.encode(text, true);
-            }));
-        }
-        pool.shutdown();
-
+        // Обрабатываем файлы последовательно чтобы не держать все токены в памяти
         long totalChars = 0;
         int skipped = 0;
         int minTokens = llm.maxSeqLen + 1;
+        
         for (int i = 0; i < books.size(); i++) {
             Path p = books.get(i);
             int[] tokens;
             try {
-                tokens = futures.get(i).get();
+                // Кодируем один файл, ждём результат, освобождаем текст
+                Future<int[]> future = pool.submit((Callable<int[]>) () -> {
+                    String text = readUtf8(p);
+                    int[] encoded = tokenizer.encode(text, true);
+                    // text goes out of scope here for GC
+                    return encoded;
+                });
+                tokens = future.get();
             } catch (Exception e) {
                 log.warn("[DATA] ошибка кодирования {}: {}", p.getFileName(), e.getMessage());
                 skipped++;
@@ -185,7 +187,14 @@ public final class AllBooksTrain {
             dataLoader.loadTokens(tokens);
             log.info("[DATA]   {} → +{} окон (итого {})",
                     p.getFileName(), tokens.length / llm.maxSeqLen, dataLoader.numSequences());
+            
+            // Явно запрашиваем GC после каждого файла для освобождения int[]
+            if ((i + 1) % 3 == 0) {
+                System.gc();
+            }
         }
+        
+        pool.shutdown();
         log.info("[DATA] итого: {} символов, {} книг загружено, {} пропущено",
                 String.format("%,d", totalChars), books.size() - skipped, skipped);
         int nSeq = dataLoader.numSequences();

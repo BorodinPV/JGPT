@@ -32,4 +32,6 @@ state/current.env
 
 # Training data (provide your own)
 /data/
+/books/
+/checkpoints_test_fullgpu/
 /clean_corpus/

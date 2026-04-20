@@ -79,7 +79,7 @@ final class LlmTrainerEnvUtils {
             }
         } catch (Exception ignored) {
         }
-        return 1000;
+        return 100;
     }
 
     static boolean batchPrefetchEnabled() {

@@ -403,6 +403,32 @@ public final class LLMConfig {
     }
 
     /**
+     * Интервал логирования train loss: env {@code JGPT_LOG_EVERY_STEPS} / prop {@code jgpt.logEverySteps}.
+     * {@code 1} — каждый шаг; {@code 0} или {@code -1} — отключить. По умолчанию 1.
+     */
+    public static int logEveryStepsFromEnv(int defaultValue) {
+        String env = System.getenv("JGPT_LOG_EVERY_STEPS");
+        if (env != null && !env.isBlank()) {
+            try {
+                int v = Integer.parseInt(env.trim());
+                return v <= 0 ? Integer.MAX_VALUE : v;
+            } catch (NumberFormatException ignored) {
+                return defaultValue;
+            }
+        }
+        String prop = System.getProperty("jgpt.logEverySteps");
+        if (prop != null && !prop.isBlank()) {
+            try {
+                int v = Integer.parseInt(prop.trim());
+                return v <= 0 ? Integer.MAX_VALUE : v;
+            } catch (NumberFormatException ignored) {
+                return defaultValue;
+            }
+        }
+        return defaultValue;
+    }
+
+    /**
      * Пресет end-to-end GPU: env {@code JGPT_GPU_E2E_TRAIN=1} / prop {@code jgpt.gpu.e2eTrain}. Включает
      * {@link TrainingConfig#useGpuResident}, {@link TrainingConfig#fullGpuTrainStep}, device logits и device
      * decoder backward согласованно (см. {@link #toTrainingConfig(String, int)}). Требует
@@ -709,7 +735,7 @@ public final class LLMConfig {
                     LearningRateSchedule.COSINE,
                     0f,
                     checkpointDir,
-                    50,
+                    logEveryStepsFromEnv(1),
                     interactiveEveryFromEnv(200),
                     earlyStopEvalPatienceFromEnv(3),
                     earlyStopOverfitFromEnv(true),
@@ -761,7 +787,7 @@ public final class LLMConfig {
                 LearningRateSchedule.COSINE,
                 0f,
                 checkpointDir,
-                50,
+                logEveryStepsFromEnv(1),
                 interactiveEveryFromEnv(200),
                 earlyStopEvalPatienceFromEnv(3),
                 earlyStopOverfitFromEnv(true),

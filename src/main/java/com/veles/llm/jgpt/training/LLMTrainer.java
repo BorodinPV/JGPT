@@ -1,6 +1,7 @@
 package com.veles.llm.jgpt.training;
 
 import com.veles.llm.jgpt.GpuFloatBuffer;
+import com.veles.llm.jgpt.GpuHalfBuffer;
 import com.veles.llm.jgpt.GpuIntBuffer;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
@@ -1183,6 +1184,19 @@ public final class LLMTrainer {
                     TensorOpsGPU.synchronizeStream();
                     TensorOpsGPU.drainDeferredGpuBuffers();
                     TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+                }
+
+                /* Лёгкая VRAM-очистка после каждого optimizer step: сбрасывает phantom-буферы (GC)
+                 * и trim'ит async memory pool, снижая фрагментацию cudaMallocAsync.
+                 * Это предотвращает ложные OOM при наличии свободного VRAM. */
+                if (TensorOpsGPU.isGpuAvailable()) {
+                    GpuFloatBuffer.drainLeaked();
+                    GpuHalfBuffer.drainLeaked();
+                    GpuIntBuffer.drainLeaked();
+                    GpuTensor.drainLeaked();
+                    if (globalStep % 10 == 0) {
+                        TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+                    }
                 }
 
                 /* Периодическая очистка активационных кэшей модели каждые N шагов для предотвращения

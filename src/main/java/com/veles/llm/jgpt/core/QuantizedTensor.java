@@ -26,10 +26,9 @@ public final class QuantizedTensor {
 
     /** Создаёт новый тензор с нулевым буфером и {@code scale = 1}. */
     public QuantizedTensor(int[] shape) {
-        validateShape(shape);
-        this.shape = shape.clone();
-        this.strides = calculateStrides(this.shape);
-        this.data = new byte[numElementsForShape(this.shape)];
+        this.shape = TensorUtils.validateAndCloneShape(shape);
+        this.strides = TensorUtils.calculateStrides(this.shape);
+        this.data = new byte[TensorUtils.computeSizeOrThrow(this.shape)];
         this.scale = 1.0f;
     }
 
@@ -38,12 +37,12 @@ public final class QuantizedTensor {
      * (вызывающий обеспечивает длину и согласованность шкалы).
      */
     private QuantizedTensor(int[] shape, float scale, byte[] data) {
-        this.shape = shape.clone();
-        this.strides = calculateStrides(this.shape);
+        this.shape = TensorUtils.validateAndCloneShape(shape);
+        this.strides = TensorUtils.calculateStrides(this.shape);
         if (scale <= 0f || !Float.isFinite(scale)) {
             throw new IllegalArgumentException("scale must be finite and > 0, got " + scale);
         }
-        int n = numElementsForShape(this.shape);
+        int n = TensorUtils.computeSizeOrThrow(this.shape);
         if (data.length != n) {
             throw new IllegalArgumentException(
                     "data length " + data.length + " != shape product " + n + " for " + Arrays.toString(this.shape));
@@ -79,9 +78,7 @@ public final class QuantizedTensor {
      * @param scale положительная конечная шкала
      */
     public static QuantizedTensor fromBytes(byte[] quantized, int[] shape, float scale) {
-        validateShape(shape);
-        Objects.requireNonNull(quantized, "quantized");
-        int n = numElementsForShape(shape);
+        int n = TensorUtils.computeSizeOrThrow(shape);
         if (quantized.length != n) {
             throw new IllegalArgumentException(
                     "data length " + quantized.length + " != shape product for " + Arrays.toString(shape));
@@ -134,7 +131,7 @@ public final class QuantizedTensor {
      * плоский индекс при массовом доступе.
      */
     public float get(int... indices) {
-        int q = data[flatIndex(indices, true)];
+        int q = data[TensorUtils.flatIndex(indices, shape, strides, true)];
         return (q / 127.0f) * scale;
     }
 
@@ -143,7 +140,7 @@ public final class QuantizedTensor {
         if (Float.isNaN(value) || Float.isInfinite(value)) {
             throw new IllegalArgumentException("value must be finite");
         }
-        data[flatIndex(indices, true)] = quantizeToByte(value, scale);
+        data[TensorUtils.flatIndex(indices, shape, strides, true)] = quantizeToByte(value, scale);
     }
 
     /**
@@ -206,53 +203,5 @@ public final class QuantizedTensor {
         }
         int q = (int) Math.round((double) value / (double) scale * 127.0);
         return (byte) Math.min(127, Math.max(-127, q));
-    }
-
-    private int flatIndex(int[] indices, boolean checkBounds) {
-        if (indices.length != shape.length) {
-            throw new IllegalArgumentException("wrong number of indices");
-        }
-        int index = 0;
-        for (int i = 0; i < indices.length; i++) {
-            if (checkBounds && (indices[i] < 0 || indices[i] >= shape[i])) {
-                throw new IndexOutOfBoundsException(
-                        "index " + indices[i] + " for dimension " + i + " (size " + shape[i] + ")");
-            }
-            index += indices[i] * strides[i];
-        }
-        return index;
-    }
-
-    private static int[] calculateStrides(int[] shape) {
-        int[] s = new int[shape.length];
-        s[shape.length - 1] = 1;
-        for (int i = shape.length - 2; i >= 0; i--) {
-            s[i] = s[i + 1] * shape[i + 1];
-        }
-        return s;
-    }
-
-    private static int numElementsForShape(int[] shape) {
-        long size = 1L;
-        for (int d : shape) {
-            size *= d;
-            if (size > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException(
-                        "Total elements exceed Integer.MAX_VALUE (max ~2.14B elements), shape "
-                                + Arrays.toString(shape));
-            }
-        }
-        return (int) size;
-    }
-
-    private static void validateShape(int[] shape) {
-        if (shape == null || shape.length == 0) {
-            throw new IllegalArgumentException("shape must be non-empty");
-        }
-        for (int d : shape) {
-            if (d <= 0) {
-                throw new IllegalArgumentException("each dimension must be positive");
-            }
-        }
     }
 }

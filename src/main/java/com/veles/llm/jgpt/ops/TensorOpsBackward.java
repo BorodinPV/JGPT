@@ -29,14 +29,8 @@ public final class TensorOpsBackward {
         Objects.requireNonNull(gradA, "gradA");
         Objects.requireNonNull(gradB, "gradB");
         float[] gc = upstreamGrad(gradC);
-        if (!gradA.hasGrad()) {
-            gradA.zeroGrad();
-        }
-        if (!gradB.hasGrad()) {
-            gradB.zeroGrad();
-        }
-        float[] ga = gradA.gradBuffer();
-        float[] gb = gradB.gradBuffer();
+        float[] ga = ensureGradBuffer(gradA);
+        float[] gb = ensureGradBuffer(gradB);
         if (gc.length != ga.length || gc.length != gb.length) {
             throw new IllegalArgumentException("shape mismatch for add backward");
         }
@@ -93,10 +87,7 @@ public final class TensorOpsBackward {
     public static void accumulateGradientInto(Tensor target, Tensor update) {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(update, "update");
-        if (!target.hasGrad()) {
-            target.zeroGrad();
-        }
-        float[] tgt = target.gradBuffer();
+        float[] tgt = ensureGradBuffer(target);
         float[] upd = update.internalBuffer();
         if (tgt.length != upd.length) {
             throw new IllegalArgumentException(
@@ -140,18 +131,9 @@ public final class TensorOpsBackward {
         float[] src = x.internalBuffer();
         float[] g = gamma.internalBuffer();
 
-        if (!gradX.hasGrad()) {
-            gradX.zeroGrad();
-        }
-        if (!gradGamma.hasGrad()) {
-            gradGamma.zeroGrad();
-        }
-        if (!gradBeta.hasGrad()) {
-            gradBeta.zeroGrad();
-        }
-        float[] gx = gradX.gradBuffer();
-        float[] gg = gradGamma.gradBuffer();
-        float[] gb = gradBeta.gradBuffer();
+        float[] gx = ensureGradBuffer(gradX);
+        float[] gg = ensureGradBuffer(gradGamma);
+        float[] gb = ensureGradBuffer(gradBeta);
 
         int n = outerSize * lastDim;
         if (n <= 0) {
@@ -167,6 +149,14 @@ public final class TensorOpsBackward {
             return t.gradBuffer();
         }
         return t.internalBuffer();
+    }
+
+    /** Обеспечивает наличие буфера градиента и возвращает его. */
+    private static float[] ensureGradBuffer(Tensor t) {
+        if (!t.hasGrad()) {
+            t.zeroGrad();
+        }
+        return t.gradBuffer();
     }
 
     /**
@@ -200,14 +190,8 @@ public final class TensorOpsBackward {
         float[] src = x.internalBuffer();
         float[] g = gamma.internalBuffer();
 
-        if (!gradX.hasGrad()) {
-            gradX.zeroGrad();
-        }
-        if (!gradGamma.hasGrad()) {
-            gradGamma.zeroGrad();
-        }
-        float[] gx = gradX.gradBuffer();
-        float[] gg = gradGamma.gradBuffer();
+        float[] gx = ensureGradBuffer(gradX);
+        float[] gg = ensureGradBuffer(gradGamma);
 
         int n = outerSize * lastDim;
         if (n <= 0) {
@@ -225,14 +209,8 @@ public final class TensorOpsBackward {
         Objects.requireNonNull(gradA, "gradA");
         Objects.requireNonNull(gradB, "gradB");
         float[] gc = upstreamGrad(gradC);
-        if (!gradA.hasGrad()) {
-            gradA.zeroGrad();
-        }
-        if (!gradB.hasGrad()) {
-            gradB.zeroGrad();
-        }
-        float[] ga = gradA.gradBuffer();
-        float[] gb = gradB.gradBuffer();
+        float[] ga = ensureGradBuffer(gradA);
+        float[] gb = ensureGradBuffer(gradB);
         if (gc.length != ga.length || gc.length != gb.length) {
             throw new IllegalArgumentException("shape mismatch for subtract backward");
         }
@@ -256,14 +234,8 @@ public final class TensorOpsBackward {
         float[] gc = upstreamGrad(gradC);
         float[] da = a.internalBuffer();
         float[] db = b.internalBuffer();
-        if (!gradA.hasGrad()) {
-            gradA.zeroGrad();
-        }
-        if (!gradB.hasGrad()) {
-            gradB.zeroGrad();
-        }
-        float[] ga = gradA.gradBuffer();
-        float[] gb = gradB.gradBuffer();
+        float[] ga = ensureGradBuffer(gradA);
+        float[] gb = ensureGradBuffer(gradB);
         if (gc.length != ga.length || gc.length != gb.length) {
             throw new IllegalArgumentException("shape mismatch for multiply backward");
         }
@@ -279,10 +251,7 @@ public final class TensorOpsBackward {
         Objects.requireNonNull(gradC, "gradC");
         Objects.requireNonNull(gradA, "gradA");
         float[] gc = upstreamGrad(gradC);
-        if (!gradA.hasGrad()) {
-            gradA.zeroGrad();
-        }
-        float[] ga = gradA.gradBuffer();
+        float[] ga = ensureGradBuffer(gradA);
         if (gc.length != ga.length) {
             throw new IllegalArgumentException("shape mismatch for multiplyScalar backward");
         }
@@ -302,10 +271,7 @@ public final class TensorOpsBackward {
         Objects.requireNonNull(gradIn, "gradIn");
         float[] gOut = upstreamGrad(gradOut);
         float[] inp = input.internalBuffer();
-        if (!gradIn.hasGrad()) {
-            gradIn.zeroGrad();
-        }
-        float[] gIn = gradIn.gradBuffer();
+        float[] gIn = ensureGradBuffer(gradIn);
 
         if (gOut.length <= 0) {
             return;
@@ -321,10 +287,7 @@ public final class TensorOpsBackward {
         Objects.requireNonNull(gradIn, "gradIn");
         float[] gOut = upstreamGrad(gradOut);
         float[] inp = input.internalBuffer();
-        if (!gradIn.hasGrad()) {
-            gradIn.zeroGrad();
-        }
-        float[] gIn = gradIn.gradBuffer();
+        float[] gIn = ensureGradBuffer(gradIn);
         if (gOut.length <= 0) {
             return;
         }
@@ -339,10 +302,7 @@ public final class TensorOpsBackward {
         Objects.requireNonNull(gradIn, "gradIn");
         float[] gOut = upstreamGrad(gradOut);
         float[] inp = input.internalBuffer();
-        if (!gradIn.hasGrad()) {
-            gradIn.zeroGrad();
-        }
-        float[] gIn = gradIn.gradBuffer();
+        float[] gIn = ensureGradBuffer(gradIn);
         if (gOut.length <= 0) {
             return;
         }
@@ -361,12 +321,9 @@ public final class TensorOpsBackward {
         if (shape.length != 3) {
             throw new IllegalArgumentException("softmaxLastDimBackward3D requires 3D");
         }
-        if (!gradInput.hasGrad()) {
-            gradInput.zeroGrad();
-        }
         float[] go = upstreamGrad(gradOut);
         float[] p = probs.internalBuffer();
-        float[] gi = gradInput.gradBuffer();
+        float[] gi = ensureGradBuffer(gradInput);
         int batch = shape[0];
         int mid = shape[1];
         int inner = shape[2];
@@ -394,11 +351,10 @@ public final class TensorOpsBackward {
         int vocabSize = logitShape[2];
 
         Tensor grad = new Tensor(logitShape);
-        grad.zeroGrad();
+        float[] gradData = ensureGradBuffer(grad);
 
         float[] logitData = logits.internalBuffer();
         float[] targetData = target.internalBuffer();
-        float[] gradData = grad.gradBuffer();
 
         int totalTokens = batch * seqLen;
         if (totalTokens <= 0 || !TensorOpsGPU.shouldUseGpuCrossEntropy(logitData.length)) {

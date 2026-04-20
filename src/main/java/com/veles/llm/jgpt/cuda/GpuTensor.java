@@ -3,6 +3,7 @@ package com.veles.llm.jgpt.cuda;
 import com.veles.llm.jgpt.GpuFloatBuffer;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
+import com.veles.llm.jgpt.core.TensorUtils;
 
 import java.lang.ref.PhantomReference;
 import java.lang.ref.Reference;
@@ -10,6 +11,8 @@ import java.lang.ref.ReferenceQueue;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Тензор, данные которого живут на GPU в одном {@link GpuFloatBuffer} (долгоживущий device-буфер).
@@ -29,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class GpuTensor implements AutoCloseable {
 
     private static final ReferenceQueue<GpuTensor> REF_QUEUE = new ReferenceQueue<>();
+    private static final Set<TensorPhantom> PHANTOMS = ConcurrentHashMap.newKeySet();
 
     /** Поля обновляются конструктором и {@link #zeroGrad()}; phantom читает актуальные ссылки. */
     private static final class BufferPair {
@@ -68,7 +72,8 @@ public final class GpuTensor implements AutoCloseable {
         this.strides = strides.clone();
         this.buf = new BufferPair();
         this.buf.data = Objects.requireNonNull(data, "data");
-        new TensorPhantom(this, REF_QUEUE, buf, closedExplicitly, released);
+        TensorPhantom phantom = new TensorPhantom(this, REF_QUEUE, buf, closedExplicitly, released);
+        PHANTOMS.add(phantom);
     }
 
     /**
@@ -88,6 +93,7 @@ public final class GpuTensor implements AutoCloseable {
             if (!ph.released.compareAndSet(false, true)) {
                 return;
             }
+            PHANTOMS.remove(ph);
             BufferPair pair = ph.pair;
             GpuFloatBuffer d = pair.data;
             GpuFloatBuffer g = pair.grad;
@@ -121,24 +127,23 @@ public final class GpuTensor implements AutoCloseable {
         if (!TensorOpsGPU.isGpuAvailable()) {
             throw new IllegalStateException("GPU not available");
         }
-        int[] sh = validateAndCloneShape(shape);
-        int sz = computeSizeOrThrow(sh);
+        int[] sh = TensorUtils.validateAndCloneShape(shape);
+        int sz = TensorUtils.computeSizeOrThrow(sh);
         GpuFloatBuffer b = GpuFloatBuffer.allocate(sz);
         b.clear();
-        int[] st = calculateStrides(sh);
+        int[] st = TensorUtils.calculateStrides(sh);
         return new GpuTensor(sh, sz, st, b);
     }
 
     /**
      * Однократная загрузка с хоста (например инициализация весов из {@link Tensor}).
-     * Использует {@link Tensor#getDataCopy()}, чтобы не полагаться на совместное владение
-     * {@code float[]} с JNI {@code GetFloatArrayElements} на том же массиве.
+     * Использует {@link Tensor#internalBuffer()} для heap-тензоров, чтобы избежать лишней копии.
      */
     public static GpuTensor fromHostTensor(Tensor host) {
         Objects.requireNonNull(host, "host");
-        float[] copy = host.getDataCopy();
+        float[] buf = host.internalBuffer();
         GpuTensor g = allocate(host.getShape());
-        g.uploadFrom(copy, 0, copy.length);
+        g.uploadFrom(buf, 0, buf.length);
         return g;
     }
 
@@ -331,40 +336,5 @@ public final class GpuTensor implements AutoCloseable {
         if (buf.data == null) {
             throw new IllegalStateException("GpuTensor is closed");
         }
-    }
-
-    private static int[] validateAndCloneShape(int[] shape) {
-        Objects.requireNonNull(shape, "shape");
-        if (shape.length == 0) {
-            throw new IllegalArgumentException("shape must have at least one dimension");
-        }
-        int[] cloned = shape.clone();
-        for (int i = 0; i < cloned.length; i++) {
-            if (cloned[i] <= 0) {
-                throw new IllegalArgumentException("dimension " + i + " must be positive, got " + cloned[i]);
-            }
-        }
-        return cloned;
-    }
-
-    private static int computeSizeOrThrow(int[] shape) {
-        long sz = 1;
-        for (int dim : shape) {
-            sz *= dim;
-            if (sz > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException("Shape product overflow: " + Arrays.toString(shape));
-            }
-        }
-        return (int) sz;
-    }
-
-    private static int[] calculateStrides(int[] shape) {
-        int rank = shape.length;
-        int[] st = new int[rank];
-        st[rank - 1] = 1;
-        for (int i = rank - 2; i >= 0; i--) {
-            st[i] = st[i + 1] * shape[i + 1];
-        }
-        return st;
     }
 }

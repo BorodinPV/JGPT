@@ -19,10 +19,9 @@ public final class Fp16Tensor {
 
     /** Создаёт новый тензор с нулевым буфером. */
     public Fp16Tensor(int[] shape) {
-        validateShape(shape);
-        this.shape = shape.clone();
-        this.strides = calculateStrides(this.shape);
-        int size = numElementsForShape(this.shape);
+        this.shape = TensorUtils.validateAndCloneShape(shape);
+        this.strides = TensorUtils.calculateStrides(this.shape);
+        int size = TensorUtils.computeSizeOrThrow(this.shape);
         this.data = new short[size];
     }
 
@@ -31,9 +30,10 @@ public final class Fp16Tensor {
      * инварианты; {@code data} хранится по переданной ссылке (см. {@link #wrap} / {@link #fromFloat16Array}).
      */
     private Fp16Tensor(int[] shape, short[] data) {
-        this.shape = shape.clone();
-        this.strides = calculateStrides(this.shape);
-        if (data.length != numElementsForShape(this.shape)) {
+        this.shape = TensorUtils.validateAndCloneShape(shape);
+        this.strides = TensorUtils.calculateStrides(this.shape);
+        int expectedSize = TensorUtils.computeSizeOrThrow(this.shape);
+        if (data.length != expectedSize) {
             throw new IllegalArgumentException(
                     "data length " + data.length + " != shape product for " + Arrays.toString(this.shape));
         }
@@ -46,8 +46,7 @@ public final class Fp16Tensor {
      * опасны, как гонки при разделении массива между потоками.
      */
     public static Fp16Tensor wrap(short[] data, int[] shape) {
-        validateShape(shape);
-        int n = numElementsForShape(shape);
+        int n = TensorUtils.computeSizeOrThrow(shape);
         if (data.length != n) {
             throw new IllegalArgumentException("data length " + data.length + " != shape product " + n);
         }
@@ -58,8 +57,7 @@ public final class Fp16Tensor {
      * Копирует half-биты и форму (аналог {@link QuantizedTensor#fromBytes(byte[], int[], float)}).
      */
     public static Fp16Tensor fromFloat16Array(short[] data, int[] shape) {
-        validateShape(shape);
-        int n = numElementsForShape(shape);
+        int n = TensorUtils.computeSizeOrThrow(shape);
         if (data.length != n) {
             throw new IllegalArgumentException("data length " + data.length + " != shape product " + n);
         }
@@ -73,15 +71,14 @@ public final class Fp16Tensor {
      */
     public static Fp16Tensor fromTensor(Tensor t) {
         float[] f = t.internalBuffer();
-        for (float v : f) {
+        short[] h = new short[f.length];
+        for (int i = 0; i < f.length; i++) {
+            float v = f[i];
             if (Float.isNaN(v) || Float.isInfinite(v)) {
                 throw new IllegalArgumentException(
                         "Tensor contains NaN or Infinity; FP16 path expects finite values");
             }
-        }
-        short[] h = new short[f.length];
-        for (int i = 0; i < f.length; i++) {
-            h[i] = Float.floatToFloat16(f[i]);
+            h[i] = Float.floatToFloat16(v);
         }
         return new Fp16Tensor(t.getShape(), h);
     }
@@ -123,7 +120,7 @@ public final class Fp16Tensor {
      * #internalBuffer()} и свой индекс.
      */
     public float get(int... indices) {
-        return Float.float16ToFloat(data[flatIndex(indices, true)]);
+        return Float.float16ToFloat(data[TensorUtils.flatIndex(indices, shape, strides, true)]);
     }
 
     /** Запись с проверкой границ; NaN и Infinity отклоняются. */
@@ -131,7 +128,7 @@ public final class Fp16Tensor {
         if (Float.isNaN(value) || Float.isInfinite(value)) {
             throw new IllegalArgumentException("value must be finite");
         }
-        data[flatIndex(indices, true)] = Float.floatToFloat16(value);
+        data[TensorUtils.flatIndex(indices, shape, strides, true)] = Float.floatToFloat16(value);
     }
 
     /**
@@ -203,53 +200,5 @@ public final class Fp16Tensor {
     @Override
     public String toString() {
         return "Fp16Tensor{shape=" + Arrays.toString(shape) + ", elements=" + data.length + "}";
-    }
-
-    private static void validateShape(int[] shape) {
-        if (shape == null || shape.length == 0) {
-            throw new IllegalArgumentException("shape must be non-empty");
-        }
-        for (int d : shape) {
-            if (d <= 0) {
-                throw new IllegalArgumentException("each dimension must be positive");
-            }
-        }
-    }
-
-    private static int numElementsForShape(int[] shape) {
-        long size = 1L;
-        for (int d : shape) {
-            size *= d;
-            if (size > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException(
-                        "Total elements exceed Integer.MAX_VALUE (max ~2.14B elements), shape "
-                                + Arrays.toString(shape));
-            }
-        }
-        return (int) size;
-    }
-
-    private static int[] calculateStrides(int[] shape) {
-        int[] s = new int[shape.length];
-        s[shape.length - 1] = 1;
-        for (int i = shape.length - 2; i >= 0; i--) {
-            s[i] = s[i + 1] * shape[i + 1];
-        }
-        return s;
-    }
-
-    private int flatIndex(int[] indices, boolean checkBounds) {
-        if (indices.length != shape.length) {
-            throw new IllegalArgumentException("wrong number of indices");
-        }
-        int index = 0;
-        for (int i = 0; i < indices.length; i++) {
-            if (checkBounds && (indices[i] < 0 || indices[i] >= shape[i])) {
-                throw new IndexOutOfBoundsException(
-                        "index " + indices[i] + " for dimension " + i + " (size " + shape[i] + ")");
-            }
-            index += indices[i] * strides[i];
-        }
-        return index;
     }
 }

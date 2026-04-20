@@ -108,19 +108,22 @@ public final class Tensor {
         if (ptr == 0L) {
             return allocateDirect(validatedShape);
         }
-        ByteBuffer bb = CudaPinnedHost.directBuffer(ptr, bytes);
-        if (bb == null) {
+        try {
+            ByteBuffer bb = CudaPinnedHost.directBuffer(ptr, bytes);
+            if (bb == null) {
+                return allocateDirect(validatedShape);
+            }
+            bb.order(ByteOrder.nativeOrder());
+            FloatBuffer fb = bb.asFloatBuffer();
+            fb.position(0);
+            fb.limit(sz);
+            Tensor t = new Tensor(validatedShape, strides, sz, null, bb, fb, null, true);
+            PINNED_CUDA_CLEANER.register(t, () -> CudaPinnedHost.free(ptr));
+            return t;
+        } catch (Throwable e) {
             CudaPinnedHost.free(ptr);
             return allocateDirect(validatedShape);
         }
-        bb.order(ByteOrder.nativeOrder());
-        FloatBuffer fb = bb.asFloatBuffer();
-        fb.position(0);
-        fb.limit(sz);
-        Tensor t = new Tensor(validatedShape, strides, sz, null, bb, fb, null, true);
-        long toFree = ptr;
-        PINNED_CUDA_CLEANER.register(t, () -> CudaPinnedHost.free(toFree));
-        return t;
     }
 
     /** {@code true} для {@link #allocatePinnedHost(int[])} (данные всё ещё direct для JNI). */
@@ -265,48 +268,15 @@ public final class Tensor {
     // ========== Validation helpers ==========
 
     private static int[] validateAndCloneShape(int[] shape) {
-        Objects.requireNonNull(shape, "shape cannot be null");
-        if (shape.length == 0) {
-            throw new IllegalArgumentException("shape must have at least one dimension");
-        }
-        int[] cloned = shape.clone();
-        for (int i = 0; i < cloned.length; i++) {
-            if (cloned[i] <= 0) {
-                throw new IllegalArgumentException(
-                        String.format("dimension %d must be positive, got %d", i, cloned[i]));
-            }
-        }
-        return cloned;
+        return TensorUtils.validateAndCloneShape(shape);
     }
 
-    /**
-     * Computes product of dimensions with overflow check.
-     * @throws IllegalArgumentException if product exceeds Integer.MAX_VALUE
-     */
     private static int computeSizeOrThrow(int[] shape) {
-        long sz = 1;
-        for (int dim : shape) {
-            sz *= dim;
-            if (sz > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException(String.format(
-                        "Shape product overflow: %s → %d elements (max: %d)",
-                        Arrays.toString(shape), sz, Integer.MAX_VALUE));
-            }
-        }
-        return (int) sz;
+        return TensorUtils.computeSizeOrThrow(shape);
     }
 
     private static int[] calculateStrides(int[] shape) {
-        int rank = shape.length;
-        int[] st = new int[rank];
-        if (rank == 0) {
-            return st;
-        }
-        st[rank - 1] = 1;
-        for (int i = rank - 2; i >= 0; i--) {
-            st[i] = st[i + 1] * shape[i + 1];
-        }
-        return st;
+        return TensorUtils.calculateStrides(shape);
     }
 
     // ========== Accessors ==========
@@ -428,15 +398,15 @@ public final class Tensor {
      * другая форма (row-major). Используется как reshape без копирования данных.
      */
     public Tensor viewReshape(int[] newShape) {
-        if (directBytes != null) {
-            throw new IllegalStateException("viewReshape not supported for direct storage");
-        }
         int[] s = validateAndCloneShape(newShape);
         if (computeSizeOrThrow(s) != size) {
             throw new IllegalArgumentException(
                     "element count mismatch: size " + size + " vs new shape " + Arrays.toString(s));
         }
         int[] newStrides = calculateStrides(s);
+        if (directBytes != null) {
+            return new Tensor(s, newStrides, size, null, directBytes, directFloats, grad, pinnedCudaHost);
+        }
         return new Tensor(s, data, newStrides, size, grad);
     }
 

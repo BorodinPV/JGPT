@@ -145,14 +145,14 @@ public final class AdamOptimizer {
         float[] p = param.internalBuffer();
         float[] g = adamGradientBuffer(grad);
 
-        Tensor mT =
-                m.computeIfAbsent(
-                        param,
-                        k -> {
-                            v.put(k, new Tensor(k.getShape()));
-                            return new Tensor(k.getShape());
-                        });
+        Tensor mT = m.get(param);
         Tensor vT = v.get(param);
+        if (mT == null) {
+            mT = new Tensor(param.getShape());
+            vT = new Tensor(param.getShape());
+            m.put(param, mT);
+            v.put(param, vT);
+        }
         float[] mVal = mT.internalBuffer();
         float[] vVal = vT.internalBuffer();
 
@@ -233,14 +233,14 @@ public final class AdamOptimizer {
 
         int off = 0;
         for (Tensor param : params) {
-            Tensor mT =
-                    m.computeIfAbsent(
-                            param,
-                            k -> {
-                                v.put(k, new Tensor(k.getShape()));
-                                return new Tensor(k.getShape());
-                            });
+            Tensor mT = m.get(param);
             Tensor vT = v.get(param);
+            if (mT == null) {
+                mT = new Tensor(param.getShape());
+                vT = new Tensor(param.getShape());
+                m.put(param, mT);
+                v.put(param, vT);
+            }
             float[] pBuf = param.internalBuffer();
             float[] gBuf = adamGradientBuffer(param);
             float[] mVal = mT.internalBuffer();
@@ -457,7 +457,7 @@ public final class AdamOptimizer {
      * Сброс моментов и счётчика шага. После вызова снова нужны {@link #beginStep()} перед
      * {@link #stepWithParamGrad(Tensor)}.
      */
-    public synchronized void reset() {
+    public void reset() {
         m.clear();
         v.clear();
         step = 0;

@@ -1499,6 +1499,15 @@ public final class GPTModel {
         lastSampledCandidateIdsGpu = null;
         lastSampledCandidateGradGpu = null;
         lastSampledCandidateCount = 0;
+        lastLogitsGradGpu = closeGpuBuffer(lastLogitsGradGpu);
+    }
+
+    /**
+     * Clears device logits buffers to free VRAM.
+     * Call this after eval or backward pass to reclaim GPU memory.
+     */
+    public void clearDeviceLogitsBuffers() {
+        lastLogitsGradGpu = closeGpuBuffer(lastLogitsGradGpu);
     }
 
     public boolean hasSampledTrainLossGrad() {

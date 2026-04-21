@@ -106,6 +106,8 @@ final class LlmTrainerEvalAndSample {
             n++;
         }
         evalLoader.setCurrentIndex(saved);
+        // Free VRAM allocated during eval (logits grad buffers)
+        t.model.clearDeviceLogitsBuffers();
         if (deviceLogitsEval && n > 0 && TensorOpsGPU.isGpuAvailable()) {
             TensorOpsGPU.synchronizeStream();
         }

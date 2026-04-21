@@ -1055,6 +1055,15 @@ public final class LLMTrainer {
                 accTokens = 0;
 
                 epochSuccessfulOptimizerSteps++;
+
+                /* Периодическая очистка ThreadLocal workspace и pending gradients для предотвращения роста VRAM.
+                 * Выполняем каждые 50 шагов — достаточно часто чтобы не держать лишнюю VRAM,
+                 * но не каждый шаг чтобы не терять производительность. */
+                if (globalStep > 0 && globalStep % 50 == 0 && TensorOpsGPU.isGpuAvailable()) {
+                    GpuPendingGradients.cleanupThreadLocal();
+                    GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
+                    TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
+                }
                 globalStep++;
                 trainingEventCallback.onOptimizerStepCompleted(globalStep, epoch + 1);
                 if (trainingStatsWriter != null) {

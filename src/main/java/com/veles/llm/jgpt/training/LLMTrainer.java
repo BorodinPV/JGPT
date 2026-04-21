@@ -76,6 +76,7 @@ public final class LLMTrainer {
         gpuTrainableParamGradsKnownClean = true;
         GpuPendingGradients.clearAllPendingGpuBuffers();
         GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
+        BlockActivationCacheDevice.purgeThreadLocalPool();
         TensorOpsGPU.synchronizeStream();
         TensorOpsGPU.drainDeferredGpuBuffers();
         /* После eval/sample infer: trim async memory pools — иначе фрагментация и задержка возврата блоков после

@@ -840,6 +840,9 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
      * Должна вызываться при завершении эпохи или при OOM.
      */
     public static void purgeThreadLocalPool() {
+        if (CACHE_LOG.isLoggable(Level.FINE)) {
+            CACHE_LOG.fine("purgeThreadLocalPool invoked");
+        }
         Map<ArchKey, ArrayDeque<PooledBuffers>> m = BLOCK_CACHE_POOL.get();
         if (m.isEmpty()) {
             return;

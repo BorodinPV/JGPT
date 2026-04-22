@@ -76,6 +76,7 @@ public final class LLMTrainer {
         gpuTrainableParamGradsKnownClean = true;
         GpuPendingGradients.clearAllPendingGpuBuffers();
         GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
+        log.info("{} перед purge ThreadLocal пула", LogFmt.badge("VRAM"));
         BlockActivationCacheDevice.purgeThreadLocalPool();
         TensorOpsGPU.synchronizeStream();
         TensorOpsGPU.drainDeferredGpuBuffers();
@@ -1219,6 +1220,7 @@ public final class LLMTrainer {
                         log.debug("{} периодическая очистка VRAM на шаге {}", LogFmt.badge("VRAM"), globalStep);
                     }
                     /* Очистка ThreadLocal пула и активационных кэшей модели */
+        log.info("{} перед purge ThreadLocal пула", LogFmt.badge("VRAM"));
                     BlockActivationCacheDevice.purgeThreadLocalPool();
                     model.prepareForTrainingAfterInteractiveGeneration();
                     GpuPendingGradients.cleanupThreadLocal();
@@ -1308,6 +1310,7 @@ public final class LLMTrainer {
 
             /* Очистка ThreadLocal пула BlockActivationCacheDevice для предотвращения утечки VRAM.
              * Пул накапливает буферы при POOL=1, которые не освобождаются при смерти потоков. */
+        log.info("{} перед purge ThreadLocal пула", LogFmt.badge("VRAM"));
             BlockActivationCacheDevice.purgeThreadLocalPool();
             if (log.isInfoEnabled()) {
                 log.info("{} очистка VRAM после эпохи: пул BlockActivationCacheDevice очищен", LogFmt.badge("VRAM"));

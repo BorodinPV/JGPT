@@ -3,7 +3,6 @@ package com.veles.llm.jgpt.training;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.veles.llm.jgpt.TensorOpsGPU;
@@ -60,19 +59,19 @@ class FullGpuTrainConfigTest {
     @Test
     void rejectsFullGpuWhenDecoderPipelineOff() {
         assumeTrue(TensorOpsGPU.isGpuAvailable());
-        System.clearProperty("jgpt.decoder.gpu.pipeline");
-        GPTModel model = new GPTModel(64, 16, 32, 4, 1, 64, true);
-        // Если в окружении задан JGPT_DECODER_GPU_PIPELINE=1, негативный сценарий недоступен.
-        assumeFalse(model.canFullGpuTrain());
+        GPTModel model = new GPTModel(64, 16, 32, 4, 1, 64, true, false);
+        assertFalse(model.canFullGpuTrain());
         IllegalArgumentException ex =
                 assertThrows(
                         IllegalArgumentException.class,
                         () -> new LLMTrainer(model, fullGpuConfig(), tinyLoader()));
         assertTrue(ex.getMessage().contains("fullGpuTrainStep") || ex.getMessage().contains("decoder"));
+        model.closeGpuResidentWeights();
     }
 
     @Test
     void fullGpuTrainStepRequiresUseGpuResident() {
+        assumeTrue(TensorOpsGPU.isGpuAvailable());
         TrainingConfig bad =
                 new TrainingConfig(
                         64,
@@ -116,20 +115,10 @@ class FullGpuTrainConfigTest {
     @Test
     void trainerConstructsWithFullGpuWhenDecoderPipelineAvailable() {
         assumeTrue(TensorOpsGPU.isGpuAvailable());
-        String prevPipe = System.getProperty("jgpt.decoder.gpu.pipeline");
-        try {
-            System.setProperty("jgpt.decoder.gpu.pipeline", "true");
-            GPTModel model = new GPTModel(64, 16, 32, 4, 1, 64, true);
-            assumeTrue(model.canFullGpuTrain());
-            new LLMTrainer(model, fullGpuConfig(), tinyLoader());
-            model.closeGpuResidentWeights();
-        } finally {
-            if (prevPipe == null) {
-                System.clearProperty("jgpt.decoder.gpu.pipeline");
-            } else {
-                System.setProperty("jgpt.decoder.gpu.pipeline", prevPipe);
-            }
-        }
+        GPTModel model = new GPTModel(64, 16, 32, 4, 1, 64, true);
+        assumeTrue(model.canFullGpuTrain());
+        new LLMTrainer(model, fullGpuConfig(), tinyLoader());
+        model.closeGpuResidentWeights();
     }
 
     @Test

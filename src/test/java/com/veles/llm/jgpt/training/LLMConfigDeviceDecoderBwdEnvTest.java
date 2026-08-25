@@ -11,8 +11,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * {@link LLMConfig#deviceDecoderBackwardFromEnv()} и влияние на {@link LLMConfig#toTrainingConfig(String, int)}:
- * env {@code JGPT_DEVICE_DECODER_BWD}, затем {@code -Djgpt.deviceDecoderBackward}.
+ * Сырой {@link LLMConfig#deviceDecoderBackwardFromEnv()} и канонический {@link LLMConfig#toTrainingConfig}.
  */
 class LLMConfigDeviceDecoderBwdEnvTest {
 
@@ -31,56 +30,34 @@ class LLMConfigDeviceDecoderBwdEnvTest {
     }
 
     @Test
-    void propertyTrue_enablesDeviceDecoderBackwardRequest() {
+    void propertyTrue_rawReaderEnables() {
         assumeEnvBlank("JGPT_DEVICE_DECODER_BWD");
         System.setProperty("jgpt.deviceDecoderBackward", "true");
         assertTrue(LLMConfig.deviceDecoderBackwardFromEnv());
     }
 
     @Test
-    void propertyFalse_disablesDeviceDecoderBackwardRequest() {
+    void propertyFalse_rawReaderDisables_toTrainingConfigStillCanonical() {
         assumeEnvBlank("JGPT_DEVICE_DECODER_BWD");
         System.setProperty("jgpt.deviceDecoderBackward", "false");
         assertFalse(LLMConfig.deviceDecoderBackwardFromEnv());
-    }
-
-    @Test
-    void toTrainingConfig_deviceDecoderOnlyWhenFullGpuAndDeviceLogits() {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
-        assumeEnvBlank("JGPT_GPU_E2E_TRAIN");
-        assumeEnvBlank("JGPT_FULL_GPU_TRAIN");
-        assumeEnvBlank("JGPT_DEVICE_LOGITS_TRAIN");
-        assumeEnvBlank("JGPT_DEVICE_DECODER_BWD");
-        assumeEnvBlank("JGPT_DECODER_GPU_PIPELINE");
-
-        System.setProperty("jgpt.fullGpuTrain", "true");
-        System.setProperty("jgpt.deviceLogitsTrain", "true");
-        System.setProperty("jgpt.deviceDecoderBackward", "true");
-        System.setProperty("jgpt.decoder.gpu.pipeline", "true");
-
-        TrainingConfig tc = LLMConfig.nano().toTrainingConfig("checkpoints_env_dec", 500);
-        assertTrue(tc.fullGpuTrainStep);
-        assertTrue(tc.deviceLogitsTrainStep);
+        TrainingConfig tc = LLMConfig.nano().toTrainingConfig("checkpoints_env_dec_off", 500);
         assertTrue(tc.deviceDecoderBackward);
+        assertTrue(tc.fullGpuTrainStep);
     }
 
     @Test
-    void toTrainingConfig_whenFullGpu_forcesDeviceLogitsAndDecoder() {
+    void toTrainingConfig_withCuda_forcesDeviceLogitsAndDecoder() {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
-        assumeEnvBlank("JGPT_GPU_E2E_TRAIN");
-        assumeEnvBlank("JGPT_FULL_GPU_TRAIN");
-        assumeEnvBlank("JGPT_DEVICE_LOGITS_TRAIN");
-        assumeEnvBlank("JGPT_DEVICE_DECODER_BWD");
-        assumeEnvBlank("JGPT_DECODER_GPU_PIPELINE");
-
         System.setProperty("jgpt.fullGpuTrain", "true");
         System.setProperty("jgpt.deviceLogitsTrain", "false");
-        System.setProperty("jgpt.deviceDecoderBackward", "true");
-        System.setProperty("jgpt.decoder.gpu.pipeline", "true");
+        System.setProperty("jgpt.deviceDecoderBackward", "false");
+        System.setProperty("jgpt.decoder.gpu.pipeline", "false");
 
         TrainingConfig tc = LLMConfig.nano().toTrainingConfig("checkpoints_env_dec2", 500);
         assertTrue(tc.fullGpuTrainStep);
@@ -89,7 +66,7 @@ class LLMConfigDeviceDecoderBwdEnvTest {
     }
 
     @Test
-    void whenEnvExplicitlySetsDecoderBwd_itDominatesConflictingProperty() {
+    void whenEnvExplicitlySetsDecoderBwd_rawReaderDominatesProperty() {
         String env = System.getenv("JGPT_DEVICE_DECODER_BWD");
         if (env == null || env.isBlank()) {
             return;

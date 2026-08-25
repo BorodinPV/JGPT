@@ -83,8 +83,8 @@ public final class GPTModel {
     final GptGpuDecoderLayerGpuWeights[] gpuDecoderLayer;
 
     /**
-     * {@code true} если GPU-резидентно и decoder-pipeline разрешён (env {@code JGPT_DECODER_GPU_PIPELINE=1}
-     * или prop {@code jgpt.decoder.gpu.pipeline=true}).
+     * {@code true} если GPU-резидентно и decoder-pipeline включён (по умолчанию при {@code gpuResident};
+     * тесты CPU vs GPU могут передать {@code decoderGpuPipeline=false} в конструктор).
      */
     private final boolean decoderGpuPipeline;
 
@@ -237,6 +237,7 @@ public final class GPTModel {
     /**
      * @param gpuResident при {@code true} и доступной CUDA — копии финального RMSNorm и LM head на VRAM
      *                    ({@link #forwardGpuLmHead(Tensor)}), веса слоёв декодера (аттеншн + FFN) на VRAM.
+     *                    Decoder GPU pipeline включается автоматически.
      */
     public GPTModel(
             int vocabSize,
@@ -246,6 +247,23 @@ public final class GPTModel {
             int numLayers,
             int dIntermediate,
             boolean gpuResident) {
+        this(vocabSize, maxSeqLen, dModel, numHeads, numLayers, dIntermediate, gpuResident, true);
+    }
+
+    /**
+     * @param gpuResident при {@code true} и доступной CUDA — веса на VRAM
+     * @param decoderGpuPipeline сквозной GPU decoder; для обучения всегда {@code true}. {@code false} —
+     *     только тесты сравнения с CPU-стеком декодера.
+     */
+    public GPTModel(
+            int vocabSize,
+            int maxSeqLen,
+            int dModel,
+            int numHeads,
+            int numLayers,
+            int dIntermediate,
+            boolean gpuResident,
+            boolean decoderGpuPipeline) {
         this.vocabSize = vocabSize;
         this.maxSeqLen = maxSeqLen;
         this.dModel = dModel;
@@ -299,7 +317,7 @@ public final class GPTModel {
             this.gpuDecoderLayer = null;
         }
 
-        this.decoderGpuPipeline = this.gpuResident && resolveDecoderGpuPipeline();
+        this.decoderGpuPipeline = this.gpuResident && decoderGpuPipeline;
         if (this.decoderGpuPipeline && this.gpuDecoderLayer != null && LLMConfig.decoderLayerCudaGraphFromEnvOrProp()) {
             this.decoderLayerCudaGraphWanted = true;
             this.decoderLayerGraphExec = new long[numLayers];
@@ -378,7 +396,7 @@ public final class GPTModel {
     public void setDeviceLogitsEnabled(boolean v) {
         if (v && !decoderGpuPipeline) {
             throw new IllegalStateException(
-                    "setDeviceLogitsEnabled(true) requires decoderGpuPipeline (gpuResident + env/prop)");
+                    "setDeviceLogitsEnabled(true) requires decoderGpuPipeline (gpuResident model)");
         }
         this.deviceLogitsEnabled = v;
     }
@@ -452,10 +470,6 @@ public final class GPTModel {
     /** Сбрасывает кэш {@link #gpuTensorByTrainableParameter()} — вызывать при добавлении/удалении GPU-тензоров. */
     public void invalidateGpuParamMapCache() {
         cachedGpuParamMapValid = false;
-    }
-
-    private static boolean resolveDecoderGpuPipeline() {
-        return LLMConfig.decoderGpuPipelineFromEnvOrProp();
     }
 
     private void destroyDecoderLayerCudaGraphs() {
@@ -1663,8 +1677,7 @@ public final class GPTModel {
             if (gpuResident && TensorOpsGPU.isGpuAvailable()) {
                 throw new IllegalStateException(
                         "GPU-resident model with CUDA requires device decoder backward (setDeviceLogitsEnabled(true) then "
-                                + "setDeviceDecoderBackward(true), decoder pipeline env/prop); LLMTrainer + "
-                                + "LLMConfig.toTrainingConfig enable this for training.");
+                                + "setDeviceDecoderBackward(true)); LLMTrainer + LLMConfig.toTrainingConfig enable this.");
             }
             backwardDecoderLayersHost(gradBeforeNorm, batch, seqLen, zeroParamGrads);
         }

@@ -4,10 +4,15 @@ import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.data.BPETokenizer;
 import com.veles.llm.jgpt.model.GPTModel;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Конфигурации моделей разного размера (совместимо с {@link GPTModel} / {@link TrainingConfig}).
  */
 public final class LLMConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(LLMConfig.class);
 
     public final String name;
     public final int vocabSize;
@@ -287,7 +292,17 @@ public final class LLMConfig {
     }
 
     /**
-     * Явный запрос из env {@code JGPT_TRAIN_GPU_RESIDENT=1} / {@code true} (пустое значение — {@code false}).
+     * Канонический GPU-train: CUDA доступна. Обучение всегда resident + decoder pipeline + device
+     * logits/backward; отдельные {@code JGPT_TRAIN_GPU_RESIDENT} / {@code JGPT_FULL_GPU_TRAIN} /
+     * {@code JGPT_GPU_E2E_TRAIN} / {@code JGPT_DEVICE_LOGITS_TRAIN} / {@code JGPT_DEVICE_DECODER_BWD} /
+     * {@code JGPT_DECODER_GPU_PIPELINE} больше не выбирают путь.
+     */
+    public static boolean canonicalGpuTrain() {
+        return TensorOpsGPU.isGpuAvailable();
+    }
+
+    /**
+     * Устар.: сырой разбор {@code JGPT_TRAIN_GPU_RESIDENT=1}. На путь обучения не влияет.
      */
     public static boolean gpuResidentTrainingExplicitlyOn() {
         String e = System.getenv("JGPT_TRAIN_GPU_RESIDENT");
@@ -299,42 +314,30 @@ public final class LLMConfig {
     }
 
     /**
-     * Резидентные веса при обучении: при доступной CUDA и пустом / не заданном env — <b>вкл.</b> по умолчанию;
-     * {@code JGPT_TRAIN_GPU_RESIDENT=0}/{@code false} — принудительно выкл.; явный {@code 1}/{@code true} — вкл.
-     * при наличии CUDA.
+     * GPU-резидентные веса: совпадает с {@link #canonicalGpuTrain()}. {@code JGPT_TRAIN_GPU_RESIDENT=0}
+     * игнорируется (предупреждение в {@link #toTrainingConfig(String, int)}).
      */
     public static boolean effectiveGpuResidentTraining() {
-        String e = System.getenv("JGPT_TRAIN_GPU_RESIDENT");
-        if (e != null && !e.isBlank()) {
-            String t = e.trim();
-            if ("0".equals(t) || "false".equalsIgnoreCase(t)) {
-                return false;
-            }
-            if ("1".equals(t) || "true".equalsIgnoreCase(t)) {
-                return TensorOpsGPU.isGpuAvailable();
-            }
-            return false;
-        }
-        return TensorOpsGPU.isGpuAvailable();
+        return canonicalGpuTrain();
     }
 
-    /** Env {@code JGPT_FULL_GPU_TRAIN} / prop {@code jgpt.fullGpuTrain}. */
+    /** Устар.: сырой {@code JGPT_FULL_GPU_TRAIN} / {@code jgpt.fullGpuTrain}. На {@link #toTrainingConfig} не влияет. */
     public static boolean fullGpuTrainStepFromEnv() {
         return readBoolEnvOrProp("JGPT_FULL_GPU_TRAIN", "jgpt.fullGpuTrain");
     }
 
-    /** Эффективный: env-флаг + реально доступная CUDA. */
+    /** Устар.: сырой флаг + CUDA. Канонический путь — {@link #canonicalGpuTrain()}. */
     public static boolean effectiveFullGpuTrainStepFromEnv() {
-        return fullGpuTrainStepFromEnv() && TensorOpsGPU.isGpuAvailable();
+        return canonicalGpuTrain();
     }
 
-    /** Env / prop; при незаданных — как при {@link #decoderGpuPipelineFromEnvOrProp()}: вкл., если CUDA есть. */
+    /** Устар.: сырой env/prop. Канонический путь включает device logits при CUDA. */
     public static boolean deviceLogitsTrainStepFromEnv() {
         return readBoolEnvOrPropDefaultGpuWhenUnset(
                 "JGPT_DEVICE_LOGITS_TRAIN", "jgpt.deviceLogitsTrain");
     }
 
-    /** Env / prop; при незаданных — вкл., если CUDA есть. */
+    /** Устар.: сырой env/prop. Канонический путь включает device decoder backward при CUDA. */
     public static boolean deviceDecoderBackwardFromEnv() {
         return readBoolEnvOrPropDefaultGpuWhenUnset(
                 "JGPT_DEVICE_DECODER_BWD", "jgpt.deviceDecoderBackward");
@@ -429,21 +432,16 @@ public final class LLMConfig {
     }
 
     /**
-     * Пресет end-to-end GPU: env {@code JGPT_GPU_E2E_TRAIN=1} / prop {@code jgpt.gpu.e2eTrain}. Включает
-     * {@link TrainingConfig#useGpuResident}, {@link TrainingConfig#fullGpuTrainStep}, device logits и device
-     * decoder backward согласованно (см. {@link #toTrainingConfig(String, int)}). Требует
-     * {@link #effectiveGpuResidentTraining()} и доступную CUDA; иначе {@link #toTrainingConfig} бросает
-     * {@link IllegalStateException}. Нужен {@code JGPT_DECODER_GPU_PIPELINE=1} — без него
-     * {@link #toTrainingConfig(String, int)} бросает {@link IllegalStateException}. Часть вспомогательной работы
-     * (данные, I/O чекпоинта) по-прежнему на хосте.
+     * Устар.: сырой {@code JGPT_GPU_E2E_TRAIN} / {@code jgpt.gpu.e2eTrain}. Канонический GPU-train включается
+     * сам при CUDA; флаг на {@link #toTrainingConfig} не влияет.
      */
     public static boolean gpuE2eTrainFromEnv() {
         return readBoolEnvOrProp("JGPT_GPU_E2E_TRAIN", "jgpt.gpu.e2eTrain");
     }
 
     /**
-     * Разрешение decoder GPU pipeline: env {@code JGPT_DECODER_GPU_PIPELINE=1} / prop
-     * {@code jgpt.decoder.gpu.pipeline} — совпадает с {@link GPTModel} (см. {@link #toTrainingConfig}).
+     * Устар.: сырой {@code JGPT_DECODER_GPU_PIPELINE} / {@code jgpt.decoder.gpu.pipeline}. У {@link GPTModel}
+     * pipeline по умолчанию включён при {@code gpuResident}; обучение не читает этот флаг.
      */
     public static boolean decoderGpuPipelineFromEnvOrProp() {
         return readBoolEnvOrPropDefaultGpuWhenUnset(
@@ -531,21 +529,6 @@ public final class LLMConfig {
      */
     public static boolean fusedFfnRmsW1W3FromEnvOrProp() {
         return readBoolEnvOrProp("JGPT_FUSED_FFN_RMS_W1W3", "jgpt.fused.ffn.rms.w1w3");
-    }
-
-    /**
-     * Полный GPU-шаг из env ({@link #gpuE2eTrainFromEnv()} или {@link #effectiveFullGpuTrainStepFromEnv()}) требует
-     * pipeline, иначе {@link GPTModel#canFullGpuTrain()} ложен.
-     */
-    private static void ensureDecoderGpuPipelineForFullGpuTrainRequest() {
-        if (!TensorOpsGPU.isGpuAvailable()) {
-            return;
-        }
-        if (!decoderGpuPipelineFromEnvOrProp()) {
-            throw new IllegalStateException(
-                    "Full GPU training requires JGPT_DECODER_GPU_PIPELINE=1 "
-                            + "(or -Djgpt.decoder.gpu.pipeline=true) so that GPTModel.canFullGpuTrain() is true.");
-        }
     }
 
     private static boolean readBoolEnvOrProp(String envKey, String propKey) {
@@ -698,73 +681,13 @@ public final class LLMConfig {
 
     /**
      * @param modelVocabSize фактический размер словаря (например {@link BPETokenizer#getVocabSize()} после train)
-     *     <p>Если эффективен {@link #effectiveFullGpuTrainStepFromEnv()}, запросы device logits / decoder
-     *     приводятся к {@code true}, чтобы не оставался частичный GPU-путь.
+     *     <p>Канонический GPU-train: resident + полный шаг + device logits + device decoder. Наследие
+     *     {@code JGPT_FULL_GPU_TRAIN} / {@code JGPT_GPU_E2E_TRAIN} / {@code JGPT_DEVICE_*} /
+     *     {@code JGPT_DECODER_GPU_PIPELINE} не меняет путь.
      */
     public TrainingConfig toTrainingConfig(String checkpointDir, int modelVocabSize) {
         TensorOpsGPU.requireCuda("LLMConfig.toTrainingConfig");
-        if (gpuE2eTrainFromEnv()) {
-            if (!TensorOpsGPU.isGpuAvailable()) {
-                throw new IllegalStateException(
-                        "JGPT_GPU_E2E_TRAIN requires CUDA (GPU not available).");
-            }
-            if (!effectiveGpuResidentTraining()) {
-                throw new IllegalStateException(
-                        "JGPT_GPU_E2E_TRAIN requires GPU resident training (CUDA and JGPT_TRAIN_GPU_RESIDENT not 0/false)");
-            }
-            ensureDecoderGpuPipelineForFullGpuTrainRequest();
-            return new TrainingConfig(
-                    modelVocabSize,
-                    maxSeqLen,
-                    dModel,
-                    numHeads,
-                    numLayers,
-                    dIntermediate,
-                    batchSize,
-                    accumulationSteps,
-                    epochs,
-                    learningRate,
-                    0.1f,
-                    0.1f,
-                    1.0f,
-                    0.1f,
-                    0.1f,
-                    0.1f,
-                    500,
-                    100,
-                    LearningRateSchedule.COSINE,
-                    0f,
-                    checkpointDir,
-                    logEveryStepsFromEnv(1),
-                    interactiveEveryFromEnv(200),
-                    earlyStopEvalPatienceFromEnv(3),
-                    earlyStopOverfitFromEnv(true),
-                    1e-8f,
-                    8,
-                    true,
-                    true,
-                    true,
-                    true,
-                    false,
-                    trainLossModeFromEnvOrProp(),
-                    sampledCeCandidatesFromEnv(),
-                    sampledCeNegativeModeFromEnvOrProp());
-        }
-        boolean useGpu = effectiveGpuResidentTraining();
-        boolean fullStep = effectiveFullGpuTrainStepFromEnv();
-        boolean deviceLogits = useGpu && deviceLogitsTrainStepFromEnv();
-        boolean deviceDec = useGpu && deviceDecoderBackwardFromEnv();
-        if (useGpu && TensorOpsGPU.isGpuAvailable()) {
-            // Единый device-путь обучения: без «полупутей» (host decoder backward + H2D кэша).
-            fullStep = true;
-            deviceLogits = true;
-            deviceDec = true;
-            ensureDecoderGpuPipelineForFullGpuTrainRequest();
-        } else if (fullStep) {
-            deviceLogits = true;
-            deviceDec = true;
-            ensureDecoderGpuPipelineForFullGpuTrainRequest();
-        }
+        warnIfLegacyGpuTrainFlagsSet();
         return new TrainingConfig(
                 modelVocabSize,
                 maxSeqLen,
@@ -793,14 +716,39 @@ public final class LLMConfig {
                 earlyStopOverfitFromEnv(true),
                 1e-8f,
                 8,
-                useGpu,
-                fullStep,
-                deviceLogits,
-                deviceDec,
+                true,
+                true,
+                true,
+                true,
                 false,
                 trainLossModeFromEnvOrProp(),
                 sampledCeCandidatesFromEnv(),
                 sampledCeNegativeModeFromEnvOrProp());
+    }
+
+    private static void warnIfLegacyGpuTrainFlagsSet() {
+        warnLegacyGpuFlagIfOff("JGPT_TRAIN_GPU_RESIDENT", null);
+        warnLegacyGpuFlagIfOff("JGPT_FULL_GPU_TRAIN", "jgpt.fullGpuTrain");
+        warnLegacyGpuFlagIfOff("JGPT_GPU_E2E_TRAIN", "jgpt.gpu.e2eTrain");
+        warnLegacyGpuFlagIfOff("JGPT_DEVICE_LOGITS_TRAIN", "jgpt.deviceLogitsTrain");
+        warnLegacyGpuFlagIfOff("JGPT_DEVICE_DECODER_BWD", "jgpt.deviceDecoderBackward");
+        warnLegacyGpuFlagIfOff("JGPT_DECODER_GPU_PIPELINE", "jgpt.decoder.gpu.pipeline");
+    }
+
+    private static void warnLegacyGpuFlagIfOff(String envKey, String propKey) {
+        if (explicitlyOff(System.getenv(envKey)) || (propKey != null && explicitlyOff(System.getProperty(propKey)))) {
+            log.warn(
+                    "{}=0/false игнорируется: канонический GPU-train всегда полный путь при CUDA",
+                    envKey);
+        }
+    }
+
+    private static boolean explicitlyOff(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return false;
+        }
+        String t = raw.trim();
+        return "0".equals(t) || "false".equalsIgnoreCase(t);
     }
 
     /** Должно совпадать с {@link GPTModel#countParameters()} для тех же гиперпараметров. */

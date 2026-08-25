@@ -228,7 +228,7 @@ public final class AllBooksTrain {
         }
 
         // --- модель ---
-        boolean gpuResident = LLMConfig.effectiveGpuResidentTraining();
+        boolean gpuResident = LLMConfig.canonicalGpuTrain();
         GPTModel model = new GPTModel(vocabSize, llm.maxSeqLen, llm.dModel,
                 llm.numHeads, llm.numLayers, llm.dIntermediate, gpuResident);
 

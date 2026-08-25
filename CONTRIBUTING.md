@@ -9,8 +9,9 @@ Thank you for your interest in contributing to JGPT!
 
 ### Requirements / Требования
 - Java 25+ with Vector API / Java 25+ с Vector API
-- CUDA 12.x with cuBLAS / CUDA 12.x с cuBLAS
-- GCC ≤ 13 (or use `-allow-unsupported-compiler` flag for GCC 14+) / GCC ≤ 13 (или используйте флаг `-allow-unsupported-compiler` для GCC 14+)
+- CUDA 12.x or 13.x with cuBLAS / CUDA 12.x или 13.x с cuBLAS
+- Linux: GCC ≤ 13 (or `-allow-unsupported-compiler` for GCC 14+) / GCC ≤ 13
+- Windows: Visual Studio 2022 Build Tools (MSVC) + CMake (`winget install Kitware.CMake`)
 - Maven 3.9+
 
 ### Build / Сборка
@@ -19,12 +20,12 @@ Thank you for your interest in contributing to JGPT!
 git clone <repository-url>
 cd JGPT
 
-# Build native libraries / Сборка нативных библиотек
-cd src/main/cpp
-mkdir -p build && cd build
-cmake ..
-cmake --build .
-cd ../../..
+# Native CUDA/JNI — Linux
+./scripts/build-cuda.sh
+
+# Native CUDA/JNI — Windows (PowerShell)
+.\scripts\build-cuda.ps1
+. .\build\jgpt-cuda-env.ps1
 
 # Build Java code / Сборка Java кода
 mvn compile

@@ -4,14 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-import com.veles.llm.jgpt.TensorOpsGPU;
-
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * {@link LLMConfig#fullGpuTrainStepFromEnv()} и {@link LLMConfig#effectiveFullGpuTrainStepFromEnv()}:
- * приоритет env {@code JGPT_FULL_GPU_TRAIN}, затем {@code -Djgpt.fullGpuTrain}.
+ * Сырой разбор {@code JGPT_FULL_GPU_TRAIN} / {@code -Djgpt.fullGpuTrain} сохранён для совместимости,
+ * но {@link LLMConfig#effectiveFullGpuTrainStepFromEnv()} равен {@link LLMConfig#canonicalGpuTrain()}.
  */
 class LLMConfigFullGpuTrainEnvTest {
 
@@ -21,31 +19,26 @@ class LLMConfigFullGpuTrainEnvTest {
     }
 
     @Test
-    void propertyTrue_enablesFullGpuTrainRequest() {
+    void propertyTrue_rawReaderStillSeesRequest() {
         assumeTrue(
                 System.getenv("JGPT_FULL_GPU_TRAIN") == null
                         || System.getenv("JGPT_FULL_GPU_TRAIN").isBlank());
         System.setProperty("jgpt.fullGpuTrain", "true");
         assertTrue(LLMConfig.fullGpuTrainStepFromEnv());
-        if (TensorOpsGPU.isGpuAvailable()) {
-            assertTrue(LLMConfig.effectiveFullGpuTrainStepFromEnv());
-        } else {
-            assertFalse(LLMConfig.effectiveFullGpuTrainStepFromEnv());
-        }
     }
 
     @Test
-    void propertyFalse_disablesFullGpuTrainRequest() {
+    void propertyFalse_rawReaderSeesOff_effectiveFollowsCanonical() {
         assumeTrue(
                 System.getenv("JGPT_FULL_GPU_TRAIN") == null
                         || System.getenv("JGPT_FULL_GPU_TRAIN").isBlank());
         System.setProperty("jgpt.fullGpuTrain", "false");
         assertFalse(LLMConfig.fullGpuTrainStepFromEnv());
-        assertFalse(LLMConfig.effectiveFullGpuTrainStepFromEnv());
+        assertEqualsCanonical();
     }
 
     @Test
-    void whenEnvExplicitlyRequestsFullGpu_itDominatesProperty() {
+    void whenEnvExplicitlyRequestsFullGpu_rawReaderDominatesProperty() {
         String env = System.getenv("JGPT_FULL_GPU_TRAIN");
         if (env == null || env.isBlank()) {
             return;
@@ -55,6 +48,10 @@ class LLMConfigFullGpuTrainEnvTest {
         System.setProperty("jgpt.fullGpuTrain", "false");
         assertTrue(
                 LLMConfig.fullGpuTrainStepFromEnv() == wantsFull,
-                "env JGPT_FULL_GPU_TRAIN должен определять запрос при несовпадении с -Djgpt.fullGpuTrain=false");
+                "env JGPT_FULL_GPU_TRAIN должен определять сырой разбор при несовпадении с property");
+    }
+
+    private static void assertEqualsCanonical() {
+        assertTrue(LLMConfig.effectiveFullGpuTrainStepFromEnv() == LLMConfig.canonicalGpuTrain());
     }
 }

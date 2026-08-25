@@ -1,5 +1,6 @@
 package com.veles.llm.jgpt.ops;
 
+import com.veles.llm.jgpt.EnabledIfGpu;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
 import com.veles.llm.jgpt.model.BlockActivationCache;
@@ -14,6 +15,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * <p>
  * All tests use deterministic data via {@link Tensor#fromArray} — no randomTensor dependency.
  */
+@EnabledIfGpu
 @DisplayName("TransformerBackward")
 public class TransformerBackwardTest {
 

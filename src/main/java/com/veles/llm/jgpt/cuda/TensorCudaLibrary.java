@@ -4,12 +4,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * Загрузка нативных библиотек CUDA: сначала {@code libjgpt_cuda_extra.so} (JNI/ядра из {@code jgpt_cuda_extra.cu}),
- * затем {@code libjgpt_cuda.so} (основной модуль). Обе собираются в {@code build/} и должны лежать рядом (или в
- * {@code java.library.path} при {@link System#loadLibrary}).
+ * Загрузка нативных библиотек CUDA.
  *
- * <p>Порядок: {@code -Djgpt.cuda.lib} / {@code JGPT_CUDA_LIB} (путь к <b>основной</b> {@code libjgpt_cuda.so}),
- * относительные пути к {@code build/libjgpt_cuda.so}, иначе {@link System#loadLibrary}.
+ * <p>Linux: extra ({@code libjgpt_cuda_extra.so}), затем основной {@code libjgpt_cuda.so} — оба в {@code build/}.
+ * Windows: один {@code jgpt_cuda.dll} (оба .cu в одной DLL); extra не требуется.
+ *
+ * <p>Порядок: {@code -Djgpt.cuda.lib} / {@code JGPT_CUDA_LIB} (путь к основной библиотеке),
+ * относительные пути {@code build/jgpt_cuda.dll} или {@code build/libjgpt_cuda.so}, иначе {@link System#loadLibrary}.
  *
  * <p><b>Потокобезопасность:</b> повторные вызовы {@link #load()} после успешной загрузки — no-op (быстрый путь).
  * Первый успех фиксируется под монитором класса; параллельные первые вызовы не приводят к повторному
@@ -83,29 +84,40 @@ public final class TensorCudaLibrary {
             }
 
             try {
-                System.loadLibrary("jgpt_cuda_extra");
+                if (!windows()) {
+                    System.loadLibrary("jgpt_cuda_extra");
+                }
                 System.loadLibrary("jgpt_cuda");
-                lastLoadedPath = "jgpt_cuda_extra + jgpt_cuda (java.library.path)";
+                lastLoadedPath = "jgpt_cuda (java.library.path)";
                 loaded = true;
                 return;
             } catch (UnsatisfiedLinkError e) {
-                System.err.println(
-                        "[TensorCudaLibrary] loadLibrary(jgpt_cuda_extra/jgpt_cuda) не удался: " + e.getMessage());
-                System.err.println(
-                        "[TensorCudaLibrary] java.library.path="
-                                + System.getProperty("java.library.path", "<пусто>"));
+                if (!quietMissingNative()) {
+                    System.err.println(
+                            "[TensorCudaLibrary] loadLibrary(jgpt_cuda_extra/jgpt_cuda) не удался: "
+                                    + e.getMessage());
+                    System.err.println(
+                            "[TensorCudaLibrary] java.library.path="
+                                    + System.getProperty("java.library.path", "<пусто>"));
+                }
             }
 
             throw new UnsatisfiedLinkError(buildErrorMessage());
         }
     }
 
-    /** Сначала companion {@code jgpt_cuda_extra}, затем основной модуль (тот же каталог, что и {@code mainSo}). */
+    /**
+     * Linux: companion extra, затем основной модуль. Windows: CUDA runtime DLL из того же каталога,
+     * затем основной {@code jgpt_cuda.dll} (extra опционален).
+     */
     private static void loadMainWithCompanionExtra(Path mainSo) {
         Path dir = mainSo.toAbsolutePath().getParent();
         if (dir != null) {
+            preloadWindowsCudaRuntimeDlls(dir);
             Path extra = dir.resolve(companionExtraFileName());
-            if (!Files.isRegularFile(extra)) {
+            if (Files.isRegularFile(extra)) {
+                System.load(extra.toAbsolutePath().toString());
+            } else if (!windows()) {
                 throw new UnsatisfiedLinkError(
                         "Рядом с "
                                 + mainSo
@@ -113,17 +125,61 @@ public final class TensorCudaLibrary {
                                 + extra
                                 + " (соберите cmake-таргеты jgpt_cuda_extra и jgpt_cuda).");
             }
-            System.load(extra.toAbsolutePath().toString());
         }
         System.load(mainSo.toAbsolutePath().toString());
     }
 
+    /** Уже загруженные DLL удовлетворяют импорт jgpt_cuda.dll (PATH Java.exe extra не видит). */
+    private static void preloadWindowsCudaRuntimeDlls(Path dir) {
+        if (!windows()) {
+            return;
+        }
+        String[] prefixes = {"cudart64_", "nvJitLink", "cublasLt64_", "cublas64_"};
+        for (Path search : windowsCudaRuntimeSearchDirs(dir)) {
+            for (String prefix : prefixes) {
+                try (var stream = Files.list(search)) {
+                    stream.filter(p -> {
+                                String n = p.getFileName().toString();
+                                return n.startsWith(prefix) && n.toLowerCase().endsWith(".dll");
+                            })
+                            .sorted()
+                            .forEach(p -> {
+                                try {
+                                    System.load(p.toAbsolutePath().toString());
+                                } catch (UnsatisfiedLinkError ignored) {
+                                    // already loaded or missing transitive dep — next prefix/dir
+                                }
+                            });
+                } catch (Exception ignored) {
+                    // missing dir
+                }
+            }
+        }
+    }
+
+    private static Path[] windowsCudaRuntimeSearchDirs(Path dllDir) {
+        java.util.LinkedHashSet<Path> dirs = new java.util.LinkedHashSet<>();
+        if (dllDir != null) {
+            dirs.add(dllDir);
+        }
+        String cudaPath = System.getenv("CUDA_PATH");
+        if (cudaPath != null && !cudaPath.isBlank()) {
+            Path root = Path.of(cudaPath.trim());
+            dirs.add(root.resolve("bin").resolve("x64"));
+            dirs.add(root.resolve("bin"));
+        }
+        return dirs.toArray(Path[]::new);
+    }
+
+    private static boolean windows() {
+        return System.getProperty("os.name", "").toLowerCase().contains("win");
+    }
+
     private static String companionExtraFileName() {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        if (os.contains("win")) {
+        if (windows()) {
             return "jgpt_cuda_extra.dll";
         }
-        if (os.contains("mac")) {
+        if (System.getProperty("os.name", "").toLowerCase().contains("mac")) {
             return "libjgpt_cuda_extra.dylib";
         }
         return "libjgpt_cuda_extra.so";
@@ -131,15 +187,54 @@ public final class TensorCudaLibrary {
 
     private static String[] relativeCandidatePaths() {
         String userDir = System.getProperty("user.dir", ".");
-        return new String[] {userDir + "/build/libjgpt_cuda.so", userDir + "/../build/libjgpt_cuda.so"};
+        String mainName = mainLibraryFileName();
+        return new String[] {
+            userDir + "/build/" + mainName,
+            userDir + "/../build/" + mainName,
+            userDir + "/build/Release/" + mainName,
+            userDir + "/build/Debug/" + mainName
+        };
+    }
+
+    private static String mainLibraryFileName() {
+        if (windows()) {
+            return "jgpt_cuda.dll";
+        }
+        if (System.getProperty("os.name", "").toLowerCase().contains("mac")) {
+            return "libjgpt_cuda.dylib";
+        }
+        return "libjgpt_cuda.so";
+    }
+
+    private static boolean quietMissingNative() {
+        try {
+            if (Boolean.getBoolean("jgpt.allow.no.gpu")) {
+                return true;
+            }
+        } catch (Exception ignored) {
+            // ignore
+        }
+        try {
+            String e = System.getenv("JGPT_ALLOW_NO_GPU");
+            if (e != null) {
+                String t = e.trim();
+                if ("1".equals(t) || "true".equalsIgnoreCase(t)) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+            // ignore
+        }
+        return false;
     }
 
     private static String buildErrorMessage() {
         String[] candidates = relativeCandidatePaths();
         String env = System.getenv("JGPT_CUDA_LIB");
-        return "libjgpt_cuda.so не найден (и/или рядом нет "
-                + companionExtraFileName()
-                + "). Порядок поиска:\n"
+        return mainLibraryFileName()
+                + " не найден"
+                + (windows() ? "" : " (и/или рядом нет " + companionExtraFileName() + ")")
+                + ". Порядок поиска:\n"
                 + "  1. -Djgpt.cuda.lib="
                 + System.getProperty("jgpt.cuda.lib", "<не задано>")
                 + "\n"
@@ -149,9 +244,9 @@ public final class TensorCudaLibrary {
                 + "  3. Относительно user.dir: "
                 + String.join(", ", candidates)
                 + "\n"
-                + "  4. java.library.path (нужны и jgpt_cuda_extra, и jgpt_cuda): "
+                + "  4. java.library.path: "
                 + System.getProperty("java.library.path", "<пусто>")
                 + "\n"
-                + "Сборка: cd src/main/cpp && cmake -B ../../build -S . && cmake --build ../../build";
+                + "Сборка: из корня репозитория Linux ./scripts/build-cuda.sh ; Windows .\\scripts\\build-cuda.ps1";
     }
 }

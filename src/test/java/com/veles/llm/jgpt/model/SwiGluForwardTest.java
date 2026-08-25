@@ -1,5 +1,6 @@
 package com.veles.llm.jgpt.model;
 
+import com.veles.llm.jgpt.EnabledIfGpu;
 import com.veles.llm.jgpt.core.Tensor;
 import com.veles.llm.jgpt.ops.TensorOps;
 
@@ -8,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.util.Random;
 import org.junit.jupiter.api.Test;
 
+@EnabledIfGpu
 class SwiGluForwardTest {
 
     @Test

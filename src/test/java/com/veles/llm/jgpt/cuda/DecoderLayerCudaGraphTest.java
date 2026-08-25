@@ -27,8 +27,7 @@ class DecoderLayerCudaGraphTest {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
-        if (System.getenv("JGPT_DECODER_GPU_PIPELINE") != null
-                || System.getenv("JGPT_DECODER_LAYER_CUDA_GRAPH") != null) {
+        if (System.getenv("JGPT_DECODER_LAYER_CUDA_GRAPH") != null) {
             return;
         }
         String prevPipe = System.getProperty("jgpt.decoder.gpu.pipeline");
@@ -111,8 +110,7 @@ class DecoderLayerCudaGraphTest {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
-        if (System.getenv("JGPT_DECODER_GPU_PIPELINE") != null
-                || System.getenv("JGPT_DECODER_LAYER_CUDA_GRAPH") != null) {
+        if (System.getenv("JGPT_DECODER_LAYER_CUDA_GRAPH") != null) {
             return;
         }
         String prevPipe = System.getProperty("jgpt.decoder.gpu.pipeline");

@@ -101,7 +101,16 @@ public final class TensorOpsGPU {
                 System.err.println("[TensorOpsGPU] CUDA или initGPU недоступны; без GPU работа не поддерживается.");
             }
         } catch (UnsatisfiedLinkError e) {
-            System.err.println("[TensorOpsGPU] Не удалось загрузить нативную библиотеку: " + e.getMessage());
+            if (TensorOpsGpuInit.allowNoGpuOverride()) {
+                System.err.println(
+                        "[TensorOpsGPU] Нативная CUDA-библиотека не загружена; тесты идут без GPU "
+                                + "(-Djgpt.allow.no.gpu=true). Причина: "
+                                + e.getMessage()
+                                + " Сборка: cmake в src/main/cpp → build/jgpt_cuda.dll (Windows) "
+                                + "или build/libjgpt_cuda.so (Linux).");
+            } else {
+                System.err.println("[TensorOpsGPU] Не удалось загрузить нативную библиотеку: " + e.getMessage());
+            }
         }
 
         GPU_AVAILABLE = available;

@@ -1,11 +1,13 @@
 package com.veles.llm.jgpt.ops;
 
+import com.veles.llm.jgpt.EnabledIfGpu;
 import com.veles.llm.jgpt.core.Tensor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@EnabledIfGpu
 @DisplayName("TensorOpsBackward")
 public class TensorOpsBackwardTest {
 

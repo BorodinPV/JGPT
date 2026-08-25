@@ -10,7 +10,9 @@ cd "$ROOT"
 if [[ "${MAVEN_OPTS:-}" != *enable-native-access* ]]; then
   export MAVEN_OPTS="--enable-native-access=ALL-UNNAMED ${MAVEN_OPTS:-}"
 fi
-if [[ -z "${JGPT_CUDA_LIB:-}" && -f "$ROOT/build/libjgpt_cuda.so" ]]; then
+if [[ -z "${JGPT_CUDA_LIB:-}" && -f "$ROOT/build/jgpt_cuda.dll" ]]; then
+  export JGPT_CUDA_LIB="$ROOT/build/jgpt_cuda.dll"
+elif [[ -z "${JGPT_CUDA_LIB:-}" && -f "$ROOT/build/libjgpt_cuda.so" ]]; then
   export JGPT_CUDA_LIB="$ROOT/build/libjgpt_cuda.so"
 fi
 

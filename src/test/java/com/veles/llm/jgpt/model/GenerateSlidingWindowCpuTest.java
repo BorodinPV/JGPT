@@ -2,13 +2,14 @@ package com.veles.llm.jgpt.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import com.veles.llm.jgpt.EnabledIfGpu;
 import com.veles.llm.jgpt.core.Tensor;
 import org.junit.jupiter.api.Test;
 
 /**
- * Ветка скользящего окна в {@link GPTModel#generate} (host {@link KvCache}) не требует CUDA — регрессия на CI
- * без GPU.
+ * Скользящее окно в {@link GPTModel#generate}. Forward эмбеддингов требует CUDA.
  */
+@EnabledIfGpu
 class GenerateSlidingWindowCpuTest {
 
     @Test

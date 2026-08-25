@@ -1,5 +1,6 @@
 package com.veles.llm.jgpt.core;
 
+import com.veles.llm.jgpt.EnabledIfGpu;
 import com.veles.llm.jgpt.ops.Fp16Ops;
 import com.veles.llm.jgpt.ops.TensorOps;
 import java.util.Arrays;
@@ -31,6 +32,7 @@ class Fp16TensorTest {
     }
 
     @Test
+    @EnabledIfGpu
     void matmulMatchesFp32Pipeline() {
         Fp16Tensor a = Fp16Ops.randomTensor(new int[]{4, 8}, 0.1f);
         Fp16Tensor b = Fp16Ops.randomTensor(new int[]{8, 3}, 0.1f);

@@ -226,10 +226,16 @@ public final class LLMTrainer {
     final int exitAfterOptimizerSteps;
     /**
      * Периодический вызов {@link TensorOpsGPU#cudaTrimDeviceMemoryPoolsBestEffort()} каждые N успешных шагов
-     * оптимизатора (см. цикл в {@link #train()}). Env {@code JGPT_CUDA_TRIM_EVERY_STEPS}; {@code 0} — выкл.;
-     * по умолчанию 500 — смягчает рост allocated/фрагментации при длинных прогонах.
+     * оптимизатора (см. цикл в {@link #train()}). Env {@code JGPT_CUDA_TRIM_EVERY_STEPS}; {@code 0} — выкл.
+     * Канонический GPU-train: по умолчанию выкл.
      */
     final int cudaTrimEveryOptimizerSteps;
+
+    /**
+     * Периодический purge активационных кэшей / ThreadLocal пулов. Env {@code JGPT_VRAM_CLEANUP_EVERY_STEPS};
+     * {@code 0} — выкл. Канонический GPU-train: по умолчанию выкл. Барьеры после eval/sample остаются.
+     */
+    final int vramCleanupEveryOptimizerSteps;
 
     /**
      * Кэш {@link TensorOpsGPU#useFp16Matmul()} на время жизни тренера (не меняется без перезапуска JVM).
@@ -410,11 +416,23 @@ public final class LLMTrainer {
         }
         this.exitAfterOptimizerSteps = LlmTrainerEnvUtils.readPositiveEnvInt("JGPT_EXIT_AFTER_STEP", 0);
         this.cudaTrimEveryOptimizerSteps = LlmTrainerEnvUtils.readCudaTrimEveryOptimizerStepsFromEnv();
+        this.vramCleanupEveryOptimizerSteps = LlmTrainerEnvUtils.readVramCleanupEveryStepsFromEnv();
         if (cudaTrimEveryOptimizerSteps > 0) {
             log.info(
                     "{} JGPT_CUDA_TRIM_EVERY_STEPS={} — периодический trim пулов CUDA после успешного шага",
                     LogFmt.badge("CFG"),
                     cudaTrimEveryOptimizerSteps);
+        }
+        if (vramCleanupEveryOptimizerSteps > 0) {
+            log.info(
+                    "{} JGPT_VRAM_CLEANUP_EVERY_STEPS={} — периодический purge кэшей/пулов после успешного шага",
+                    LogFmt.badge("CFG"),
+                    vramCleanupEveryOptimizerSteps);
+        }
+        if (cudaTrimEveryOptimizerSteps == 0 && vramCleanupEveryOptimizerSteps == 0) {
+            log.info(
+                    "{} периодический VRAM cleanup/trim выключены (канонический GPU-train)",
+                    LogFmt.badge("CFG"));
         }
         this.lastGlobalGradNorm = 0f;
         this.checkpointAsyncIo =
@@ -544,17 +562,11 @@ public final class LLMTrainer {
                 LlmTrainerEnvUtils.envRawOrDash("JGPT_TIMINGS"),
                 LlmTrainerEnvUtils.envRawOrDash("JGPT_GENERATE_GPU_KV"));
         log.info(
-                "  пресет/env: E2E={} резидент (эфф.)={} резидент (env)={} pipeline декодера={} полный GPU шаг={} "
-                        + "логиты GPU={} decoder bwd GPU={} train loss={} sampled candidates={} sampled negatives={} "
-                        + "размер батча (ovr)={} кэш FP16={} FP16 dyn старт={} FP16 dyn интервал={} FP16 dyn макс={} "
-                        + "FP16 aux soften scale={} CUDA_LIB={}",
-                LLMConfig.gpuE2eTrainFromEnv(),
-                LLMConfig.effectiveGpuResidentTraining(),
-                LlmTrainerEnvUtils.envRawOrDash("JGPT_TRAIN_GPU_RESIDENT"),
-                LLMConfig.decoderGpuPipelineFromEnvOrProp(),
-                LLMConfig.fullGpuTrainStepFromEnv(),
-                LLMConfig.deviceLogitsTrainStepFromEnv(),
-                LLMConfig.deviceDecoderBackwardFromEnv(),
+                "  пресет/env: канонический GPU-train={} (pipeline={}) train loss={} sampled candidates={} "
+                        + "sampled negatives={} размер батча (ovr)={} кэш FP16={} FP16 dyn старт={} "
+                        + "FP16 dyn интервал={} FP16 dyn макс={} FP16 aux soften scale={} CUDA_LIB={}",
+                LLMConfig.canonicalGpuTrain(),
+                model.isDecoderGpuPipeline(),
                 config.trainLossMode,
                 config.usesSampledTrainLoss() ? Integer.toString(config.sampledCeCandidates) : "-",
                 config.usesSampledTrainLoss() ? config.sampledCeNegativeMode : "-",
@@ -655,18 +667,8 @@ public final class LLMTrainer {
         logExperimentScheduleSummary();
         if (config.useGpuResident) {
             log.info(
-                    config.fullGpuTrainStep
-                            ? "GPU-резидент: веса и шаг оптимизатора на VRAM; синхронизация с хостом — ленивая при чекпоинте."
-                            : "GPU-резидент: LM head / финальный RMSNorm на VRAM; после Adam — синхронизация с хостом.");
+                    "Канонический GPU-train: веса, CE, decoder backward и Adam на VRAM; host — данные и чекпоинты.");
         }
-        log.info(
-                "GPU-путь (факт): полный шаг={}, логиты на GPU={}, backward декодера на GPU={}, "
-                        + "допускается полный GPU-цикл={}, pipeline декодера={}",
-                config.fullGpuTrainStep,
-                config.deviceLogitsTrainStep,
-                config.deviceDecoderBackward,
-                model.canFullGpuTrain(),
-                model.isDecoderGpuPipeline());
         if (config.earlyStopEvalPatience > 0
                 || config.earlyStopTrainDownEvalUp
                 || (config.earlyStopMinGradNorm > 0f && config.earlyStopGradNormPatience > 0)) {
@@ -1057,15 +1059,6 @@ public final class LLMTrainer {
                 accTokens = 0;
 
                 epochSuccessfulOptimizerSteps++;
-
-                /* Периодическая очистка ThreadLocal workspace и pending gradients для предотвращения роста VRAM.
-                 * Выполняем каждые 50 шагов — достаточно часто чтобы не держать лишнюю VRAM,
-                 * но не каждый шаг чтобы не терять производительность. */
-                if (globalStep > 0 && globalStep % 50 == 0 && TensorOpsGPU.isGpuAvailable()) {
-                    GpuPendingGradients.cleanupThreadLocal();
-                    GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
-                    TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
-                }
                 globalStep++;
                 trainingEventCallback.onOptimizerStepCompleted(globalStep, epoch + 1);
                 if (trainingStatsWriter != null) {
@@ -1197,30 +1190,22 @@ public final class LLMTrainer {
                     TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
                 }
 
-                /* Лёгкая VRAM-очистка после каждого optimizer step: сбрасывает phantom-буферы (GC)
-                 * и trim'ит async memory pool, снижая фрагментацию cudaMallocAsync.
-                 * Это предотвращает ложные OOM при наличии свободного VRAM. */
+                /* GC-phantom GPU buffers: не периодический trim, а возврат native ptr после финализации. */
                 if (TensorOpsGPU.isGpuAvailable()) {
                     GpuFloatBuffer.drainLeaked();
                     GpuHalfBuffer.drainLeaked();
                     GpuIntBuffer.drainLeaked();
                     GpuTensor.drainLeaked();
-                    if (globalStep % 10 == 0) {
-                        TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();
-                    }
                 }
 
-                /* Периодическая очистка активационных кэшей модели каждые N шагов для предотвращения
-                 * утечки VRAM при GROW_ONLY=1. Буферы в blockCachesDevice[] растут до максимума
-                 * и не освобождаются автоматически в течение эпохи.
-                 * Настраивается через JGPT_VRAM_CLEANUP_EVERY_STEPS (по умолчанию 1000, 0 - отключить). */
-                int vramCleanupEverySteps = LlmTrainerEnvUtils.readVramCleanupEveryStepsFromEnv();
-                if (vramCleanupEverySteps > 0 && globalStep % vramCleanupEverySteps == 0 && model.isGpuResident()) {
+                /* Опциональный purge кэшей (выкл. по умолчанию). Барьеры после eval/sample — отдельно. */
+                if (vramCleanupEveryOptimizerSteps > 0
+                        && globalStep % vramCleanupEveryOptimizerSteps == 0
+                        && model.isGpuResident()) {
                     if (log.isDebugEnabled()) {
                         log.debug("{} периодическая очистка VRAM на шаге {}", LogFmt.badge("VRAM"), globalStep);
                     }
-                    /* Очистка ThreadLocal пула и активационных кэшей модели */
-        log.info("{} перед purge ThreadLocal пула", LogFmt.badge("VRAM"));
+                    log.info("{} перед purge ThreadLocal пула", LogFmt.badge("VRAM"));
                     BlockActivationCacheDevice.purgeThreadLocalPool();
                     model.prepareForTrainingAfterInteractiveGeneration();
                     GpuPendingGradients.cleanupThreadLocal();
@@ -1299,10 +1284,7 @@ public final class LLMTrainer {
             pendingCheckpointDataLoaderIndex = 0;
             saveCheckpoint("epoch_" + (epoch + 1));
             dataLoader.reset();
-            /* После каждой эпохи сбрасываем async memory pool — иначе при большом batch (batch>1) пул
-            /* После каждой эпохи сбрасываем async memory pool — иначе при большом batch (batch>1) пул
-             * накапливает фрагментацию между eval-вызовами: eval+trim происходит 1 раз в ~batch/1 эпох,
-             * а временные буферы forward/backward занимают пул между trimами. */
+            /* После эпохи: trim пула и сброс кэшей. Граница фазы, не периодический leak-workaround. */
             if (model.isGpuResident() && TensorOpsGPU.isGpuAvailable()) {
                 TensorOpsGPU.drainDeferredGpuBuffers();
                 TensorOpsGPU.cudaTrimDeviceMemoryPoolsBestEffort();

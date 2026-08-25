@@ -1,5 +1,6 @@
 package com.veles.llm.jgpt.model;
 
+import com.veles.llm.jgpt.EnabledIfGpu;
 import com.veles.llm.jgpt.core.Tensor;
 import com.veles.llm.jgpt.ops.TensorOps;
 import com.veles.llm.jgpt.ops.TensorOpsBackward;
@@ -9,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@EnabledIfGpu
 public class LayerNormTest {
 
     @Test

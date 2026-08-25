@@ -43,7 +43,7 @@ GPT-модель (decoder-only transformer) с **полным обучением
 - **FlashAttention-2** — fused QKV attention (tile size 128)
 - **Optimized kernels** — block-per-row CE, warp-level reduction for embeddings
 - **Fused-операции** — RMSNorm + FFN, RMSNorm + LM head via cuBLAS
-- **Полный GPU-цикл** — forward, backward, optimiser — всё на VRAM
+- **Полный GPU-цикл** — forward, backward, optimiser — всё на VRAM (канонический путь при CUDA; отдельные `JGPT_*` GPU-флаги больше не нужны)
 - **Decoder pipeline** — слой-за-слоем без D2H
 - **CUDA Graph** — на слои декодера (опционально)
 - **Async checkpointing** — веса пишутся в фоне
@@ -74,10 +74,11 @@ GPT-модель (decoder-only transformer) с **полным обучением
 
 ## 🛠 Системные требования
 
-- **Java**: 25+ (с Vector API и preview-фичами)
-- **CUDA**: 12.x с cuBLAS
-- **GPU**: с поддержкой FP16 Tensor Cores (RTX 20xx+, RTX 30xx+, A100+)
-- **Контроллер**: GCC ≤ 13 (или `-allow-unsupported-compiler`)
+- **Java**: 25+ (с Vector API и preview-фичами). Maven должен запускаться на том же JDK (`JAVA_HOME`). На JDK 26 не используйте `--release 25` вместе с `--enable-preview`.
+- **CUDA**: 12.x или 13.x с cuBLAS (`nvcc` ≠ готовая JNI-библиотека; её нужно собрать)
+- **GPU**: FP16 Tensor Cores (RTX 20xx+, RTX 30xx+, A100+). Архитектура ядра — `native` (3080 → sm_86, 2060 → sm_75)
+- **Linux**: CMake 3.24+, GCC ≤ 13 (или `-allow-unsupported-compiler`). Сборка: `./scripts/build-cuda.sh` или `./scripts/jgpt-smart.sh`
+- **Windows**: CMake + Visual Studio 2022 Build Tools (MSVC/`cl.exe`) + CUDA Toolkit. Сборка: `.\scripts\build-cuda.ps1`, затем `. .\build\jgpt-cuda-env.ps1`
 
 ---
 
@@ -132,7 +133,7 @@ Place `.txt` files in `data/books/` — training will start on them.
 - **FlashAttention-2** — fused QKV attention (tile size 128)
 - **Optimized kernels** — block-per-row CE, warp-level reduction for embeddings
 - **Fused operations** — RMSNorm + FFN, RMSNorm + LM head via cuBLAS
-- **Full GPU cycle** — forward, backward, optimiser — all in VRAM
+- **Full GPU cycle** — forward, backward, optimiser — all in VRAM (canonical path when CUDA is available; separate `JGPT_*` GPU flags are no longer required)
 - **Decoder pipeline** — layer-by-layer without D2H
 - **CUDA Graph** — on decoder layers (optional)
 - **Async checkpointing** — weights written in background
@@ -163,10 +164,11 @@ Place `.txt` files in `data/books/` — training will start on them.
 
 ## 🛠 System Requirements
 
-- **Java**: 25+ (with Vector API and preview features)
-- **CUDA**: 12.x with cuBLAS
-- **GPU**: with FP16 Tensor Cores support (RTX 20xx+, RTX 30xx+, A100+)
-- **Compiler**: GCC ≤ 13 (or `-allow-unsupported-compiler`)
+- **Java**: 25+ (with Vector API and preview features). Maven must run on that same JDK (`JAVA_HOME`). On JDK 26 do not use `--release 25` together with `--enable-preview`.
+- **CUDA**: 12.x or 13.x with cuBLAS (`nvcc` is not the JNI library; you must build it)
+- **GPU**: FP16 Tensor Cores (RTX 20xx+, RTX 30xx+, A100+). Kernel arch is `native` (3080 → sm_86, 2060 → sm_75)
+- **Linux**: CMake 3.24+, GCC ≤ 13 (or `-allow-unsupported-compiler`). Build: `./scripts/build-cuda.sh` or `./scripts/jgpt-smart.sh`
+- **Windows**: CMake + Visual Studio 2022 Build Tools (MSVC/`cl.exe`) + CUDA Toolkit. Build: `.\scripts\build-cuda.ps1`, then `. .\build\jgpt-cuda-env.ps1`
 
 ---
 

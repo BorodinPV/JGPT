@@ -56,9 +56,9 @@ class LLMTrainerGpuResidentConfigTest {
     void rejectsWhenCudaUnavailable() {
         assumeFalse(TensorOpsGPU.isGpuAvailable());
         GPTModel model = new GPTModel(64, 16, 32, 4, 1, 64, false);
-        IllegalArgumentException ex =
+        RuntimeException ex =
                 assertThrows(
-                        IllegalArgumentException.class,
+                        RuntimeException.class,
                         () -> new LLMTrainer(model, gpuResidentConfig(), tinyLoader()));
         assertTrue(ex.getMessage().contains("CUDA"));
     }

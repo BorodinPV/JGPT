@@ -60,6 +60,10 @@ JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh 01-aggressive
 
 `JGPT_*` экспортируются в окружение JVM через `jgpt-smart.sh` ДО запуска Maven — подпроцессы наследуют их.
 
+### Канонический GPU-train
+
+При доступной CUDA обучение всегда идёт полным VRAM-путём (resident + decoder pipeline + device CE/backward). Отдельные `JGPT_TRAIN_GPU_RESIDENT` / `JGPT_FULL_GPU_TRAIN` / `JGPT_GPU_E2E_TRAIN` / `JGPT_DEVICE_LOGITS_TRAIN` / `JGPT_DEVICE_DECODER_BWD` / `JGPT_DECODER_GPU_PIPELINE` больше не выбирают путь. Периодический VRAM cleanup/trim выключен (`JGPT_VRAM_CLEANUP_EVERY_STEPS=0`, `JGPT_CUDA_TRIM_EVERY_STEPS=0`); барьеры после eval/sample остаются.
+
 ## Resume, чекпоинты и `JGPT_MAX_SEQ_LEN`
 
 - Чекпоинты: **`checkpoints/all_books/`** (`checkpoint_final.bin` приоритетнее `checkpoint_epoch_N.bin`)

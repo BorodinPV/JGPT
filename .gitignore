@@ -35,3 +35,6 @@ state/current.env
 /books/
 /checkpoints_test_fullgpu/
 /clean_corpus/
+
+# Stakpak session files
+.stakpak/session*

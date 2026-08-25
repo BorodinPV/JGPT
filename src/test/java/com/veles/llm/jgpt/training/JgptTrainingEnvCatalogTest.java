@@ -121,6 +121,7 @@ class JgptTrainingEnvCatalogTest {
         var cfg =
                 LLMConfig.applyLearningRateOverrideFromEnv(
                         LLMConfig.applyBatchSizeOverrideFromEnv(LLMConfig.nano()));
+        LLMConfig.canonicalGpuTrain();
         LLMConfig.gpuResidentTrainingExplicitlyOn();
         LLMConfig.effectiveGpuResidentTraining();
         LLMConfig.fullGpuTrainStepFromEnv();

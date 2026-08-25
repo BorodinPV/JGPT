@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed / Изменено
+- Native CUDA build is cross-platform: CMake uses `native` GPU arch, Windows builds one `jgpt_cuda.dll`, Linux still two `.so`. Scripts: `scripts/build-cuda.sh`, `scripts/build-cuda.ps1`.
+  - Сборка CUDA и на Windows, и на Linux: arch `native`, на Windows одна DLL.
+- Canonical GPU-train: CUDA implies resident weights, decoder pipeline, device logits and device decoder backward. Legacy `JGPT_TRAIN_GPU_RESIDENT` / `JGPT_FULL_GPU_TRAIN` / `JGPT_GPU_E2E_TRAIN` / `JGPT_DEVICE_LOGITS_TRAIN` / `JGPT_DEVICE_DECODER_BWD` / `JGPT_DECODER_GPU_PIPELINE` no longer select a path.
+  - Канонический GPU-train: при CUDA полный путь без пяти env-флагов; старые `JGPT_*` GPU-переключатели игнорируются.
+- Periodic VRAM cleanup/trim off by default (`JGPT_VRAM_CLEANUP_EVERY_STEPS=0`, `JGPT_CUDA_TRIM_EVERY_STEPS=0`). Eval/sample fences remain.
+  - Периодический VRAM cleanup/trim выключены по умолчанию; барьеры после eval/sample сохранены.
+
 ### Added / Добавлено
 - FlashAttention tile size configurable via `JGPT_FA_TILE_SIZE` environment variable
   - Размер плитки FlashAttention настраивается через переменную окружения `JGPT_FA_TILE_SIZE`

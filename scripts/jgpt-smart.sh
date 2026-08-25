@@ -59,14 +59,14 @@ jgpt__export_train_env() {
     export JGPT_CHECKPOINT_ASYNC="${JGPT_CHECKPOINT_ASYNC:-0}"
 
     export JGPT_CUDA_LIB="${JGPT_CUDA_LIB:-}"
-    export JGPT_CUDA_TRIM_EVERY_STEPS="${JGPT_CUDA_TRIM_EVERY_STEPS:-500}"
-    if [[ -z "$JGPT_CUDA_LIB" && -f "$ROOT/build/libjgpt_cuda.so" ]]; then
+    export JGPT_CUDA_TRIM_EVERY_STEPS="${JGPT_CUDA_TRIM_EVERY_STEPS:-0}"
+    export JGPT_VRAM_CLEANUP_EVERY_STEPS="${JGPT_VRAM_CLEANUP_EVERY_STEPS:-0}"
+    if [[ -z "$JGPT_CUDA_LIB" && -f "$ROOT/build/jgpt_cuda.dll" ]]; then
+        export JGPT_CUDA_LIB="$ROOT/build/jgpt_cuda.dll"
+    elif [[ -z "$JGPT_CUDA_LIB" && -f "$ROOT/build/libjgpt_cuda.so" ]]; then
         export JGPT_CUDA_LIB="$ROOT/build/libjgpt_cuda.so"
     fi
 
-    export JGPT_DECODER_GPU_PIPELINE="${JGPT_DECODER_GPU_PIPELINE:-1}"
-    export JGPT_DEVICE_DECODER_BWD="${JGPT_DEVICE_DECODER_BWD:-1}"
-    export JGPT_DEVICE_LOGITS_TRAIN="${JGPT_DEVICE_LOGITS_TRAIN:-1}"
     export JGPT_DECODER_LAYER_CUDA_GRAPH="${JGPT_DECODER_LAYER_CUDA_GRAPH:-1}"
 
     export JGPT_EXIT_AFTER_STEP="${JGPT_EXIT_AFTER_STEP:-0}"
@@ -80,9 +80,7 @@ jgpt__export_train_env() {
 
     export JGPT_FUSED_LM_HEAD="${JGPT_FUSED_LM_HEAD:-1}"
 
-    export JGPT_FULL_GPU_TRAIN="${JGPT_FULL_GPU_TRAIN:-0}"
     export JGPT_GENERATE_GPU_KV="${JGPT_GENERATE_GPU_KV:-1}"
-    export JGPT_GPU_E2E_TRAIN="${JGPT_GPU_E2E_TRAIN:-1}"
 
     export JGPT_LOG_COLOR="${JGPT_LOG_COLOR:-}"
     export JGPT_MAX_SEQUENCES="${JGPT_MAX_SEQUENCES:-}"
@@ -90,7 +88,6 @@ jgpt__export_train_env() {
     export JGPT_PROFILE="${JGPT_PROFILE:-0}"
     export JGPT_PROFILE_STEPS="${JGPT_PROFILE_STEPS:-20}"
     export JGPT_TIMINGS="${JGPT_TIMINGS:-0}"
-    export JGPT_TRAIN_GPU_RESIDENT="${JGPT_TRAIN_GPU_RESIDENT:-1}"
 }
 
 jgpt_e2e_train_overrides() {
@@ -250,14 +247,16 @@ jgpt_cmake_build_cuda() {
     fi
     cmake -B build -U CMAKE_CUDA_FLAGS -S src/main/cpp "${cmake_args[@]}"
     cmake --build build
-    export JGPT_CUDA_LIB="$ROOT/build/libjgpt_cuda.so"
+    if [[ -f "$ROOT/build/jgpt_cuda.dll" ]]; then
+        export JGPT_CUDA_LIB="$ROOT/build/jgpt_cuda.dll"
+    else
+        export JGPT_CUDA_LIB="$ROOT/build/libjgpt_cuda.so"
+    fi
 }
 
 jgpt_resolve_mvn_command() {
     while [[ "${1:-}" == e2e ]]; do
         shift
-        export JGPT_GPU_E2E_TRAIN=1
-        export JGPT_FULL_GPU_TRAIN=1
     done
     # Совместимость: старый вызов «… e2e allbooks …» — слово allbooks игнорируем.
     while [[ "${1:-}" == allbooks ]]; do

@@ -69,16 +69,14 @@ public final class TrainingConfig {
 
     /**
      * Запрос «GPU-резидентного» цикла: требуется CUDA и {@link com.veles.llm.jgpt.model.GPTModel} с
-     * {@code gpuResident=true}; VRAM-копии весов синхронизируются после шага Adam. Полный forward/backward на
-     * device — по мере готовности (см. {@code docs/ROADMAP_GPU_RESIDENT.md}).
+     * {@code gpuResident=true}. {@link LLMConfig#toTrainingConfig} всегда включает полный GPU-шаг.
      */
     public final boolean useGpuResident;
 
     /**
      * Полный GPU-шаг обучения: forward/backward/clip/Adam на VRAM без лишнего скачивания весов на хост.
      * Требует {@link #useGpuResident} и {@link com.veles.llm.jgpt.model.GPTModel#canFullGpuTrain()}.
-     * В приложении при запросе full GPU из env см. {@link com.veles.llm.jgpt.training.LLMConfig#toTrainingConfig}:
-     * там же включаются device logits и device decoder без «полупутей».
+     * {@link LLMConfig#toTrainingConfig} всегда ставит этот флаг (и device logits / decoder backward).
      */
     public final boolean fullGpuTrainStep;
 

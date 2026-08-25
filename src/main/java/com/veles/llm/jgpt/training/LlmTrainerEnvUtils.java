@@ -67,7 +67,7 @@ final class LlmTrainerEnvUtils {
             }
         } catch (Exception ignored) {
         }
-        return 500;
+        return 0;
     }
 
     static int readVramCleanupEveryStepsFromEnv() {
@@ -79,7 +79,7 @@ final class LlmTrainerEnvUtils {
             }
         } catch (Exception ignored) {
         }
-        return 100;
+        return 0;
     }
 
     static boolean batchPrefetchEnabled() {

@@ -19,6 +19,35 @@
 
 ## Build Issues / Проблемы сборки
 
+### Q: `cmake` is not recognized / Имя `cmake` не распознано
+**A:** CMake is not on PATH. `nvcc` is only the CUDA compiler; JGPT still needs CMake + a host C++ compiler to produce `libjgpt_cuda.so` / `jgpt_cuda.dll`.  
+**Ответ:** CMake не в PATH. `nvcc` — только компилятор CUDA; JNI-библиотеку всё равно собирают CMake и host-компилятор.
+
+Windows:
+```powershell
+winget install Kitware.CMake
+winget install Apache.Maven
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+# new PowerShell:
+.\scripts\build-cuda.ps1
+. .\build\jgpt-cuda-env.ps1
+```
+
+If `mvn` is still unknown, IntelliJ already has Maven:
+`C:\Program Files\JetBrains\IntelliJ IDEA 2026.2.0.1\plugins\maven-plugin\lib\maven3\bin\mvn.cmd`
+
+Or run tests from the Maven tool window. Open a **new** PowerShell after winget so PATH updates.
+
+### Q: `No CUDA toolset found` (Visual Studio / CMake)
+**A:** The Visual Studio generator needs CUDA MSBuild integration (`.props` in Build Tools). That is often missing if CUDA was installed before Build Tools. `scripts/build-cuda.ps1` uses **Ninja + nvcc + cl.exe** and does not need that integration. Re-run it; do not call `.\build\jgpt-cuda-env.ps1` until the script prints `OK: ...\jgpt_cuda.dll`.  
+**Ответ:** Генератор Visual Studio ищет CUDA-тулсет в MSBuild, а не `nvcc`. Скрипт собирает через Ninja. `jgpt-cuda-env.ps1` появляется только после успешной сборки DLL.
+
+Linux:
+```bash
+sudo apt install cmake build-essential
+./scripts/build-cuda.sh
+```
+
 ### Q: GCC 15 is not supported by CUDA / GCC 15 не поддерживается CUDA
 **A:** Add `-allow-unsupported-compiler` flag to CMakeLists.txt or use GCC ≤ 13.  
 **Ответ:** Добавьте флаг `-allow-unsupported-compiler` в CMakeLists.txt или используйте GCC ≤ 13.

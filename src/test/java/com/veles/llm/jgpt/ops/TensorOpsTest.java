@@ -1,11 +1,13 @@
 package com.veles.llm.jgpt.ops;
 
+import com.veles.llm.jgpt.EnabledIfGpu;
 import com.veles.llm.jgpt.core.QuantizedTensor;
 import com.veles.llm.jgpt.core.Tensor;
 
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
+@EnabledIfGpu
 public class TensorOpsTest {
 
     // ========== Element-wise operations ==========

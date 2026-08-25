@@ -1,70 +1,119 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.24)
 project(jgpt_cuda LANGUAGES CXX CUDA)
 
-# Allow GCC 15+ with CUDA (unsupported but works)
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -allow-unsupported-compiler")
-
-# Сборка: для CUDA 12.x host-компилятор обычно GCC ≤ 13 (см. cuda_runtime host_config.h).
-# При GCC 14+: задать CMAKE_CUDA_HOST_COMPILER на поддерживаемый gcc или добавить в target_compile_options
-# для CUDA языка: -allow-unsupported-compiler (на свой риск).
+# Linux: CUDA 12.x host compiler is usually GCC ≤ 13. GCC 14+ needs this nvcc flag.
+if(UNIX AND NOT APPLE)
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -allow-unsupported-compiler")
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
 
-# Найти Java
 find_package(JNI REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 include_directories(${JNI_INCLUDE_DIRS})
 
-# Для Ubuntu: системные пути CUDA
-# Заголовки в /usr/include, библиотеки в /usr/lib/x86_64-linux-gnu
-include_directories(/usr/include)
-link_directories(/usr/lib/x86_64-linux-gnu)
+# Ubuntu distro CUDA. Windows Toolkit comes from find_package(CUDAToolkit).
+if(UNIX AND NOT APPLE)
+    include_directories(/usr/include)
+    link_directories(/usr/lib/x86_64-linux-gnu)
+endif()
 
-# Корень проекта JGPT/: из src/main/cpp → три уровня вверх
 get_filename_component(PROJECT_ROOT "${CMAKE_SOURCE_DIR}/../../.." ABSOLUTE)
 
-# Часть JNI/ядер (TensorOpsGPU и др.) вынесена в отдельную .so — ускоряет инкрементальную сборку и явно
-# разделяет «extra» от основного модуля. libjgpt_cuda.so линкуется с libjgpt_cuda_extra.so; при загрузке
-# из каталога build/ нужен RUNPATH $ORIGIN (см. ниже).
-add_library(jgpt_cuda_extra SHARED jgpt_cuda_extra.cu)
-add_library(jgpt_cuda SHARED jgpt_cuda.cu)
+# native = GPU of the machine that compiles (RTX 3080 → 86, RTX 2060 → 75).
+# Override: cmake -DCMAKE_CUDA_ARCHITECTURES=86
+if(NOT CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES native)
+endif()
 
-set(CUDA_LIBS
-    cublas
-    cudart
-    cuda
+set(JGPT_CUDA_LIBS
+    CUDA::cublas
+    CUDA::cudart
+    CUDA::cuda_driver
     ${JNI_LIBRARIES}
 )
+if(TARGET CUDA::cublasLt)
+    list(APPEND JGPT_CUDA_LIBS CUDA::cublasLt)
+endif()
 
-target_link_libraries(jgpt_cuda_extra PRIVATE ${CUDA_LIBS})
-target_link_libraries(jgpt_cuda PRIVATE jgpt_cuda_extra ${CUDA_LIBS})
+# Two .so on Linux (faster incremental rebuilds). One .dll on Windows:
+# extra ↔ main has a circular symbol graph; MSVC cannot link that as two DLLs.
+if(WIN32)
+    add_library(jgpt_cuda SHARED jgpt_cuda.cu jgpt_cuda_extra.cu)
+    target_link_libraries(jgpt_cuda PRIVATE ${JGPT_CUDA_LIBS})
+    set(JGPT_CUDA_TARGETS jgpt_cuda)
+else()
+    add_library(jgpt_cuda_extra SHARED jgpt_cuda_extra.cu)
+    add_library(jgpt_cuda SHARED jgpt_cuda.cu)
+    target_link_libraries(jgpt_cuda_extra PRIVATE ${JGPT_CUDA_LIBS})
+    target_link_libraries(jgpt_cuda PRIVATE jgpt_cuda_extra ${JGPT_CUDA_LIBS})
+    set(JGPT_CUDA_TARGETS jgpt_cuda jgpt_cuda_extra)
+endif()
 
-foreach (TGT jgpt_cuda jgpt_cuda_extra)
+foreach (TGT ${JGPT_CUDA_TARGETS})
     set_target_properties(${TGT} PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "${PROJECT_ROOT}/build"
-        CUDA_ARCHITECTURES "86"
+        RUNTIME_OUTPUT_DIRECTORY "${PROJECT_ROOT}/build"
+        ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_ROOT}/build"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${PROJECT_ROOT}/build"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${PROJECT_ROOT}/build"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${PROJECT_ROOT}/build"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${PROJECT_ROOT}/build"
+        LIBRARY_OUTPUT_DIRECTORY_DEBUG "${PROJECT_ROOT}/build"
+        LIBRARY_OUTPUT_DIRECTORY_RELEASE "${PROJECT_ROOT}/build"
+        ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${PROJECT_ROOT}/build"
+        ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${PROJECT_ROOT}/build"
+        CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
     )
     target_compile_options(${TGT} PRIVATE
         $<$<COMPILE_LANGUAGE:CUDA>:
             -diag-suppress=550
             -diag-suppress=177
-            -allow-unsupported-compiler
         >
     )
-    # FlashAttention tile size from environment (default 144)
+    if(UNIX AND NOT APPLE)
+        target_compile_options(${TGT} PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:-allow-unsupported-compiler>
+        )
+    endif()
     if(DEFINED ENV{JGPT_FA_TILE_SIZE})
         target_compile_definitions(${TGT} PRIVATE JGPT_FA_TILE_SIZE=$ENV{JGPT_FA_TILE_SIZE})
     endif()
 endforeach ()
 
-# libjgpt_cuda.so подтягивает libjgpt_cuda_extra.so из того же каталога (build/), плюс системный CUDA.
-set_target_properties(jgpt_cuda PROPERTIES
-    BUILD_RPATH "$ORIGIN;/usr/lib/x86_64-linux-gnu"
-    INSTALL_RPATH "$ORIGIN;/usr/lib/x86_64-linux-gnu"
-    BUILD_WITH_INSTALL_RPATH TRUE
-)
-set_target_properties(jgpt_cuda_extra PROPERTIES
-    BUILD_RPATH "/usr/lib/x86_64-linux-gnu"
-    INSTALL_RPATH "/usr/lib/x86_64-linux-gnu"
-    BUILD_WITH_INSTALL_RPATH TRUE
-)
+if(UNIX AND NOT APPLE)
+    set_target_properties(jgpt_cuda PROPERTIES
+        BUILD_RPATH "$ORIGIN;/usr/lib/x86_64-linux-gnu"
+        INSTALL_RPATH "$ORIGIN;/usr/lib/x86_64-linux-gnu"
+        BUILD_WITH_INSTALL_RPATH TRUE
+    )
+    set_target_properties(jgpt_cuda_extra PROPERTIES
+        BUILD_RPATH "/usr/lib/x86_64-linux-gnu"
+        INSTALL_RPATH "/usr/lib/x86_64-linux-gnu"
+        BUILD_WITH_INSTALL_RPATH TRUE
+    )
+endif()
+
+# Java System.load does not put the DLL directory on the Windows loader search path.
+# CUDA 13+ ships runtime DLLs in bin/x64 (not bin/).
+if(WIN32 AND CUDAToolkit_BIN_DIR)
+    file(GLOB _JGPT_CUDA_RUNTIME_DLLS
+        "${CUDAToolkit_BIN_DIR}/cudart64_*.dll"
+        "${CUDAToolkit_BIN_DIR}/cublas64_*.dll"
+        "${CUDAToolkit_BIN_DIR}/cublasLt64_*.dll"
+        "${CUDAToolkit_BIN_DIR}/nvJitLink*.dll"
+        "${CUDAToolkit_BIN_DIR}/x64/cudart64_*.dll"
+        "${CUDAToolkit_BIN_DIR}/x64/cublas64_*.dll"
+        "${CUDAToolkit_BIN_DIR}/x64/cublasLt64_*.dll"
+        "${CUDAToolkit_BIN_DIR}/x64/nvJitLink*.dll"
+    )
+    if(_JGPT_CUDA_RUNTIME_DLLS)
+        add_custom_command(TARGET jgpt_cuda POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${_JGPT_CUDA_RUNTIME_DLLS}
+                "${PROJECT_ROOT}/build"
+            COMMENT "Copy CUDA runtime DLLs into ${PROJECT_ROOT}/build"
+        )
+    endif()
+endif()

@@ -8,8 +8,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
- * Сравнение logits: обычный CPU-стек декодера и сквозной GPU-пайплайн (уровень C). Требуется CUDA и {@code
- * gpuResident}.
+ * Сравнение logits: обычный CPU-стек декодера и сквозной GPU-пайплайн. Требуется CUDA и {@code gpuResident}.
  */
 class DecoderGpuPipelineParityTest {
 
@@ -37,51 +36,37 @@ class DecoderGpuPipelineParityTest {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
-        if (System.getenv("JGPT_DECODER_GPU_PIPELINE") != null) {
-            return;
+        int vocab = 64;
+        int maxSeq = 16;
+        int dModel = 32;
+        int heads = 4;
+        int layers = 2;
+        int dFf = 64;
+        int batch = 2;
+        int seqLen = 2;
+
+        GPTModel cpuDecoder = new GPTModel(vocab, maxSeq, dModel, heads, layers, dFf, true, false);
+        assertTrue(cpuDecoder.isGpuResident());
+        assertTrue(!cpuDecoder.isDecoderGpuPipeline());
+
+        GPTModel gpuPipeline = new GPTModel(vocab, maxSeq, dModel, heads, layers, dFf, true);
+        assertTrue(gpuPipeline.isDecoderGpuPipeline());
+
+        copyAllParameters(cpuDecoder, gpuPipeline);
+
+        Tensor input = new Tensor(new int[] {batch, seqLen});
+        float[] id = input.internalBuffer();
+        for (int i = 0; i < id.length; i++) {
+            id[i] = (i * 7 + 3) % vocab;
         }
-        String prop = System.getProperty("jgpt.decoder.gpu.pipeline");
-        try {
-            int vocab = 64;
-            int maxSeq = 16;
-            int dModel = 32;
-            int heads = 4;
-            int layers = 2;
-            int dFf = 64;
-            int batch = 2;
-            int seqLen = 2;
 
-            System.setProperty("jgpt.decoder.gpu.pipeline", "false");
-            GPTModel cpuDecoder = new GPTModel(vocab, maxSeq, dModel, heads, layers, dFf, true);
-            assertTrue(cpuDecoder.isGpuResident());
-            assertTrue(!cpuDecoder.isDecoderGpuPipeline());
+        Tensor logitsRef = cpuDecoder.forward(input, false, true);
+        Tensor logitsPipe = gpuPipeline.forward(input, false, true);
 
-            System.setProperty("jgpt.decoder.gpu.pipeline", "true");
-            GPTModel gpuPipeline = new GPTModel(vocab, maxSeq, dModel, heads, layers, dFf, true);
-            assertTrue(gpuPipeline.isDecoderGpuPipeline());
+        float d = maxAbsDiff(logitsRef.internalBuffer(), logitsPipe.internalBuffer());
+        assertTrue(d < 8e-3f, "CPU decoder vs GPU pipeline max abs diff " + d);
 
-            copyAllParameters(cpuDecoder, gpuPipeline);
-
-            Tensor input = new Tensor(new int[] {batch, seqLen});
-            float[] id = input.internalBuffer();
-            for (int i = 0; i < id.length; i++) {
-                id[i] = (i * 7 + 3) % vocab;
-            }
-
-            Tensor logitsRef = cpuDecoder.forward(input, false, true);
-            Tensor logitsPipe = gpuPipeline.forward(input, false, true);
-
-            float d = maxAbsDiff(logitsRef.internalBuffer(), logitsPipe.internalBuffer());
-            assertTrue(d < 8e-3f, "CPU decoder vs GPU pipeline max abs diff " + d);
-
-            gpuPipeline.closeGpuResidentWeights();
-            cpuDecoder.closeGpuResidentWeights();
-        } finally {
-            if (prop == null) {
-                System.clearProperty("jgpt.decoder.gpu.pipeline");
-            } else {
-                System.setProperty("jgpt.decoder.gpu.pipeline", prop);
-            }
-        }
+        gpuPipeline.closeGpuResidentWeights();
+        cpuDecoder.closeGpuResidentWeights();
     }
 }

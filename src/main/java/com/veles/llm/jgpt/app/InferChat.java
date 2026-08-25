@@ -110,7 +110,7 @@ public final class InferChat {
                 cfg.dModel,
                 cfg.numHeads);
 
-        boolean gpuResident = LLMConfig.effectiveGpuResidentTraining();
+        boolean gpuResident = LLMConfig.canonicalGpuTrain();
         GPTModel model =
                 new GPTModel(
                         vocab,

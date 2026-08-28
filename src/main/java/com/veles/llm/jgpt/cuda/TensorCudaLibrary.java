@@ -3,6 +3,9 @@ package com.veles.llm.jgpt.cuda;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Загрузка нативных библиотек CUDA.
  *
@@ -21,6 +24,9 @@ import java.nio.file.Path;
  * {@link #load()} (обновляется сразу после успешного {@code System.load} основной библиотеки).
  */
 public final class TensorCudaLibrary {
+
+    private static final Logger log = LoggerFactory.getLogger(TensorCudaLibrary.class);
+    private static final String OS_NAME_PROPERTY = "os.name";
 
     private static volatile boolean loaded;
     private static volatile String lastLoadedPath;
@@ -93,12 +99,12 @@ public final class TensorCudaLibrary {
                 return;
             } catch (UnsatisfiedLinkError e) {
                 if (!quietMissingNative()) {
-                    System.err.println(
-                            "[TensorCudaLibrary] loadLibrary(jgpt_cuda_extra/jgpt_cuda) не удался: "
-                                    + e.getMessage());
-                    System.err.println(
-                            "[TensorCudaLibrary] java.library.path="
-                                    + System.getProperty("java.library.path", "<пусто>"));
+                    log.warn(
+                            "[TensorCudaLibrary] loadLibrary(jgpt_cuda_extra/jgpt_cuda) не удался: {}",
+                            e.getMessage());
+                    log.warn(
+                            "[TensorCudaLibrary] java.library.path={}",
+                            System.getProperty("java.library.path", "<пусто>"));
                 }
             }
 
@@ -146,11 +152,11 @@ public final class TensorCudaLibrary {
                             .forEach(p -> {
                                 try {
                                     System.load(p.toAbsolutePath().toString());
-                                } catch (UnsatisfiedLinkError ignored) {
+                                } catch (UnsatisfiedLinkError _) {
                                     // already loaded or missing transitive dep — next prefix/dir
                                 }
                             });
-                } catch (Exception ignored) {
+                } catch (Exception _) {
                     // missing dir
                 }
             }
@@ -172,14 +178,14 @@ public final class TensorCudaLibrary {
     }
 
     private static boolean windows() {
-        return System.getProperty("os.name", "").toLowerCase().contains("win");
+        return System.getProperty(OS_NAME_PROPERTY, "").toLowerCase().contains("win");
     }
 
     private static String companionExtraFileName() {
         if (windows()) {
             return "jgpt_cuda_extra.dll";
         }
-        if (System.getProperty("os.name", "").toLowerCase().contains("mac")) {
+        if (System.getProperty(OS_NAME_PROPERTY, "").toLowerCase().contains("mac")) {
             return "libjgpt_cuda_extra.dylib";
         }
         return "libjgpt_cuda_extra.so";
@@ -200,7 +206,7 @@ public final class TensorCudaLibrary {
         if (windows()) {
             return "jgpt_cuda.dll";
         }
-        if (System.getProperty("os.name", "").toLowerCase().contains("mac")) {
+        if (System.getProperty(OS_NAME_PROPERTY, "").toLowerCase().contains("mac")) {
             return "libjgpt_cuda.dylib";
         }
         return "libjgpt_cuda.so";
@@ -211,7 +217,7 @@ public final class TensorCudaLibrary {
             if (Boolean.getBoolean("jgpt.allow.no.gpu")) {
                 return true;
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
             // ignore
         }
         try {
@@ -222,7 +228,7 @@ public final class TensorCudaLibrary {
                     return true;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
             // ignore
         }
         return false;

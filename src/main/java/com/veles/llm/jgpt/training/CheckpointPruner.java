@@ -64,7 +64,7 @@ public final class CheckpointPruner {
         try {
             int v = Integer.parseInt(e.trim().replace(',', '.'));
             return Math.max(0, v);
-        } catch (NumberFormatException ex) {
+        } catch (NumberFormatException _) {
             return defaultValue;
         }
     }
@@ -99,7 +99,7 @@ public final class CheckpointPruner {
                 long num;
                 try {
                     num = Long.parseLong(mid);
-                } catch (NumberFormatException e) {
+                } catch (NumberFormatException _) {
                     continue;
                 }
                 found.add(new long[] {num, 0});

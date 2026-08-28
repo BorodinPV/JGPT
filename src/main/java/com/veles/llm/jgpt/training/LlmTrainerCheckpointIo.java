@@ -49,7 +49,8 @@ final class LlmTrainerCheckpointIo {
             Path stateDir = Path.of("state");
             Files.createDirectories(stateDir);
             Files.writeString(stateDir.resolve("last_step.txt"), String.valueOf(t.globalStep));
-        } catch (IOException ignored) {
+        } catch (IOException _) {
+            // best-effort last_step.txt
         }
 
         if (t.config.fullGpuTrainStep && t.model.isGpuResident()) {
@@ -65,10 +66,10 @@ final class LlmTrainerCheckpointIo {
             out.writeUTF(CHECKPOINT_FORMAT_V4);
             out.writeInt(t.globalStep);
             out.writeFloat(t.bestLoss);
-            int ep = Math.max(0, Math.min(t.pendingCheckpointEpochIndex, t.config.epochs));
+            int ep = Math.clamp(t.pendingCheckpointEpochIndex, 0, t.config.epochs);
             out.writeInt(ep);
             int nSeq = t.dataLoader.numSequences();
-            int seqIdx = Math.max(0, Math.min(t.pendingCheckpointDataLoaderIndex, nSeq));
+            int seqIdx = Math.clamp(t.pendingCheckpointDataLoaderIndex, 0, nSeq);
             out.writeInt(seqIdx);
             t.optimizer.setStep(t.globalStep);
             t.optimizer.writeMomentBuffers(out, t.parameters);
@@ -77,9 +78,9 @@ final class LlmTrainerCheckpointIo {
                 "{} checkpoint(v4+Adam+epoch+pos): {} (resumeEpochIndex={}/{}, seqIndex={})",
                 com.veles.llm.jgpt.util.LogFmt.badge("CKPT"),
                 path,
-                Math.max(0, Math.min(t.pendingCheckpointEpochIndex, t.config.epochs)),
+                Math.clamp(t.pendingCheckpointEpochIndex, 0, t.config.epochs),
                 t.config.epochs,
-                Math.max(0, Math.min(t.pendingCheckpointDataLoaderIndex, t.dataLoader.numSequences())));
+                Math.clamp(t.pendingCheckpointDataLoaderIndex, 0, t.dataLoader.numSequences()));
 
         if (t.checkpointAsyncIo && t.checkpointIoExecutor != null) {
             List<Tensor> params = t.model.getParameters();
@@ -180,19 +181,22 @@ final class LlmTrainerCheckpointIo {
         }
         try {
             t.checkpointIoTail.get();
+        } catch (InterruptedException _) {
+            Thread.currentThread().interrupt();
+            log.warn("Ожидание фоновой записи чекпоинта прервано");
         } catch (Exception e) {
             log.warn("Ожидание фоновой записи чекпоинта: {}", e.toString());
         }
     }
 
-    static void loadCheckpoint(LLMTrainer t, String path) throws IOException, ClassNotFoundException {
+    static void loadCheckpoint(LLMTrainer t, String path) throws IOException {
         try (BufferedInputStream bis = new BufferedInputStream(new FileInputStream(path))) {
             bis.mark(1 << 20);
             DataInputStream dis = new DataInputStream(bis);
             String tag;
             try {
                 tag = dis.readUTF();
-            } catch (IOException e) {
+            } catch (IOException _) {
                 bis.reset();
                 loadLegacyCheckpoint(t, path);
                 return;
@@ -206,7 +210,7 @@ final class LlmTrainerCheckpointIo {
                     t.bestLoss = Float.MAX_VALUE;
                 }
                 int ep = dis.readInt();
-                t.loadedResumeEpochIndex = Math.max(0, Math.min(ep, t.config.epochs));
+                t.loadedResumeEpochIndex = Math.clamp(ep, 0, t.config.epochs);
                 t.loadedResumeDataLoaderIndex = Math.max(0, dis.readInt());
                 t.resumeReplayCheckpointShuffles = true;
                 t.optimizer.setStep(t.globalStep);
@@ -231,7 +235,7 @@ final class LlmTrainerCheckpointIo {
                     t.bestLoss = Float.MAX_VALUE;
                 }
                 int ep = dis.readInt();
-                t.loadedResumeEpochIndex = Math.max(0, Math.min(ep, t.config.epochs));
+                t.loadedResumeEpochIndex = Math.clamp(ep, 0, t.config.epochs);
                 t.loadedResumeDataLoaderIndex = 0;
                 t.resumeReplayCheckpointShuffles = true;
                 t.optimizer.setStep(t.globalStep);
@@ -272,7 +276,7 @@ final class LlmTrainerCheckpointIo {
         loadLegacyCheckpoint(t, path);
     }
 
-    private static void loadLegacyCheckpoint(LLMTrainer t, String path) throws IOException, ClassNotFoundException {
+    private static void loadLegacyCheckpoint(LLMTrainer t, String path) throws IOException {
         try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(path))) {
             t.globalStep = in.readInt();
             t.bestLoss = in.readFloat();

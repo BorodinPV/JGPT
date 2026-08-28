@@ -28,7 +28,9 @@ public final class TextDataset {
     public void loadFile(String path) throws IOException {
         String content = Files.readString(Path.of(path));
         loadText(content);
-        log.info("Файл прочитан: {} ({} символов)", path, String.format("%,d", content.length()));
+        if (log.isInfoEnabled()) {
+            log.info("Файл прочитан: {} ({} символов)", path, String.format("%,d", content.length()));
+        }
     }
 
     /**

@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  */
 @EnabledIfGpu
 @DisplayName("TransformerBackward")
-public class TransformerBackwardTest {
+class TransformerBackwardTest {
 
     private static final float EPS = 1e-5f;
     private static final float NUMERICAL_EPS = 1e-4f;
@@ -69,8 +69,8 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("applyRoPEBackward: accumulates gradient correctly")
-    public void testApplyRoPEBackwardAccumulates() {
-        // Setup: 4D tensor [B=1, H=1, S=2, D=4]
+    void testApplyRoPEBackwardAccumulates() {
+        // Setup: 4D tensor [b=1, h=1, s=2, d=4]
         Tensor gradY = Tensor.fromArray(new float[]{1, 0, 0, 1, 0, 1, 1, 0}, new int[]{1, 1, 2, 4});
         Tensor gradX = new Tensor(new int[]{1, 1, 2, 4});
         gradX.zeroGrad();
@@ -85,7 +85,7 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("applyRoPEBackward: null positions uses 0..S-1")
-    public void testApplyRoPEBackwardNullPositions() {
+    void testApplyRoPEBackwardNullPositions() {
         Tensor gradY = Tensor.fromArray(new float[]{1, 2, 3, 4}, new int[]{1, 1, 1, 4});
         Tensor gradX = new Tensor(new int[]{1, 1, 1, 4});
         gradX.zeroGrad();
@@ -96,7 +96,7 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("applyRoPEBackward: rejects odd dHead")
-    public void testApplyRoPEBackwardOddDHead() {
+    void testApplyRoPEBackwardOddDHead() {
         Tensor gradY = new Tensor(new int[]{1, 1, 2, 3});  // dHead=3 (odd)
         Tensor gradX = new Tensor(new int[]{1, 1, 2, 3});
         gradX.zeroGrad();
@@ -107,7 +107,7 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("applyRoPEBackward: null checks")
-    public void testApplyRoPEBackwardNullChecks() {
+    void testApplyRoPEBackwardNullChecks() {
         Tensor t = new Tensor(new int[]{1, 1, 2, 4});
         t.zeroGrad();
         assertThrows(NullPointerException.class,
@@ -120,62 +120,62 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("scaledDotProductAttentionBackward: basic gradient flow")
-    public void testAttentionBackwardBasic() {
-        int B = 1, S = 2, dK = 4, dV = 4;
+    void testAttentionBackwardBasic() {
+        int b = 1, s = 2, dK = 4, dV = 4;
         Tensor gradOut =
                 upstreamGradOut(
-                        new int[]{B, S, dV}, new float[]{1, 0, 0, 1, 0, 1, 1, 0});
+                        new int[]{b, s, dV}, new float[]{1, 0, 0, 1, 0, 1, 1, 0});
 
         // Deterministic small inputs
-        Tensor Q = smallTensor(new int[]{B, S, dK}, 0.1f);
-        Tensor K = smallTensor(new int[]{B, S, dK}, 0.2f);
-        Tensor V = smallTensor(new int[]{B, S, dV}, 0.3f);
+        Tensor q = smallTensor(new int[]{b, s, dK}, 0.1f);
+        Tensor k = smallTensor(new int[]{b, s, dK}, 0.2f);
+        Tensor v = smallTensor(new int[]{b, s, dV}, 0.3f);
 
-        Tensor gradQ = new Tensor(Q.getShape());
-        Tensor gradK = new Tensor(K.getShape());
-        Tensor gradV = new Tensor(V.getShape());
+        Tensor gradQ = new Tensor(q.getShape());
+        Tensor gradK = new Tensor(k.getShape());
+        Tensor gradV = new Tensor(v.getShape());
 
         TransformerBackward.scaledDotProductAttentionBackward(
-                gradOut, Q, K, V, null, 1.0f / (float) Math.sqrt(dK), null, gradQ, gradK, gradV);
+                gradOut, q, k, v, null, 1.0f / (float) Math.sqrt(dK), null, gradQ, gradK, gradV);
 
         // Verify gradients were computed
         assertTrue(gradQ.hasGrad() && gradK.hasGrad() && gradV.hasGrad());
         float gSum = 0f;
-        for (float v : gradQ.gradBuffer()) gSum += Math.abs(v);
+        for (float gi : gradQ.gradBuffer()) gSum += Math.abs(gi);
         assertTrue(gSum > 1e-6f, "Gradient sum should be non-zero");
     }
 
     @Test
     @DisplayName("scaledDotProductAttentionBackward: with cached probs")
-    public void testAttentionBackwardWithCachedProbs() {
-        int B = 1, S = 2, dK = 4, dV = 4;
+    void testAttentionBackwardWithCachedProbs() {
+        int b = 1, s = 2, dK = 4, dV = 4;
         Tensor gradOut =
                 upstreamGradOut(
-                        new int[]{B, S, dV}, new float[]{1, 0, 0, 1, 0, 1, 1, 0});
-        Tensor Q = smallTensor(new int[]{B, S, dK}, 0.1f);
-        Tensor K = smallTensor(new int[]{B, S, dK}, 0.2f);
-        Tensor V = smallTensor(new int[]{B, S, dV}, 0.3f);
+                        new int[]{b, s, dV}, new float[]{1, 0, 0, 1, 0, 1, 1, 0});
+        Tensor q = smallTensor(new int[]{b, s, dK}, 0.1f);
+        Tensor k = smallTensor(new int[]{b, s, dK}, 0.2f);
+        Tensor v = smallTensor(new int[]{b, s, dV}, 0.3f);
 
         // Pre-compute probs
-        Tensor kT = TensorOps.transpose2DLast(K);
-        Tensor scores = TensorOps.matmulBatched3D(Q, kT);
+        Tensor kT = TensorOps.transpose2DLast(k);
+        Tensor scores = TensorOps.matmulBatched3D(q, kT);
         Tensor scaled = TensorOps.multiplyScalar(scores, 1.0f / (float) Math.sqrt(dK));
         Tensor probsCached = TensorOps.softmaxLastDim(scaled);
 
-        Tensor gradQ = new Tensor(Q.getShape());
-        Tensor gradK = new Tensor(K.getShape());
-        Tensor gradV = new Tensor(V.getShape());
+        Tensor gradQ = new Tensor(q.getShape());
+        Tensor gradK = new Tensor(k.getShape());
+        Tensor gradV = new Tensor(v.getShape());
 
         // Should not throw with cached probs
         assertDoesNotThrow(() ->
                 TransformerBackward.scaledDotProductAttentionBackward(
-                        gradOut, Q, K, V, null, 1.0f / (float) Math.sqrt(dK),
+                        gradOut, q, k, v, null, 1.0f / (float) Math.sqrt(dK),
                         probsCached, gradQ, gradK, gradV));
     }
 
     @Test
     @DisplayName("scaledDotProductAttentionBackward: null checks")
-    public void testAttentionBackwardNullChecks() {
+    void testAttentionBackwardNullChecks() {
         Tensor t = new Tensor(new int[]{1, 2, 4});
         t.zeroGrad();
         assertThrows(NullPointerException.class,
@@ -187,20 +187,20 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("feedForwardSwiGLUBackward: without cache")
-    public void testSwiGLUBackwardNoCache() {
-        int B = 1, S = 2, dModel = 4, dInt = 8;
-        Tensor gradOut = upstreamGradOutSmall(new int[]{B, S, dModel}, 0.1f);
-        Tensor x = smallTensor(new int[]{B, S, dModel}, 0.2f);
-        Tensor W1 = smallTensor(new int[]{dModel, dInt}, 0.3f);
-        Tensor W2 = smallTensor(new int[]{dInt, dModel}, 0.4f);
-        Tensor W3 = smallTensor(new int[]{dModel, dInt}, 0.5f);
+    void testSwiGLUBackwardNoCache() {
+        int b = 1, s = 2, dModel = 4, dInt = 8;
+        Tensor gradOut = upstreamGradOutSmall(new int[]{b, s, dModel}, 0.1f);
+        Tensor x = smallTensor(new int[]{b, s, dModel}, 0.2f);
+        Tensor w1 = smallTensor(new int[]{dModel, dInt}, 0.3f);
+        Tensor w2 = smallTensor(new int[]{dInt, dModel}, 0.4f);
+        Tensor w3 = smallTensor(new int[]{dModel, dInt}, 0.5f);
         Tensor gradX = new Tensor(x.getShape());
-        Tensor gradW1 = new Tensor(W1.getShape());
-        Tensor gradW2 = new Tensor(W2.getShape());
-        Tensor gradW3 = new Tensor(W3.getShape());
+        Tensor gradW1 = new Tensor(w1.getShape());
+        Tensor gradW2 = new Tensor(w2.getShape());
+        Tensor gradW3 = new Tensor(w3.getShape());
 
         TransformerBackward.feedForwardSwiGLUBackward(
-                gradOut, x, W1, W2, W3, gradX, gradW1, gradW2, gradW3,
+                gradOut, x, w1, w2, w3, gradX, gradW1, gradW2, gradW3,
                 null, null, null, null, null);
 
         // Verify gradients accumulated
@@ -209,19 +209,19 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("feedForwardSwiGLUBackward: with cache skips recomputation")
-    public void testSwiGLUBackwardWithCache() {
-        int B = 1, S = 2, dModel = 4, dInt = 8;
-        Tensor gradOut = upstreamGradOutSmall(new int[]{B, S, dModel}, 0.1f);
-        Tensor x = smallTensor(new int[]{B, S, dModel}, 0.2f);
-        Tensor W1 = smallTensor(new int[]{dModel, dInt}, 0.3f);
-        Tensor W2 = smallTensor(new int[]{dInt, dModel}, 0.4f);
-        Tensor W3 = smallTensor(new int[]{dModel, dInt}, 0.5f);
+    void testSwiGLUBackwardWithCache() {
+        int b = 1, s = 2, dModel = 4, dInt = 8;
+        Tensor gradOut = upstreamGradOutSmall(new int[]{b, s, dModel}, 0.1f);
+        Tensor x = smallTensor(new int[]{b, s, dModel}, 0.2f);
+        Tensor w1 = smallTensor(new int[]{dModel, dInt}, 0.3f);
+        Tensor w2 = smallTensor(new int[]{dInt, dModel}, 0.4f);
+        Tensor w3 = smallTensor(new int[]{dModel, dInt}, 0.5f);
 
         // Forward pass to generate cache
         BlockActivationCache cache = new BlockActivationCache();
-        Tensor xFlat = Tensor.wrap(x.internalBuffer(), new int[]{B * S, dModel});
-        Tensor h1 = TensorOps.matmul(xFlat, W1);
-        Tensor gate = TensorOps.matmul(xFlat, W3);
+        Tensor xFlat = Tensor.wrap(x.internalBuffer(), new int[]{b * s, dModel});
+        Tensor h1 = TensorOps.matmul(xFlat, w1);
+        Tensor gate = TensorOps.matmul(xFlat, w3);
         Tensor sig = TensorOps.sigmoid(gate);
         Tensor gateSwish = TensorOps.multiply(gate, sig);
         Tensor hAct = TensorOps.multiply(h1, gateSwish);
@@ -232,14 +232,14 @@ public class TransformerBackwardTest {
         cache.ffnHActivated.store(hAct, false);
 
         Tensor gradX = new Tensor(x.getShape());
-        Tensor gradW1 = new Tensor(W1.getShape());
-        Tensor gradW2 = new Tensor(W2.getShape());
-        Tensor gradW3 = new Tensor(W3.getShape());
+        Tensor gradW1 = new Tensor(w1.getShape());
+        Tensor gradW2 = new Tensor(w2.getShape());
+        Tensor gradW3 = new Tensor(w3.getShape());
 
         // Should not throw with cache
         assertDoesNotThrow(() ->
                 TransformerBackward.feedForwardSwiGLUBackward(
-                        gradOut, x, W1, W2, W3, gradX, gradW1, gradW2, gradW3,
+                        gradOut, x, w1, w2, w3, gradX, gradW1, gradW2, gradW3,
                         cache.ffnH1.getTensor(),
                         cache.ffnGate.getTensor(),
                         cache.ffnSig.getTensor(),
@@ -249,7 +249,7 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("feedForwardSwiGLUBackward: null checks")
-    public void testSwiGLUBackwardNullChecks() {
+    void testSwiGLUBackwardNullChecks() {
         Tensor t = new Tensor(new int[]{1, 2, 4});
         t.zeroGrad();
         Tensor w = new Tensor(new int[]{4, 8});
@@ -262,38 +262,38 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("multiHeadAttentionWithRoPEBackward: basic flow")
-    public void testMhaRoPEBackwardBasic() {
+    void testMhaRoPEBackwardBasic() {
         assumeTrue(TensorOpsGPU.isGpuAvailable(), "fused MHA backward требует CUDA");
-        int B = 1, S = 2, dModel = 8, numHeads = 2;
+        int b = 1, s = 2, dModel = 8, numHeads = 2;
         int dHead = dModel / numHeads;
-        Tensor gradOut = upstreamGradOutSmall(new int[]{B, S, dModel}, 0.1f);
-        Tensor xNorm = smallTensor(new int[]{B, S, dModel}, 0.2f);
-        Tensor Wq = smallTensor(new int[]{dModel, dModel}, 0.3f);
-        Tensor Wk = smallTensor(new int[]{dModel, dModel}, 0.4f);
-        Tensor Wv = smallTensor(new int[]{dModel, dModel}, 0.5f);
-        Tensor Wo = smallTensor(new int[]{dModel, dModel}, 0.6f);
-        Tensor mask = TensorOps.createCausalMask(S);
+        Tensor gradOut = upstreamGradOutSmall(new int[]{b, s, dModel}, 0.1f);
+        Tensor xNorm = smallTensor(new int[]{b, s, dModel}, 0.2f);
+        Tensor wq = smallTensor(new int[]{dModel, dModel}, 0.3f);
+        Tensor wk = smallTensor(new int[]{dModel, dModel}, 0.4f);
+        Tensor wv = smallTensor(new int[]{dModel, dModel}, 0.5f);
+        Tensor wo = smallTensor(new int[]{dModel, dModel}, 0.6f);
+        Tensor mask = TensorOps.createCausalMask(s);
         BlockActivationCache cache = new BlockActivationCache();
-        cache.attnQHeads.store(zeros(new int[]{B, numHeads, S, dHead}), false);
-        cache.attnKHeads.store(zeros(new int[]{B, numHeads, S, dHead}), false);
-        cache.attnVHeads.store(zeros(new int[]{B, numHeads, S, dHead}), false);
-        cache.attnProbs.store(zeros(new int[]{B * numHeads, S, S}), false);
-        cache.attnConcat.store(zeros(new int[]{B, S, dModel}), false);
+        cache.attnQHeads.store(zeros(new int[]{b, numHeads, s, dHead}), false);
+        cache.attnKHeads.store(zeros(new int[]{b, numHeads, s, dHead}), false);
+        cache.attnVHeads.store(zeros(new int[]{b, numHeads, s, dHead}), false);
+        cache.attnProbs.store(zeros(new int[]{b * numHeads, s, s}), false);
+        cache.attnConcat.store(zeros(new int[]{b, s, dModel}), false);
         Tensor gradX = new Tensor(xNorm.getShape());
-        Tensor gradWq = new Tensor(Wq.getShape());
-        Tensor gradWk = new Tensor(Wk.getShape());
-        Tensor gradWv = new Tensor(Wv.getShape());
-        Tensor gradWo = new Tensor(Wo.getShape());
+        Tensor gradWq = new Tensor(wq.getShape());
+        Tensor gradWk = new Tensor(wk.getShape());
+        Tensor gradWv = new Tensor(wv.getShape());
+        Tensor gradWo = new Tensor(wo.getShape());
 
         assertDoesNotThrow(() ->
                 TransformerBackward.multiHeadAttentionWithRoPEBackward(
-                        gradOut, xNorm, Wq, Wk, Wv, Wo, numHeads, mask, cache,
+                        gradOut, xNorm, wq, wk, wv, wo, numHeads, mask, cache,
                         gradX, gradWq, gradWk, gradWv, gradWo));
     }
 
     @Test
     @DisplayName("multiHeadAttentionWithRoPEBackward: null checks")
-    public void testMhaRoPEBackwardNullChecks() {
+    void testMhaRoPEBackwardNullChecks() {
         Tensor t = new Tensor(new int[]{1, 2, 8});
         t.zeroGrad();
         Tensor w = new Tensor(new int[]{8, 8});
@@ -307,22 +307,22 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("transformerBlockBackward: end-to-end with cache")
-    public void testTransformerBlockBackwardWithCache() {
+    void testTransformerBlockBackwardWithCache() {
         assumeTrue(TensorOpsGPU.isGpuAvailable(), "fused block backward требует CUDA");
-        int B = 1, S = 2, dModel = 8, numHeads = 2, dInt = 16;
+        int b = 1, s = 2, dModel = 8, numHeads = 2, dInt = 16;
 
         // Forward pass to populate cache (using deterministic data)
-        Tensor xIn = smallTensor(new int[]{B, S, dModel}, 0.1f);
-        Tensor Wq = smallTensor(new int[]{dModel, dModel}, 0.2f);
-        Tensor Wk = smallTensor(new int[]{dModel, dModel}, 0.3f);
-        Tensor Wv = smallTensor(new int[]{dModel, dModel}, 0.4f);
-        Tensor Wo = smallTensor(new int[]{dModel, dModel}, 0.5f);
-        Tensor W1 = smallTensor(new int[]{dModel, dInt}, 0.6f);
-        Tensor W2 = smallTensor(new int[]{dInt, dModel}, 0.7f);
-        Tensor W3 = smallTensor(new int[]{dModel, dInt}, 0.8f);
+        Tensor xIn = smallTensor(new int[]{b, s, dModel}, 0.1f);
+        Tensor wq = smallTensor(new int[]{dModel, dModel}, 0.2f);
+        Tensor wk = smallTensor(new int[]{dModel, dModel}, 0.3f);
+        Tensor wv = smallTensor(new int[]{dModel, dModel}, 0.4f);
+        Tensor wo = smallTensor(new int[]{dModel, dModel}, 0.5f);
+        Tensor w1 = smallTensor(new int[]{dModel, dInt}, 0.6f);
+        Tensor w2 = smallTensor(new int[]{dInt, dModel}, 0.7f);
+        Tensor w3 = smallTensor(new int[]{dModel, dInt}, 0.8f);
         Tensor norm1 = smallTensor(new int[]{dModel}, 1.0f);  // gamma for RMSNorm
         Tensor norm2 = smallTensor(new int[]{dModel}, 1.0f);
-        Tensor mask = TensorOps.createCausalMask(S);
+        Tensor mask = TensorOps.createCausalMask(s);
 
         BlockActivationCache cache = new BlockActivationCache();
         Tensor xNorm1 = TensorOps.rmsNorm(xIn, norm1, 1e-6f);
@@ -336,31 +336,31 @@ public class TransformerBackwardTest {
         cache.attnOut.store(zeros(xRes1.getShape()), false);
 
         // Minimal cache entries for GPU path check
-        cache.attnQHeads.store(zeros(new int[]{B, numHeads, S, dModel / numHeads}), false);
-        cache.attnKHeads.store(zeros(new int[]{B, numHeads, S, dModel / numHeads}), false);
-        cache.attnVHeads.store(zeros(new int[]{B, numHeads, S, dModel / numHeads}), false);
-        cache.attnProbs.store(zeros(new int[]{B * numHeads, S, S}), false);
-        cache.attnConcat.store(zeros(new int[]{B, S, dModel}), false);
-        cache.ffnH1.store(zeros(new int[]{B, S, dInt}), false);
-        cache.ffnGate.store(zeros(new int[]{B, S, dInt}), false);
+        cache.attnQHeads.store(zeros(new int[]{b, numHeads, s, dModel / numHeads}), false);
+        cache.attnKHeads.store(zeros(new int[]{b, numHeads, s, dModel / numHeads}), false);
+        cache.attnVHeads.store(zeros(new int[]{b, numHeads, s, dModel / numHeads}), false);
+        cache.attnProbs.store(zeros(new int[]{b * numHeads, s, s}), false);
+        cache.attnConcat.store(zeros(new int[]{b, s, dModel}), false);
+        cache.ffnH1.store(zeros(new int[]{b, s, dInt}), false);
+        cache.ffnGate.store(zeros(new int[]{b, s, dInt}), false);
 
         // Backward pass
-        Tensor gradOut = upstreamGradOutSmall(new int[]{B, S, dModel}, 0.1f);
+        Tensor gradOut = upstreamGradOutSmall(new int[]{b, s, dModel}, 0.1f);
         Tensor gradXIn = new Tensor(xIn.getShape());
-        Tensor gradWq = new Tensor(Wq.getShape());
-        Tensor gradWk = new Tensor(Wk.getShape());
-        Tensor gradWv = new Tensor(Wv.getShape());
-        Tensor gradWo = new Tensor(Wo.getShape());
-        Tensor gradW1 = new Tensor(W1.getShape());
-        Tensor gradW2 = new Tensor(W2.getShape());
-        Tensor gradW3 = new Tensor(W3.getShape());
+        Tensor gradWq = new Tensor(wq.getShape());
+        Tensor gradWk = new Tensor(wk.getShape());
+        Tensor gradWv = new Tensor(wv.getShape());
+        Tensor gradWo = new Tensor(wo.getShape());
+        Tensor gradW1 = new Tensor(w1.getShape());
+        Tensor gradW2 = new Tensor(w2.getShape());
+        Tensor gradW3 = new Tensor(w3.getShape());
         Tensor gradNorm1 = new Tensor(norm1.getShape());
         Tensor gradNorm2 = new Tensor(norm2.getShape());
 
         // Should not throw
         assertDoesNotThrow(() ->
                 TransformerBackward.transformerBlockBackward(
-                        gradOut, cache, Wq, Wk, Wv, Wo, W1, W2, W3, norm1, norm2,
+                        gradOut, cache, wq, wk, wv, wo, w1, w2, w3, norm1, norm2,
                         numHeads, mask, true, gradXIn, gradWq, gradWk, gradWv, gradWo,
                         gradW1, gradW2, gradW3, gradNorm1, gradNorm2));
 
@@ -370,7 +370,7 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("transformerBlockBackward: null checks")
-    public void testTransformerBlockBackwardNullChecks() {
+    void testTransformerBlockBackwardNullChecks() {
         Tensor t = new Tensor(new int[]{1, 2, 8});
         t.zeroGrad();
         Tensor w = new Tensor(new int[]{8, 8});
@@ -386,13 +386,13 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("RoPE backward: numerical gradient validation")
-    public void testRoPEBackwardNumerical() {
-        int B = 1, H = 1, S = 2, D = 4;
-        Tensor x = Tensor.fromArray(new float[]{1, 2, 3, 4, 5, 6, 7, 8}, new int[]{B, H, S, D});
+    void testRoPEBackwardNumerical() {
+        int b = 1, h = 1, s = 2, d = 4;
+        Tensor x = Tensor.fromArray(new float[]{1, 2, 3, 4, 5, 6, 7, 8}, new int[]{b, h, s, d});
         float eps = NUMERICAL_EPS;
 
         // Analytical gradient via backward pass
-        Tensor gradY = Tensor.fromArray(new float[]{1, 0, 0, 0, 0, 1, 0, 0}, new int[]{B, H, S, D});
+        Tensor gradY = Tensor.fromArray(new float[]{1, 0, 0, 0, 0, 1, 0, 0}, new int[]{b, h, s, d});
         Tensor gradXAnalytical = new Tensor(x.getShape());
         gradXAnalytical.zeroGrad();
         TransformerBackward.applyRoPEBackward(gradY, gradXAnalytical, null);
@@ -435,7 +435,7 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("softmax backward: numerical gradient validation")
-    public void testSoftmaxBackwardNumerical() {
+    void testSoftmaxBackwardNumerical() {
         int rows = 2, width = 3;
         Tensor logits = Tensor.fromArray(new float[]{1, 2, 3, 4, 5, 6}, new int[]{rows, width});
         float eps = NUMERICAL_EPS;
@@ -492,38 +492,38 @@ public class TransformerBackwardTest {
 
     @Test
     @DisplayName("scaledDotProductAttentionBackward: mask applied")
-    public void testAttentionBackwardWithMask() {
-        int B = 1, S = 3, dK = 4, dV = 4;
-        Tensor gradOut = upstreamGradOutSmall(new int[]{B, S, dV}, 0.1f);
-        Tensor Q = smallTensor(new int[]{B, S, dK}, 0.2f);
-        Tensor K = smallTensor(new int[]{B, S, dK}, 0.3f);
-        Tensor V = smallTensor(new int[]{B, S, dV}, 0.4f);
-        Tensor mask = TensorOps.createCausalMask(S);  // causal mask
-        Tensor gradQ = new Tensor(Q.getShape());
-        Tensor gradK = new Tensor(K.getShape());
-        Tensor gradV = new Tensor(V.getShape());
+    void testAttentionBackwardWithMask() {
+        int b = 1, s = 3, dK = 4, dV = 4;
+        Tensor gradOut = upstreamGradOutSmall(new int[]{b, s, dV}, 0.1f);
+        Tensor q = smallTensor(new int[]{b, s, dK}, 0.2f);
+        Tensor k = smallTensor(new int[]{b, s, dK}, 0.3f);
+        Tensor v = smallTensor(new int[]{b, s, dV}, 0.4f);
+        Tensor mask = TensorOps.createCausalMask(s);  // causal mask
+        Tensor gradQ = new Tensor(q.getShape());
+        Tensor gradK = new Tensor(k.getShape());
+        Tensor gradV = new Tensor(v.getShape());
 
         assertDoesNotThrow(() ->
                 TransformerBackward.scaledDotProductAttentionBackward(
-                        gradOut, Q, K, V, mask, 1.0f / (float) Math.sqrt(dK), null, gradQ, gradK, gradV));
+                        gradOut, q, k, v, mask, 1.0f / (float) Math.sqrt(dK), null, gradQ, gradK, gradV));
     }
 
     @Test
     @DisplayName("feedForwardSwiGLUBackward: shape validation")
-    public void testSwiGLUBackwardShapeValidation() {
+    void testSwiGLUBackwardShapeValidation() {
         Tensor gradOut = new Tensor(new int[]{1, 2, 4});
         gradOut.zeroGrad();
         Tensor x = new Tensor(new int[]{1, 2, 4});
-        Tensor W1 = new Tensor(new int[]{4, 8});  // dModel=4, dInt=8
-        Tensor W2 = new Tensor(new int[]{8, 4});  // dInt=8, dModel=4
-        Tensor W3 = new Tensor(new int[]{4, 7});  // ❌ wrong: should be [4, 8]
+        Tensor w1 = new Tensor(new int[]{4, 8});  // dModel=4, dInt=8
+        Tensor w2 = new Tensor(new int[]{8, 4});  // dInt=8, dModel=4
+        Tensor w3 = new Tensor(new int[]{4, 7});  // ❌ wrong: should be [4, 8]
         Tensor gradX = new Tensor(x.getShape());
-        Tensor gradW1 = new Tensor(W1.getShape());
-        Tensor gradW2 = new Tensor(W2.getShape());
-        Tensor gradW3 = new Tensor(W3.getShape());
+        Tensor gradW1 = new Tensor(w1.getShape());
+        Tensor gradW2 = new Tensor(w2.getShape());
+        Tensor gradW3 = new Tensor(w3.getShape());
 
         assertThrows(IllegalArgumentException.class,
                 () -> TransformerBackward.feedForwardSwiGLUBackward(
-                        gradOut, x, W1, W2, W3, gradX, gradW1, gradW2, gradW3));
+                        gradOut, x, w1, w2, w3, gradX, gradW1, gradW2, gradW3));
     }
 }

@@ -3,7 +3,7 @@ package com.veles.llm.jgpt.ops;
 import com.veles.llm.jgpt.core.Tensor;
 
 public class CausalMaskTest {
-    public static void main(String[] args) {
+    public static void main(String[] unused) {
         System.out.println("🧪 Testing Causal Mask...");
 
         int seqLen = 4;

@@ -5,6 +5,8 @@ import com.veles.llm.jgpt.core.Tensor;
 import com.veles.llm.jgpt.ops.TensorOps;
 import com.veles.llm.jgpt.ops.TensorOpsBackward;
 
+import java.util.Objects;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,6 +21,7 @@ public final class SimpleTrainer {
     }
 
     public static void main(String[] args) {
+        Objects.requireNonNull(args);
         trainLinear();
     }
 
@@ -31,7 +34,7 @@ public final class SimpleTrainer {
         int outputDim = 1;
         int batchSize = 32;
 
-        Tensor W = randomTensor(new int[]{inputDim, outputDim}, 0.1f);
+        Tensor weights = randomTensor(new int[]{inputDim, outputDim}, 0.1f);
         Tensor b = new Tensor(new int[]{outputDim});
 
         float learningRate = 0.05f;
@@ -46,7 +49,7 @@ public final class SimpleTrainer {
                         + (float) (Math.random() * 0.1f - 0.05f);
             }
 
-            Tensor yLin = TensorOps.matmul(x, W);
+            Tensor yLin = TensorOps.matmul(x, weights);
             Tensor yPred = addBiasRows(yLin, b);
 
             Tensor diff = TensorOps.subtract(yPred, yTrue);
@@ -66,10 +69,10 @@ public final class SimpleTrainer {
 
             Tensor gradX = new Tensor(new int[]{batchSize, inputDim});
             gradX.zeroGrad();
-            W.zeroGrad();
+            weights.zeroGrad();
             b.zeroGrad();
 
-            TensorOpsBackward.matmulBackward(gradY, x, W, gradX, W);
+            TensorOpsBackward.matmulBackward(gradY, x, weights, gradX, weights);
 
             float[] bg = b.gradBuffer();
             for (int j = 0; j < outputDim; j++) {
@@ -80,10 +83,10 @@ public final class SimpleTrainer {
                 bg[j] = s;
             }
 
-            updateWeights(W, learningRate);
+            updateWeights(weights, learningRate);
             updateWeights(b, learningRate);
 
-            if (epoch % 10 == 0) {
+            if (epoch % 10 == 0 && log.isInfoEnabled()) {
                 log.info("Эпоха {}: loss = {}", epoch, String.format("%.6f", loss));
             }
         }
@@ -91,8 +94,8 @@ public final class SimpleTrainer {
         log.info("Обучение завершено.");
         log.info(
                 "Оценка W[0,0]={} (ожидается ~2), W[1,0]={} (ожидается ~3), b[0]={} (ожидается ~0)",
-                W.get(0, 0),
-                W.get(1, 0),
+                weights.get(0, 0),
+                weights.get(1, 0),
                 b.get(0));
 
         TensorOpsGPU.synchronizeStream();

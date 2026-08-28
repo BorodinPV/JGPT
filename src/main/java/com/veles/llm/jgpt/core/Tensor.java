@@ -108,6 +108,7 @@ public final class Tensor {
         if (ptr == 0L) {
             return allocateDirect(validatedShape);
         }
+        boolean transferred = false;
         try {
             ByteBuffer bb = CudaPinnedHost.directBuffer(ptr, bytes);
             if (bb == null) {
@@ -119,10 +120,14 @@ public final class Tensor {
             fb.limit(sz);
             Tensor t = new Tensor(validatedShape, strides, sz, null, bb, fb, null, true);
             PINNED_CUDA_CLEANER.register(t, () -> CudaPinnedHost.free(ptr));
+            transferred = true;
             return t;
-        } catch (Throwable e) {
-            CudaPinnedHost.free(ptr);
+        } catch (Exception _) {
             return allocateDirect(validatedShape);
+        } finally {
+            if (!transferred) {
+                CudaPinnedHost.free(ptr);
+            }
         }
     }
 
@@ -229,10 +234,6 @@ public final class Tensor {
         }
         System.arraycopy(values, 0, t.data, 0, values.length);
         return t;
-    }
-
-    private Tensor(int[] shape, float[] data, int[] strides, int size) {
-        this(shape, strides, size, data, null, null, null, false);
     }
 
     private Tensor(int[] shape, float[] data, int[] strides, int size, float[] grad) {

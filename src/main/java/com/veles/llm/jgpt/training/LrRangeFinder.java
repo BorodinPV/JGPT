@@ -272,17 +272,6 @@ public final class LrRangeFinder {
         return true;
     }
 
-    private static void scaleTensorGrad(Tensor t, float scale) {
-        if (!t.hasGrad()) {
-            return;
-        }
-        float[] g = t.gradBuffer();
-        if (g.length <= 0) {
-            return;
-        }
-        TensorOpsGPU.scaleInPlaceGPU(g, g.length, scale);
-    }
-
     /**
      * CE (mean по токенам) + ∂L/∂logits: fused JNI на GPU. {@code lossScale} как в {@link LLMTrainer}.
      */

@@ -16,17 +16,21 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Copy source code
-COPY . .
+# Copy source (see .dockerignore — data/, checkpoints/, .env, .git are excluded)
+COPY pom.xml ./
+COPY src ./src
+COPY scripts ./scripts
+COPY env ./env
 
-# Build CUDA libraries
+# Build CUDA libraries, Java, then drop privileges in the same layer
 RUN cd src/main/cpp && \
     mkdir -p build && cd build && \
     cmake .. && \
-    cmake --build .
-
-# Build Java code
-RUN mvn compile -DskipTests
+    cmake --build . && \
+    cd /app && \
+    mvn compile -DskipTests && \
+    useradd --create-home --uid 1000 jgpt && chown -R jgpt:jgpt /app
+USER jgpt
 
 # Set environment variables
 ENV JGPT_DECODER_GPU_PIPELINE=1

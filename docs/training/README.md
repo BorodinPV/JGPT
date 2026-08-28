@@ -12,6 +12,21 @@
 
 **Производительность:** ~26k tokens/sec на RTX 3080 (10 GB) с пресетом 02-stable.
 
+### Геометрия модели
+
+Обучение и чат без override — `LLMConfig.canonical()` (~34.9M):
+
+| Параметр | Значение |
+|----------|----------|
+| vocab | 8000 |
+| seq | 1024 |
+| d_model | 384 |
+| heads | 24 (d_head = 16) |
+| слои | 12 |
+| SwiGLU d_intermediate | 1536 |
+
+`JGPT_MAX_SEQ_LEN` / `JGPT_PRESET_NUM_LAYERS` в `env/*.env` должны совпадать с чекпоинтом. Старые веса на 20 слоях / seq 2048 не загрузятся.
+
 ### Как работает `jgpt-smart.sh`
 
 Один скрипт в `scripts/`:

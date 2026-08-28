@@ -94,7 +94,6 @@ final class GpuForwardBlockWorkspace {
         }
 
         boolean weightsChanged = (dModel != weightDModel || dInt != weightDInt);
-        boolean rowDimsChanged = (rows != cachedRows || dModel != cachedDModel || dInt != cachedDInt);
 
         if (weightsChanged) {
             closeWeightBuffers();
@@ -113,24 +112,22 @@ final class GpuForwardBlockWorkspace {
             weightDInt = dInt;
         }
 
-        if (rowDimsChanged || weightsChanged) {
-            closeRowBuffers();
-            long rowDInt = GpuBufferUtils.mulExact("rows*dInt", (long) rows, (long) dInt);
+        closeRowBuffers();
+        long rowDInt = GpuBufferUtils.mulExact("rows*dInt", (long) rows, (long) dInt);
 
-            xRes1 = GpuBufferUtils.ensure(xRes1, rowPlaneLong);
-            xNorm2 = GpuBufferUtils.ensure(xNorm2, rowPlaneLong);
-            h1 = GpuBufferUtils.ensure(h1, rowDInt);
-            gate = GpuBufferUtils.ensure(gate, rowDInt);
-            sig = GpuBufferUtils.ensure(sig, rowDInt);
-            gateSwish = GpuBufferUtils.ensure(gateSwish, rowDInt);
-            hAct = GpuBufferUtils.ensure(hAct, rowDInt);
-            ffnOut = GpuBufferUtils.ensure(ffnOut, rowPlaneLong);
-            out = GpuBufferUtils.ensure(out, rowPlaneLong);
+        xRes1 = GpuBufferUtils.ensure(xRes1, rowPlaneLong);
+        xNorm2 = GpuBufferUtils.ensure(xNorm2, rowPlaneLong);
+        h1 = GpuBufferUtils.ensure(h1, rowDInt);
+        gate = GpuBufferUtils.ensure(gate, rowDInt);
+        sig = GpuBufferUtils.ensure(sig, rowDInt);
+        gateSwish = GpuBufferUtils.ensure(gateSwish, rowDInt);
+        hAct = GpuBufferUtils.ensure(hAct, rowDInt);
+        ffnOut = GpuBufferUtils.ensure(ffnOut, rowPlaneLong);
+        out = GpuBufferUtils.ensure(out, rowPlaneLong);
 
-            cachedRows = rows;
-            cachedDModel = dModel;
-            cachedDInt = dInt;
-        }
+        cachedRows = rows;
+        cachedDModel = dModel;
+        cachedDInt = dInt;
 
         hostOut = GpuBufferUtils.ensureHost(hostOut, hostElements);
     }

@@ -269,6 +269,9 @@ final class GptAutoregressiveGenerator {
             m.sampleLogitsScratch[i] = e;
             sum += e;
         }
+        if (sum <= 0f || !Float.isFinite(sum)) {
+            return argmaxLogitsGreedy(m.sampleLogitsScratch, vocabSize);
+        }
         for (int i = 0; i < vocabSize; i++) {
             m.sampleLogitsScratch[i] /= sum;
         }

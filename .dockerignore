@@ -1,0 +1,13 @@
+.git
+.idea
+.cursor
+**/*.bin
+data
+checkpoints
+state
+target
+build
+*.log
+.env
+**/.env
+node_modules

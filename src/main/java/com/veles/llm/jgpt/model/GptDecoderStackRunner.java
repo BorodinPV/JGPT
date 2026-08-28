@@ -5,10 +5,8 @@ import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
 import com.veles.llm.jgpt.ops.TensorOps;
 import com.veles.llm.jgpt.training.LLMConfig;
-import com.veles.llm.jgpt.util.CursorDebugB39372;
 
 import java.util.Arrays;
-import java.util.Locale;
 import java.util.Objects;
 
 import org.slf4j.Logger;
@@ -22,7 +20,9 @@ final class GptDecoderStackRunner {
     private static final Logger log = LoggerFactory.getLogger(GptDecoderStackRunner.class);
     private static final int DECODER_GRAPH_DEVICE_SNAPSHOT_LEN = 15;
 
-    private GptDecoderStackRunner() {}
+    private GptDecoderStackRunner() {
+        // utility class
+    }
 
     static void destroyDecoderLayerCudaGraphs(GPTModel m) {
         destroyPendingDecoderGraphExecQueuedHandles(m);
@@ -58,13 +58,12 @@ final class GptDecoderStackRunner {
      * memory pools — иначе graph memory pool (CUDA 12+) может давать монотонный рост «использованной» VRAM в
      * {@code cudaMemGetInfo} до отложенного reclaim.
      */
-    private static void trimDecoderGraphMemoryAfterExecDestroy(GPTModel m) {
+    private static void trimDecoderGraphMemoryAfterExecDestroy() {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
         TensorOpsGPU.synchronizeDevice();
         drainDeferredGpuBuffersThenTrimPools();
-
     }
 
     /** Уничтожает handle'ы в очереди pending без trim (см. {@link #flushPendingDecoderGraphExecDestroy}). */
@@ -114,7 +113,7 @@ final class GptDecoderStackRunner {
             return;
         }
         destroyPendingDecoderGraphExecQueuedHandles(m);
-        trimDecoderGraphMemoryAfterExecDestroy(m);
+        trimDecoderGraphMemoryAfterExecDestroy();
     }
 
     /** Сколько кэшей реально освободили staging; см. {@link BlockActivationCacheDevice#releaseTransientFloatStagingBuffers()}. */
@@ -225,73 +224,6 @@ final class GptDecoderStackRunner {
         return sb.toString();
     }
 
-    // #region agent log
-    private static void logDecoderGraphB39372Failure(GPTModel m, String phase, int layer, long exec, int batch, int seqLen) {
-        long[] pr = TensorOpsGPU.decoderGraphLaunchProbe(exec);
-        long[] na = TensorOpsGPU.decoderGraphDebugNativeAuxSnapshot();
-        CursorDebugB39372.appendJson(
-                "H5",
-                "GPTModel.runDecoderStackLayers",
-                "graphLaunchFailed",
-                String.format(
-                        Locale.ROOT,
-                        "\"phase\":\"%s\",\"layer\":%d,\"batch\":%d,\"seqLen\":%d,\"exec\":%d,\"captureKey\":%d,"
-                                + "\"threadId\":%d,\"flash\":%b,\"probeDev\":%d,\"probeCap\":%d,\"probeQuery\":%d,"
-                                + "\"probeNoPreSyncEnv\":%d,\"probeDriver\":%d,\"probeRuntime\":%d,\"probeExecFlags\":%d,"
-                                + "\"probeStream\":%d,\"nativeAuxNonGraph\":%d,\"nativeAuxGraph\":%d,"
-                                + "\"nativeAuxNonGraphSz\":%d,\"nativeAuxGraphSz\":%d",
-                        phase,
-                        layer,
-                        batch,
-                        seqLen,
-                        exec,
-                        m.decoderLayerGraphCaptureKey,
-                        Thread.currentThread().threadId(),
-                        TensorOpsGPU.FLASH_ATTENTION,
-                        pr.length > 0 ? pr[0] : -1L,
-                        pr.length > 1 ? pr[1] : -1L,
-                        pr.length > 2 ? pr[2] : -1L,
-                        pr.length > 3 ? pr[3] : -1L,
-                        pr.length > 4 ? pr[4] : -1L,
-                        pr.length > 5 ? pr[5] : -1L,
-                        pr.length > 6 ? pr[6] : -1L,
-                        pr.length > 7 ? pr[7] : -1L,
-                        na.length > 0 ? na[0] : -1L,
-                        na.length > 1 ? na[1] : -1L,
-                        na.length > 2 ? na[2] : -1L,
-                        na.length > 3 ? na[3] : -1L));
-    }
-
-    private static void logDecoderGraphB39372PreLaunch(GPTModel m, int layer, long exec, int batch, int seqLen) {
-        if (!CursorDebugB39372.verboseDecoderGraph()) {
-            return;
-        }
-        long[] pr = TensorOpsGPU.decoderGraphLaunchProbe(exec);
-        CursorDebugB39372.appendJson(
-                "H2",
-                "GPTModel.runDecoderStackLayers",
-                "preGraphLaunch",
-                String.format(
-                        Locale.ROOT,
-                        "\"layer\":%d,\"batch\":%d,\"seqLen\":%d,\"exec\":%d,\"captureKey\":%d,\"probeDev\":%d,"
-                                + "\"probeCap\":%d,\"probeQuery\":%d,\"probeNoPreSyncEnv\":%d,\"probeDriver\":%d,"
-                                + "\"probeRuntime\":%d,\"probeExecFlags\":%d,\"probeStream\":%d",
-                        layer,
-                        batch,
-                        seqLen,
-                        exec,
-                        m.decoderLayerGraphCaptureKey,
-                        pr.length > 0 ? pr[0] : -1L,
-                        pr.length > 1 ? pr[1] : -1L,
-                        pr.length > 2 ? pr[2] : -1L,
-                        pr.length > 3 ? pr[3] : -1L,
-                        pr.length > 4 ? pr[4] : -1L,
-                        pr.length > 5 ? pr[5] : -1L,
-                        pr.length > 6 ? pr[6] : -1L,
-                        pr.length > 7 ? pr[7] : -1L));
-    }
-    // #endregion
-
     private static void disableDecoderLayerCudaGraph(GPTModel m, String reason) {
         if (m.decoderLayerGraphRuntimeDisabled) {
             return;
@@ -373,8 +305,8 @@ final class GptDecoderStackRunner {
             return;
         }
         destroyDecoderLayerCudaGraphs(m);
-        /* Не сбрасывать m.decoderLayerGraphCaptureKey: он уже совпадает с текущим nk из runDecoderStackLayers;
-         * иначе на следующем forward сработает ложное «ключ изменился» и графы пересоздадутся дважды подряд. */
+        // Keep decoderLayerGraphCaptureKey: it already matches nk from runDecoderStackLayers.
+        // Resetting it would recreate graphs twice on the next forward.
         m.decoderGraphStridedPackW = GPTModel.closeGpuBuffer(m.decoderGraphStridedPackW);
         m.decoderGraphStridedPackC = GPTModel.closeGpuBuffer(m.decoderGraphStridedPackC);
         m.decoderGraphStridedPackW = GpuFloatBuffer.allocate(wNeed);
@@ -442,7 +374,7 @@ final class GptDecoderStackRunner {
             int nk = decoderLayerGraphKey(m, mask, trainingStep, batch, seqLen, inPtr);
             if (m.decoderLayerGraphCaptureKey != nk) {
                 destroyDecoderLayerCudaGraphs(m);
-                trimDecoderGraphMemoryAfterExecDestroy(m);
+                trimDecoderGraphMemoryAfterExecDestroy();
                 m.decoderLayerGraphCaptureKey = nk;
             }
         }
@@ -482,21 +414,8 @@ final class GptDecoderStackRunner {
                         xDevice != null && !xDevice.isClosed() ? xDevice.devicePointer() : 0L;
                 int nkPost = decoderLayerGraphKey(m, mask, trainingStep, batch, seqLen, inPtrPost);
                 if (m.decoderLayerGraphCaptureKey != nkPost) {
-                    // #region agent log
-                    CursorDebugB39372.appendJson(
-                            "postPrimeKey",
-                            "GPTModel.runDecoderStackLayers",
-                            "invalidateGraphsAfterPrimeNativeAux",
-                            String.format(
-                                    Locale.ROOT,
-                                    "\"prevCaptureKey\":%d,\"nkPost\":%d,\"hadExecLayer0\":%b,\"nativeStabilityToken\":%d",
-                                    m.decoderLayerGraphCaptureKey,
-                                    nkPost,
-                                    m.decoderLayerGraphExec[0] != 0L,
-                                    TensorOpsGPU.decoderGraphNativeStabilityToken()));
-                    // #endregion
                     destroyDecoderLayerCudaGraphs(m);
-                    trimDecoderGraphMemoryAfterExecDestroy(m);
+                    trimDecoderGraphMemoryAfterExecDestroy();
                     m.decoderLayerGraphCaptureKey = nkPost;
                 }
             }
@@ -540,18 +459,6 @@ final class GptDecoderStackRunner {
                                             + "graph отключён до конца forward (проактивно).",
                                     freeF,
                                     LLMConfig.decoderGraphMinFreeMibFromEnvOrProp());
-                            // #region agent log
-                            CursorDebugB39372.appendJson(
-                                    "H-proactiveGraphSkipLowFree",
-                                    "GPTModel.runDecoderStackLayers",
-                                    "beforeLayer",
-                                    String.format(
-                                            Locale.ROOT,
-                                            "\"layer\":%d,\"free\":%d,\"minFree\":%d",
-                                            i,
-                                            freeF,
-                                            minFreeB));
-                            // #endregion
                             drainDeferredGpuBuffersThenTrimPools();
                         }
                     }
@@ -575,13 +482,11 @@ final class GptDecoderStackRunner {
                                         Arrays.toString(now));
                             }
                         }
-                        logDecoderGraphB39372PreLaunch(m, i, ex, batch, seqLen);
                         if (TensorOpsGPU.cudaGraphExecLaunch(ex)) {
                             executed = true;
                             TensorOpsGPU.synchronizeDevice();
                             scheduleDecoderGraphExecDestroyIfNotLast(m, i, m.numLayers);
                         } else {
-                            logDecoderGraphB39372Failure(m, "replay", i, ex, batch, seqLen);
                             log.warn(
                                     "[DECODER_CUDA_GRAPH] cudaGraphExecLaunch failed {}",
                                     formatDecoderGraphPointerLine(m, 
@@ -596,60 +501,17 @@ final class GptDecoderStackRunner {
                                         "JGPT_DECODER_LAYER_CUDA_GRAPH: слой {} — OOM при replay; уничтожаем все decoder graph exec "
                                                 + "(освобождение VRAM), этот шаг — eager для оставшихся слоёв.",
                                         i);
-                                // #region agent log
-                                CursorDebugB39372.appendJson(
-                                        "H8-destroyAllDecoderGraphsOnOOM",
-                                        "GPTModel.runDecoderStackLayers",
-                                        "replayOOM",
-                                        String.format(Locale.ROOT, "\"layer\":%d", i));
-                                // #endregion
                                 destroyDecoderLayerCudaGraphs(m);
                                 if (m.decoderLayerGraphDebugCaptureSnapshot != null) {
                                     Arrays.fill(m.decoderLayerGraphDebugCaptureSnapshot, null);
                                 }
-                                int cachesReleasedStaging = releaseTransientFloatStagingForAllCaches(cachesPerLayer);
+                                releaseTransientFloatStagingForAllCaches(cachesPerLayer);
                                 TensorOpsGPU.synchronizeDevice();
                                 drainDeferredGpuBuffersThenTrimPools();
-                                // #region agent log
-                                {
-                                    long uTrim = TensorOpsGPU.getGpuMemoryAllocated();
-                                    long tTrim = TensorOpsGPU.getGpuMemoryReserved();
-                                    CursorDebugB39372.appendJson(
-                                            "H14-releaseStagingAfterGraphOOM",
-                                            "GPTModel.runDecoderStackLayers",
-                                            "afterReplayOOM",
-                                            String.format(
-                                                    Locale.ROOT,
-                                                    "\"layer\":%d,\"cachesReleasedStaging\":%d,\"used\":%d,\"total\":%d,\"free\":%d",
-                                                    i,
-                                                    cachesReleasedStaging,
-                                                    uTrim,
-                                                    tTrim,
-                                                    tTrim - uTrim));
-                                    CursorDebugB39372.appendJson(
-                                            "H9-trimAfterGraphOOM",
-                                            "GPTModel.runDecoderStackLayers",
-                                            "afterReplayOOMTrim",
-                                            String.format(
-                                                    Locale.ROOT,
-                                                    "\"layer\":%d,\"used\":%d,\"total\":%d,\"free\":%d",
-                                                    i,
-                                                    uTrim,
-                                                    tTrim,
-                                                    tTrim - uTrim));
-                                }
-                                // #endregion
                                 decoderGraphSkipUntilEndOfForward = true;
                                 log.warn(
                                         "JGPT_DECODER_LAYER_CUDA_GRAPH: до конца этого forward graph отключён (только eager); "
                                                 + "следующий forward снова попробует replay/capture.");
-                                // #region agent log
-                                CursorDebugB39372.appendJson(
-                                        "H-skipGraphRestOfForward",
-                                        "GPTModel.runDecoderStackLayers",
-                                        "afterReplayOOM",
-                                        String.format(Locale.ROOT, "\"layer\":%d", i));
-                                // #endregion
                                 executed = false;
                             } else {
                                 disableDecoderLayerCudaGraph(m, "cudaGraphLaunch failed");
@@ -712,7 +574,6 @@ final class GptDecoderStackRunner {
                                     /* Захват только записывает ядра, не исполняет их.
                                      * Немедленно запускаем только что захваченный граф,
                                      * чтобы blockOut был заполнен реальными данными. */
-                                    logDecoderGraphB39372PreLaunch(m, i, nexec, batch, seqLen);
                                     if (TensorOpsGPU.cudaGraphExecLaunch(nexec)) {
                                         executed = true;
                                         /*
@@ -731,7 +592,6 @@ final class GptDecoderStackRunner {
                                         }
                                         scheduleDecoderGraphExecDestroyIfNotLast(m, i, m.numLayers);
                                     } else {
-                                        logDecoderGraphB39372Failure(m, "postCapture", i, nexec, batch, seqLen);
                                         log.warn(
                                                 "[DECODER_CUDA_GRAPH] postCapture launch failed {}",
                                                 formatDecoderGraphPointerLine(m, 
@@ -749,61 +609,17 @@ final class GptDecoderStackRunner {
                                                             + "уничтожаем все decoder graph exec (нижние слои держали VRAM). "
                                                             + "Дальше в этом forward — только eager (повторный capture отключён).",
                                                     i);
-                                            // #region agent log
-                                            CursorDebugB39372.appendJson(
-                                                    "H8-destroyAllDecoderGraphsOnOOM",
-                                                    "GPTModel.runDecoderStackLayers",
-                                                    "postCaptureOOM",
-                                                    String.format(Locale.ROOT, "\"layer\":%d", i));
-                                            // #endregion
                                             destroyDecoderLayerCudaGraphs(m);
                                             if (m.decoderLayerGraphDebugCaptureSnapshot != null) {
                                                 Arrays.fill(m.decoderLayerGraphDebugCaptureSnapshot, null);
                                             }
-                                            int cachesReleasedStaging =
-                                                    releaseTransientFloatStagingForAllCaches(cachesPerLayer);
+                                            releaseTransientFloatStagingForAllCaches(cachesPerLayer);
                                             TensorOpsGPU.synchronizeDevice();
                                             drainDeferredGpuBuffersThenTrimPools();
-                                            // #region agent log
-                                            {
-                                                long uTrim = TensorOpsGPU.getGpuMemoryAllocated();
-                                                long tTrim = TensorOpsGPU.getGpuMemoryReserved();
-                                                CursorDebugB39372.appendJson(
-                                                        "H14-releaseStagingAfterGraphOOM",
-                                                        "GPTModel.runDecoderStackLayers",
-                                                        "afterPostCaptureOOM",
-                                                        String.format(
-                                                                Locale.ROOT,
-                                                                "\"layer\":%d,\"cachesReleasedStaging\":%d,\"used\":%d,\"total\":%d,\"free\":%d",
-                                                                i,
-                                                                cachesReleasedStaging,
-                                                                uTrim,
-                                                                tTrim,
-                                                                tTrim - uTrim));
-                                                CursorDebugB39372.appendJson(
-                                                        "H9-trimAfterGraphOOM",
-                                                        "GPTModel.runDecoderStackLayers",
-                                                        "afterPostCaptureOOMTrim",
-                                                        String.format(
-                                                                Locale.ROOT,
-                                                                "\"layer\":%d,\"used\":%d,\"total\":%d,\"free\":%d",
-                                                                i,
-                                                                uTrim,
-                                                                tTrim,
-                                                                tTrim - uTrim));
-                                            }
-                                            // #endregion
                                             decoderGraphSkipUntilEndOfForward = true;
                                             log.warn(
                                                     "JGPT_DECODER_LAYER_CUDA_GRAPH: до конца этого forward graph отключён (только eager); "
                                                             + "следующий forward снова попробует capture.");
-                                            // #region agent log
-                                            CursorDebugB39372.appendJson(
-                                                    "H-skipGraphRestOfForward",
-                                                    "GPTModel.runDecoderStackLayers",
-                                                    "afterPostCaptureOOM",
-                                                    String.format(Locale.ROOT, "\"layer\":%d", i));
-                                            // #endregion
                                         } else {
                                             TensorOpsGPU.cudaGraphExecDestroy(nexec);
                                             m.decoderLayerGraphExec[i] = 0L;

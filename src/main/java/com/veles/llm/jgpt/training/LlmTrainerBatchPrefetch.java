@@ -30,11 +30,11 @@ final class LlmTrainerBatchPrefetch {
             throw new RuntimeException(e);
         } catch (ExecutionException e) {
             Throwable c = e.getCause();
-            if (c instanceof Error) {
-                throw (Error) c;
+            if (c instanceof Error error) {
+                throw error;
             }
-            if (c instanceof RuntimeException) {
-                throw (RuntimeException) c;
+            if (c instanceof RuntimeException runtimeException) {
+                throw runtimeException;
             }
             throw new RuntimeException(c);
         }

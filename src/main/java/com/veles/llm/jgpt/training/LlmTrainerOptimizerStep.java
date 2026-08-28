@@ -445,9 +445,8 @@ final class LlmTrainerOptimizerStep {
             LlmTrainerGpuUtils.synchronizeGpuAfterOverflowSkip();
             return false;
         }
-        float clipCoeff = 1f;
         if (totalNorm > t.config.maxGradNorm && t.config.maxGradNorm > 0f) {
-            clipCoeff = t.config.maxGradNorm / totalNorm;
+            float clipCoeff = t.config.maxGradNorm / totalNorm;
             for (Map.Entry<Tensor, GpuTensor> e : paramMap.entrySet()) {
                 GpuTensor gt = e.getValue();
                 if (gt.hasGradBuffer()) {

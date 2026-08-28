@@ -21,7 +21,7 @@ def check_utf8_bom(filepath):
     return first_bytes[:3] == b'\xef\xbb\xbf'
 
 
-def scan_for_garbage_chars(text, filepath):
+def scan_for_garbage_chars(text):
     """Scan for garbage Unicode characters (Section 2.2)."""
     garbage = defaultdict(int)
     for i, char in enumerate(text):
@@ -83,7 +83,7 @@ def check_repeated_punctuation(text):
 
 def check_html_tags(text):
     """Check for HTML/XML tags (Section 2.3)."""
-    return len(re.findall(r'<[^>]+>', text))
+    return len(re.findall(r'<[^>]{1,256}>', text))
 
 
 def check_isbn(text):
@@ -121,7 +121,7 @@ def check_urls(text):
 
 def check_emails(text):
     """Check for email addresses (Section 2.3)."""
-    return len(re.findall(r'\S+@\S+\.\S+', text))
+    return len(re.findall(r'[^@\s]{1,64}@[^@\s.]{1,64}\.[A-Za-z]{2,24}', text))
 
 
 def check_short_lines(text, min_len=10):
@@ -142,14 +142,14 @@ def check_uppercase_ratio(text):
 
 def check_ellipsis_scattered(text):
     """Check for '. . .' pattern instead of unified ellipsis (Section 1.3)."""
-    return len(re.findall(r'\.\s*\.\s*\.', text))
+    return len(re.findall(r'\.(?:\s*\.){2}', text))
 
 
 def check_markdown_markup(text):
     """Check for remaining markdown markup (Section 2.3)."""
     issues = 0
-    issues += len(re.findall(r'\*\*[^*]+\*\*', text))  # bold
-    issues += len(re.findall(r'(?<!\*)\*[^*]+\*(?!\*)', text))  # italic
+    issues += len(re.findall(r'\*\*[^*]{1,500}\*\*', text))  # bold
+    issues += len(re.findall(r'(?<!\*)\*[^*]{1,500}\*(?!\*)', text))  # italic
     issues += len(re.findall(r'__[^_]+__', text))  # bold
     return issues
 
@@ -170,7 +170,7 @@ def validate_file(filepath):
 
     results['size'] = len(text)
     results['has_bom'] = check_utf8_bom(filepath)
-    results['garbage_chars'] = scan_for_garbage_chars(text, filepath)
+    results['garbage_chars'] = scan_for_garbage_chars(text)
     results['double_spaces'] = check_double_spaces(text)
     results['space_before_punct'] = check_space_before_punctuation(text)
     results['repeated_punct'] = check_repeated_punctuation(text)
@@ -196,7 +196,7 @@ def summarize_results(all_results, data_dirs):
     total_chars = sum(r.get('size', 0) for r in all_results.values())
 
     print("=" * 80)
-    print(f"VALIDATION REPORT")
+    print("VALIDATION REPORT")
     print(f"Directories: {', '.join(data_dirs)}")
     print(f"Total files: {total_files}")
     print(f"Total characters: {total_chars:,}")
@@ -457,7 +457,7 @@ def show_sample_issues(all_results, max_samples=3):
                     count += 1
                 if count > 0:
                     print()
-            except:
+            except Exception:
                 pass
 
         if r.get('double_spaces', 0) > 0:
@@ -473,7 +473,7 @@ def show_sample_issues(all_results, max_samples=3):
                     count += 1
                 if count > 0:
                     print()
-            except:
+            except Exception:
                 pass
 
     # Find garbage chars samples
@@ -514,7 +514,7 @@ if __name__ == '__main__':
                     try:
                         with open(fpath, 'r', encoding='utf-8') as f:
                             f.read(1024)
-                    except:
+                    except (OSError, UnicodeError):
                         continue
 
                 try:

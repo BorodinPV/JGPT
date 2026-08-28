@@ -8,12 +8,12 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 @EnabledIfGpu
-public class TensorOpsTest {
+class TensorOpsTest {
 
     // ========== Element-wise operations ==========
 
     @Test
-    public void testAdd() {
+    void testAdd() {
         Tensor a = Tensor.fromArray(new float[]{1, 2, 3, 4}, new int[]{2, 2});
         Tensor b = Tensor.fromArray(new float[]{5, 6, 7, 8}, new int[]{2, 2});
         Tensor result = TensorOps.add(a, b);
@@ -25,21 +25,21 @@ public class TensorOpsTest {
     }
 
     @Test
-    public void testAddNullInputs() {
+    void testAddNullInputs() {
         Tensor a = new Tensor(new int[]{2, 2});
         assertThrows(NullPointerException.class, () -> TensorOps.add(null, a));
         assertThrows(NullPointerException.class, () -> TensorOps.add(a, null));
     }
 
     @Test
-    public void testAddShapeMismatch() {
+    void testAddShapeMismatch() {
         Tensor a = new Tensor(new int[]{2, 2});
         Tensor b = new Tensor(new int[]{2, 3});
         assertThrows(IllegalArgumentException.class, () -> TensorOps.add(a, b));
     }
 
     @Test
-    public void testSubtract() {
+    void testSubtract() {
         Tensor a = Tensor.fromArray(new float[]{10, 20}, new int[]{2});
         Tensor b = Tensor.fromArray(new float[]{3, 4}, new int[]{2});
         Tensor result = TensorOps.subtract(a, b);
@@ -48,7 +48,7 @@ public class TensorOpsTest {
     }
 
     @Test
-    public void testMultiplyScalar() {
+    void testMultiplyScalar() {
         Tensor a = Tensor.fromArray(new float[]{1, 2, 3}, new int[]{3});
         Tensor result = TensorOps.multiplyScalar(a, 2.0f);
         assertEquals(2.0f, result.get(0));
@@ -59,7 +59,7 @@ public class TensorOpsTest {
     // ========== Activations ==========
 
     @Test
-    public void testRelu() {
+    void testRelu() {
         Tensor a = Tensor.fromArray(new float[]{-2, -1, 0, 1, 2}, new int[]{5});
         Tensor result = TensorOps.relu(a);
         assertEquals(0.0f, result.get(0));
@@ -70,14 +70,14 @@ public class TensorOpsTest {
     }
 
     @Test
-    public void testSigmoid() {
+    void testSigmoid() {
         Tensor a = Tensor.fromArray(new float[]{0}, new int[]{1});
         Tensor result = TensorOps.sigmoid(a);
         assertEquals(0.5f, result.get(0), 0.001f);
     }
 
     @Test
-    public void testSigmoidEdgeCases() {
+    void testSigmoidEdgeCases() {
         Tensor largePos = Tensor.fromArray(new float[]{20f}, new int[]{1});
         Tensor largeNeg = Tensor.fromArray(new float[]{-20f}, new int[]{1});
         assertEquals(1.0f, TensorOps.sigmoid(largePos).get(0), 1e-5f);
@@ -85,7 +85,7 @@ public class TensorOpsTest {
     }
 
     @Test
-    public void testGelu() {
+    void testGelu() {
         Tensor zero = Tensor.fromArray(new float[]{0}, new int[]{1});
         assertEquals(0.0f, TensorOps.gelu(zero).get(0), 1e-5f);
 
@@ -96,7 +96,7 @@ public class TensorOpsTest {
     // ========== Normalization ==========
 
     @Test
-    public void testRmsNorm() {
+    void testRmsNorm() {
         Tensor x = Tensor.fromArray(new float[]{3f, 4f}, new int[]{2});
         Tensor gamma = Tensor.fromArray(new float[]{1f, 1f}, new int[]{2});
         Tensor result = TensorOps.rmsNorm(x, gamma, 1e-6f);
@@ -113,7 +113,7 @@ public class TensorOpsTest {
     // ========== Matrix operations ==========
 
     @Test
-    public void testMatmul() {
+    void testMatmul() {
         Tensor a = Tensor.fromArray(new float[]{1, 2, 3, 4, 5, 6}, new int[]{2, 3});
         Tensor b = Tensor.fromArray(new float[]{7, 8, 9, 10, 11, 12}, new int[]{3, 2});
         Tensor result = TensorOps.matmul(a, b);
@@ -125,7 +125,7 @@ public class TensorOpsTest {
     }
 
     @Test
-    public void testMatmulAddReluMatchesReference() {
+    void testMatmulAddReluMatchesReference() {
         Tensor a = Tensor.fromArray(new float[]{1, 2, 3, 4, 5, 6}, new int[]{2, 3});
         Tensor b = Tensor.fromArray(new float[]{7, 8, 9, 10, 11, 12}, new int[]{3, 2});
         Tensor bias = Tensor.fromArray(new float[]{0.1f, -0.5f}, new int[]{2});
@@ -142,7 +142,7 @@ public class TensorOpsTest {
     }
 
     @Test
-    public void testMatmulAddReluNegativeBiasZeros() {
+    void testMatmulAddReluNegativeBiasZeros() {
         Tensor a = Tensor.fromArray(new float[]{1, 0, 0, 0, 1, 0}, new int[]{2, 3});
         Tensor b = Tensor.fromArray(new float[]{1, 0, 0, 1, 0, 0}, new int[]{3, 2});
         Tensor bias = Tensor.fromArray(new float[]{-100f, -100f}, new int[]{2});
@@ -156,7 +156,7 @@ public class TensorOpsTest {
     // ========== Attention helpers ==========
 
     @Test
-    public void testSplitConcatHeadsRoundtrip() {
+    void testSplitConcatHeadsRoundtrip() {
         Tensor x = Tensor.fromArray(new float[]{1,2,3,4, 5,6,7,8}, new int[]{1, 2, 4});
         int numHeads = 2;
 
@@ -169,7 +169,7 @@ public class TensorOpsTest {
     }
 
     @Test
-    public void testSoftmaxLastDim() {
+    void testSoftmaxLastDim() {
         // 🔧 FIX: softmaxLastDim требует 3D тензор [batch, mid, inner]
         // Создаём [1, 2, 3]: 1 батч, 2 строки, 3 элемента в каждой
         Tensor x = Tensor.fromArray(
@@ -200,7 +200,7 @@ public class TensorOpsTest {
     // ========== Consistency tests ==========
 
     @Test
-    public void testVectorizedVsScalarConsistency() {
+    void testVectorizedVsScalarConsistency() {
         Tensor a = Tensor.fromArray(new float[]{1, 2, 3, 4, 5, 6, 7, 8}, new int[]{2, 4});
         Tensor b = Tensor.fromArray(new float[]{0.5f, -1f, 2f, -0.5f, 1f, 0f, -2f, 3f}, new int[]{2, 4});
 
@@ -219,7 +219,7 @@ public class TensorOpsTest {
     // ========== Quantized ==========
 
     @Test
-    public void testMatmulQuantizedMatchesFloat() {
+    void testMatmulQuantizedMatchesFloat() {
         Tensor a = Tensor.fromArray(new float[]{1, 2, 3, 4, 5, 6}, new int[]{2, 3});
         Tensor b = Tensor.fromArray(new float[]{7, 8, 9, 10, 11, 12}, new int[]{3, 2});
 

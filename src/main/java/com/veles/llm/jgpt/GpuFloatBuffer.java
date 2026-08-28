@@ -9,11 +9,14 @@ import java.nio.FloatBuffer;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Буфер float32 на GPU (opaque device pointer). Освобождать через {@link #close()} или try-with-resources.
  *
  * <p>Если ссылку на буфер потеряли без {@link #close()}, нативная память освобождается после того, как объект
- * соберёт GC и запись попадёт в очередь — см. {@link #drainLeaked()}. В stderr выводится предупреждение только
+ * соберёт GC и запись попадёт в очередь — см. {@link #drainLeaked()}. В лог выводится предупреждение только
  * если {@link #close()} не вызывали. Явный {@link #close()} предпочтительнее: освобождение сразу, без ожидания GC.
  *
  * <p>Перед агрессивной очисткой пулов CUDA (например {@link TensorOpsGPU#cudaTrimDeviceMemoryPoolsBestEffort()})
@@ -42,6 +45,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>Загрузка нативной библиотеки — при инициализации {@link TensorOpsGPU}.
  */
 public final class GpuFloatBuffer implements AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(GpuFloatBuffer.class);
 
     private static final ReferenceQueue<GpuFloatBuffer> REF_QUEUE = new ReferenceQueue<>();
 
@@ -100,9 +105,9 @@ public final class GpuFloatBuffer implements AutoCloseable {
                 return;
             }
             if (!ph.closedExplicitly.get()) {
-                System.err.println(
-                        "[GpuFloatBuffer] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого буфера @0x"
-                                + Long.toHexString(ph.ptr));
+                log.warn(
+                        "[GpuFloatBuffer] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого буфера @0x{}",
+                        Long.toHexString(ph.ptr));
             }
             if (TensorOpsGPU.isGpuAvailable() && ph.ptr != 0L) {
                 nativeFree(ph.ptr);

@@ -19,7 +19,9 @@ import java.nio.file.StandardOpenOption;
  */
 public final class DebugGpuTrain {
 
-    private DebugGpuTrain() {}
+    private DebugGpuTrain() {
+        // utility class
+    }
 
     public static boolean isEnabled() {
         String e = System.getenv("JGPT_DEBUG_GPU_TRAIN");
@@ -67,7 +69,8 @@ public final class DebugGpuTrain {
                 Files.newBufferedWriter(
                         logPath(), StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
             w.write(s);
-        } catch (IOException ignored) {
+        } catch (IOException _) {
+            // best-effort debug ingest; missing tmp/log must not abort training
         }
     }
 }

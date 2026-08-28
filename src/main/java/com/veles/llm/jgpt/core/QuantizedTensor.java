@@ -202,6 +202,6 @@ public final class QuantizedTensor {
             throw new IllegalArgumentException("scale must be finite and > 0");
         }
         int q = (int) Math.round((double) value / (double) scale * 127.0);
-        return (byte) Math.min(127, Math.max(-127, q));
+        return (byte) Math.clamp(q, -127, 127);
     }
 }

@@ -26,6 +26,21 @@ class CanonicalGpuTrainPathTest {
     }
 
     @Test
+    @SuppressWarnings("deprecation")
+    void canonicalGeometry_isPublished35M() {
+        LLMConfig c = LLMConfig.canonical();
+        assertEquals("JGPT-35M", c.name);
+        assertEquals(8000, c.vocabSize);
+        assertEquals(1024, c.maxSeqLen);
+        assertEquals(384, c.dModel);
+        assertEquals(24, c.numHeads);
+        assertEquals(12, c.numLayers);
+        assertEquals(1536, c.dIntermediate);
+        assertEquals(34_858_368L, c.estimateParameters());
+        assertEquals(c.estimateParameters(), LLMConfig.smart50M().estimateParameters());
+    }
+
+    @Test
     void canonicalGpuTrain_matchesCudaAvailability() {
         assertEquals(TensorOpsGPU.isGpuAvailable(), LLMConfig.canonicalGpuTrain());
         assertEquals(LLMConfig.canonicalGpuTrain(), LLMConfig.effectiveGpuResidentTraining());

@@ -7,34 +7,19 @@ import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
 import com.veles.llm.jgpt.cuda.GpuPendingGradients;
 import com.veles.llm.jgpt.cuda.GpuTensor;
-import com.veles.llm.jgpt.cuda.TensorCudaLibrary;
 import com.veles.llm.jgpt.data.DataLoader;
 import com.veles.llm.jgpt.model.BlockActivationCacheDevice;
 import com.veles.llm.jgpt.model.GPTModel;
 import com.veles.llm.jgpt.ops.GpuWorkspaceCleanup;
-import com.veles.llm.jgpt.ops.TensorOps;
 import com.veles.llm.jgpt.util.DebugGpuTrain;
 import com.veles.llm.jgpt.util.LogFmt;
 
-import java.util.Map;
-
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.FloatBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -128,7 +113,6 @@ public final class LLMTrainer {
             TensorOpsGPU.synchronizeStream();
         }
         GpuPendingGradients.cleanupThreadLocal();
-            GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
         GpuWorkspaceCleanup.releaseAllGpuWorkspacesThreadLocal();
         optimizer.releaseGpuMomentBuffers();
         if (ceTargetsDevice != null) {
@@ -1338,7 +1322,7 @@ public final class LLMTrainer {
                     if (!prefetchExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
                         prefetchExecutor.shutdownNow();
                     }
-                } catch (InterruptedException ie) {
+                } catch (InterruptedException _) {
                     prefetchExecutor.shutdownNow();
                     Thread.currentThread().interrupt();
                 }

@@ -29,7 +29,7 @@ GPT-модель (decoder-only transformer) с **полным обучением
 | d_model | 384 |
 | Слои | 12 |
 | Attention heads | 24 (d_head = 16) |
-| FFN | SwiGLU (d_intermediate = 768) |
+| FFN | SwiGLU (d_intermediate = 1536) |
 | Контекст | 1024 токена |
 | Токенизация | BPE, vocab = 8000 |
 | Позиции | RoPE |
@@ -119,7 +119,7 @@ Place `.txt` files in `data/books/` — training will start on them.
 | d_model | 384 |
 | Layers | 12 |
 | Attention heads | 24 (d_head = 16) |
-| FFN | SwiGLU (d_intermediate = 768) |
+| FFN | SwiGLU (d_intermediate = 1536) |
 | Context | 1024 tokens |
 | Tokenization | BPE, vocab = 8000 |
 | Positions | RoPE |

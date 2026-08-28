@@ -13,7 +13,7 @@ import java.util.Arrays;
  * Тест training loop на синтетических данных.
  */
 public class TrainingLoopTest {
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] unused) throws Exception {
         System.out.println("🧪 Testing Training Loop...");
 
         System.out.println("\n📦 Creating tokenizer...");

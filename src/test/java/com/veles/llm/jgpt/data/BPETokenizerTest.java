@@ -6,7 +6,7 @@ import java.util.Arrays;
 import java.util.List;
 
 public class BPETokenizerTest {
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] unused) throws Exception {
         System.out.println("🧪 Testing BPE Tokenizer...");
 
         List<String> trainingTexts =

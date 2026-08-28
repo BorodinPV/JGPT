@@ -6,7 +6,7 @@ import com.veles.llm.jgpt.ops.TensorOps;
 import java.util.Arrays;
 
 public class TransformerBlockTest {
-    public static void main(String[] args) {
+    public static void main(String[] unused) {
         System.out.println("🧪 Testing Transformer Block...");
 
         int batch = 2;
@@ -17,14 +17,14 @@ public class TransformerBlockTest {
 
         Tensor x = randomTensor(new int[]{batch, seqLen, dModel});
 
-        Tensor Wq = randomTensor(new int[]{dModel, dModel}, 0.1f);
-        Tensor Wk = randomTensor(new int[]{dModel, dModel}, 0.1f);
-        Tensor Wv = randomTensor(new int[]{dModel, dModel}, 0.1f);
-        Tensor Wo = randomTensor(new int[]{dModel, dModel}, 0.1f);
+        Tensor wq = randomTensor(new int[]{dModel, dModel}, 0.1f);
+        Tensor wk = randomTensor(new int[]{dModel, dModel}, 0.1f);
+        Tensor wv = randomTensor(new int[]{dModel, dModel}, 0.1f);
+        Tensor wo = randomTensor(new int[]{dModel, dModel}, 0.1f);
 
-        Tensor W1 = randomTensor(new int[]{dModel, dIntermediate}, 0.1f);
-        Tensor W2 = randomTensor(new int[]{dIntermediate, dModel}, 0.1f);
-        Tensor W3 = randomTensor(new int[]{dModel, dIntermediate}, 0.1f);
+        Tensor w1 = randomTensor(new int[]{dModel, dIntermediate}, 0.1f);
+        Tensor w2 = randomTensor(new int[]{dIntermediate, dModel}, 0.1f);
+        Tensor w3 = randomTensor(new int[]{dModel, dIntermediate}, 0.1f);
 
         Tensor norm1 = randomTensor(new int[]{dModel}, 1.0f);
         Tensor norm2 = randomTensor(new int[]{dModel}, 1.0f);
@@ -37,14 +37,14 @@ public class TransformerBlockTest {
 
         long start = System.nanoTime();
         Tensor output1 = TensorOps.transformerBlock(
-                x, Wq, Wk, Wv, Wo, W1, W2, W3, norm1, norm2,
+                x, wq, wk, wv, wo, w1, w2, w3, norm1, norm2,
                 numHeads, mask, false);
         long end = System.nanoTime();
         System.out.printf("⏱️  Without RoPE: %.2f ms%n", (end - start) / 1_000_000.0);
 
         start = System.nanoTime();
         Tensor output2 = TensorOps.transformerBlock(
-                x, Wq, Wk, Wv, Wo, W1, W2, W3, norm1, norm2,
+                x, wq, wk, wv, wo, w1, w2, w3, norm1, norm2,
                 numHeads, mask, true);
         end = System.nanoTime();
         System.out.printf("⏱️  With RoPE: %.2f ms%n", (end - start) / 1_000_000.0);

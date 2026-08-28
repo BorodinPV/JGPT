@@ -10,7 +10,6 @@ import com.veles.llm.jgpt.ops.TensorOpsBackward;
 import com.veles.llm.jgpt.ops.TransformerBackward;
 import com.veles.llm.jgpt.training.LLMConfig;
 import com.veles.llm.jgpt.training.LLMTrainer;
-import com.veles.llm.jgpt.util.CursorDebugB39372;
 import com.veles.llm.jgpt.util.DebugGpuTrain;
 
 import java.io.BufferedInputStream;
@@ -18,20 +17,12 @@ import java.io.DataInputStream;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.ObjectInputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
@@ -70,12 +61,6 @@ public final class GPTModel {
      * {@link GptGpuWeights} для путей вроде {@link #forwardGpuLmHead(Tensor)} без H2D весов на каждый шаг.
      */
     private final boolean gpuResident;
-    /** Dropout probability for residual connections (applied after attention and FFN). */
-    private float residualDropout = 0f;
-    /** Dropout probability for attention weights (after softmax). */
-    private float attentionDropout = 0f;
-    /** Dropout probability for embedding (after gather). */
-    private float embeddingDropout = 0f;
 
     private final GptGpuWeights gpuResidentHead;
 
@@ -120,9 +105,6 @@ public final class GPTModel {
 
     int decoderLayerGraphExecPendingDestroyCount;
 
-    /** Счётчик вызовов {@link #forwardGpuDecoder} для {@link LLMConfig#trainVramStepProbeFromEnvOrProp()}. */
-    private static final AtomicLong trainDecoderVramProbeSeq = new AtomicLong();
-
     /** CE + LM head backward на device; включается через {@link #setDeviceLogitsEnabled(boolean)}. */
     private boolean deviceLogitsEnabled;
 
@@ -160,7 +142,6 @@ public final class GPTModel {
     private Map<Tensor, GpuTensor> cachedGpuParamMap;
     private boolean cachedGpuParamMapValid;
     Tensor lastInputTokens;
-    private int lastSeqLen;
     private Tensor backwardGradHidden;
     private Tensor backwardGradBeforeNorm;
     private Tensor backwardGradPing;
@@ -174,6 +155,8 @@ public final class GPTModel {
     private GpuIntBuffer lastSampledCandidateIdsGpu;
     private GpuFloatBuffer lastSampledCandidateGradGpu;
     private int lastSampledCandidateCount;
+
+    private final AtomicLong trainDecoderVramProbeSeq = new AtomicLong();
 
     /** Ping-pong ∂L/∂x между decoder-слоями на VRAM при {@link #deviceDecoderBackward}. */
     GpuFloatBuffer decoderBwdGradPing;
@@ -502,9 +485,6 @@ public final class GPTModel {
         }
     }
 
-    /** Освобождает {@link GpuTensor} финальных весов; после вызова {@link #isGpuResident()} остаётся {@code true}, но
-     * {@link #forwardGpuLmHead(Tensor)} бросит (буферы закрыты). */
-
     /**
      * Задаёт вероятности dropout для обучения. Вызывается из {@link LLMTrainer} после создания модели.
      *
@@ -513,13 +493,15 @@ public final class GPTModel {
      * @param embeddingDropout вероятность dropout для embedding
      */
     public void setDropout(float residualDropout, float attentionDropout, float embeddingDropout) {
-        this.residualDropout = Math.max(0f, Math.min(1f, residualDropout));
-        this.attentionDropout = Math.max(0f, Math.min(1f, attentionDropout));
-        this.embeddingDropout = Math.max(0f, Math.min(1f, embeddingDropout));
+        float residual = Math.max(0f, Math.min(1f, residualDropout));
+        float attention = Math.max(0f, Math.min(1f, attentionDropout));
         for (int i = 0; i < blocks.length; i++) {
-            blocks[i].setDropout(residualDropout, attentionDropout, i);
+            blocks[i].setDropout(residual, attention, i);
         }
     }
+
+    /** Освобождает {@link GpuTensor} финальных весов; после вызова {@link #isGpuResident()} остаётся {@code true}, но
+     * {@link #forwardGpuLmHead(Tensor)} бросит (буферы закрыты). */
     public void closeGpuResidentWeights() {
         invalidateGpuParamMapCache();
         tokenEmbedding.closeGpuWeights();
@@ -803,50 +785,35 @@ public final class GPTModel {
         if (xDevice.numFloats() < plane) {
             throw new IllegalArgumentException("xDevice: ожидается не менее " + plane + " float");
         }
-        boolean vramStepProbe = LLMConfig.trainVramStepProbeFromEnvOrProp();
-        long probeSeq = 0L;
         boolean logThisStep = false;
-        if (vramStepProbe) {
+        long probeSeq = 0L;
+        if (LLMConfig.trainVramStepProbeFromEnvOrProp()) {
             probeSeq = trainDecoderVramProbeSeq.incrementAndGet();
             int every = LLMConfig.trainVramStepProbeEveryFromEnvOrProp();
             logThisStep = every > 0 && (probeSeq % every) == 0L;
             if (logThisStep) {
                 TensorOpsGPU.synchronizeDevice();
-                // #region agent log
                 long totB = TensorOpsGPU.getGpuMemoryReserved();
                 long usedB = TensorOpsGPU.getGpuMemoryAllocated();
-                CursorDebugB39372.appendJson(
-                        "H-vramTrainStep",
-                        "GPTModel.forwardGpuDecoder",
-                        "decoderBefore",
-                        String.format(
-                                Locale.ROOT,
-                                "\"seq\":%d,\"used\":%d,\"free\":%d,\"total\":%d",
-                                probeSeq,
-                                usedB,
-                                totB - usedB,
-                                totB));
-                // #endregion
+                log.info(
+                        "[VRAM] decoderBefore seq={} used={} free={} total={}",
+                        probeSeq,
+                        usedB,
+                        totB - usedB,
+                        totB);
             }
         }
         GpuFloatBuffer out = runDecoderStackLayers(xDevice, mask, batch, seqLen, true, blockCachesDevice);
         if (logThisStep) {
             TensorOpsGPU.synchronizeDevice();
-            // #region agent log
             long totA = TensorOpsGPU.getGpuMemoryReserved();
             long usedA = TensorOpsGPU.getGpuMemoryAllocated();
-            CursorDebugB39372.appendJson(
-                    "H-vramTrainStep",
-                    "GPTModel.forwardGpuDecoder",
-                    "decoderAfter",
-                    String.format(
-                            Locale.ROOT,
-                            "\"seq\":%d,\"used\":%d,\"free\":%d,\"total\":%d",
-                            probeSeq,
-                            usedA,
-                            totA - usedA,
-                            totA));
-            // #endregion
+            log.info(
+                    "[VRAM] decoderAfter seq={} used={} free={} total={}",
+                    probeSeq,
+                    usedA,
+                    totA - usedA,
+                    totA);
         }
         return out;
     }
@@ -1182,7 +1149,6 @@ public final class GPTModel {
         }
 
         lastInputTokens = inputTokens;
-        lastSeqLen = seqLen;
 
         Tensor mask = getOrCreateCausalMask(seqLen);
         lastMask = mask;
@@ -1362,7 +1328,6 @@ public final class GPTModel {
                         "forwardTrainingDeviceSampled requires deviceLogitsEnabled, deviceDecoderBackward, decoder GPU pipeline and resident embeddings");
             }
             lastInputTokens = inputTokens;
-            lastSeqLen = seqLen;
             Tensor mask = getOrCreateCausalMask(seqLen);
             lastMask = mask;
 

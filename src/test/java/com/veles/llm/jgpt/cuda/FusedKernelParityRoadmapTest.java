@@ -57,7 +57,7 @@ class FusedKernelParityRoadmapTest {
             try {
                 TensorOpsGPU.rmsNormMatmulLmHeadGpuDevice(
                         dX, dG, eps, normFused, dW, logitsFused, rows, dModel, vocab, TensorOpsGPU.useFp16Matmul());
-            } catch (Throwable t) {
+            } catch (Throwable _) {
                 usedFused = false;
                 TensorOpsGPU.rmsNormGpuDevice(dX, dG, eps, normFused, rows, dModel);
                 TensorOpsGPU.matmulGpuDevice(normFused, dW, logitsFused, rows, dModel, vocab);
@@ -210,7 +210,7 @@ class FusedKernelParityRoadmapTest {
                         dModel,
                         dInt,
                         TensorOpsGPU.useFp16Matmul());
-            } catch (Throwable t) {
+            } catch (Throwable _) {
                 usedFused = false;
                 TensorOpsGPU.rmsNormGpuDevice(dX, dG, eps, normFused, rows, dModel);
                 TensorOpsGPU.matmulGpuDeviceFfnW1W3Projections(

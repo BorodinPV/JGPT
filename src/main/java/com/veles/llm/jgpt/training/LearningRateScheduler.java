@@ -45,7 +45,7 @@ public final class LearningRateScheduler {
                     return baseLr;
                 }
                 float t = (stepForLr - warmupSteps) / (float) cosineSpan;
-                t = Math.min(1f, Math.max(0f, t));
+                t = Math.clamp(t, 0f, 1f);
                 float mult = minR + (1f - minR) * 0.5f * (1f + (float) Math.cos(Math.PI * t));
                 return baseLr * mult;
             }
@@ -55,7 +55,7 @@ public final class LearningRateScheduler {
                     return baseLr;
                 }
                 float t = (stepForLr - warmupSteps) / (float) span;
-                t = Math.min(1f, Math.max(0f, t));
+                t = Math.clamp(t, 0f, 1f);
                 float mult = 1f - t * (1f - minR);
                 return baseLr * mult;
             }
@@ -70,12 +70,6 @@ public final class LearningRateScheduler {
     }
 
     private static float clampRatio(float minLrRatio) {
-        if (minLrRatio < 0f) {
-            return 0f;
-        }
-        if (minLrRatio > 1f) {
-            return 1f;
-        }
-        return minLrRatio;
+        return Math.clamp(minLrRatio, 0f, 1f);
     }
 }

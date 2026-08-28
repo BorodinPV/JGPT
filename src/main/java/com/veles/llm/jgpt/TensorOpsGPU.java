@@ -7,6 +7,9 @@ import com.veles.llm.jgpt.training.LLMTrainer;
 import java.nio.ByteBuffer;
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * GPU-ускоренные операции через JNI + CUDA/cuBLAS.
  *
@@ -22,6 +25,11 @@ import java.util.Map;
  * и сбрасывается в {@code 0f} перед JNI (см. {@link TensorOpsGpuCrossEntropyHost}).
  */
 public final class TensorOpsGPU {
+    private static final Logger log = LoggerFactory.getLogger(TensorOpsGPU.class);
+
+    private TensorOpsGPU() {
+        // utility class
+    }
     /** Совпадает с {@code cudaErrorMemoryAllocation} в CUDA Runtime (OOM при graph launch и т.п.). */
     public static final int CUDA_ERROR_MEMORY_ALLOCATION = 2;
 
@@ -96,20 +104,19 @@ public final class TensorOpsGPU {
             if (available) {
                 name = getGPUName();
                 memory = getGPUMemory();
-                System.out.println("[TensorOpsGPU] GPU инициализирован: " + name + ", " + memory + " МБ");
+                log.info("[TensorOpsGPU] GPU инициализирован: {}, {} МБ", name, memory);
             } else {
-                System.err.println("[TensorOpsGPU] CUDA или initGPU недоступны; без GPU работа не поддерживается.");
+                log.error("[TensorOpsGPU] CUDA или initGPU недоступны; без GPU работа не поддерживается.");
             }
         } catch (UnsatisfiedLinkError e) {
             if (TensorOpsGpuInit.allowNoGpuOverride()) {
-                System.err.println(
+                log.error(
                         "[TensorOpsGPU] Нативная CUDA-библиотека не загружена; тесты идут без GPU "
-                                + "(-Djgpt.allow.no.gpu=true). Причина: "
-                                + e.getMessage()
-                                + " Сборка: cmake в src/main/cpp → build/jgpt_cuda.dll (Windows) "
-                                + "или build/libjgpt_cuda.so (Linux).");
+                                + "(-Djgpt.allow.no.gpu=true). Причина: {} Сборка: cmake в src/main/cpp → build/jgpt_cuda.dll (Windows) "
+                                + "или build/libjgpt_cuda.so (Linux).",
+                        e.getMessage());
             } else {
-                System.err.println("[TensorOpsGPU] Не удалось загрузить нативную библиотеку: " + e.getMessage());
+                log.error("[TensorOpsGPU] Не удалось загрузить нативную библиотеку: {}", e.getMessage());
             }
         }
 
@@ -119,7 +126,7 @@ public final class TensorOpsGPU {
 
         FP16_MATMUL = TensorOpsGpuInit.resolveFp16Matmul(available);
         if (FP16_MATMUL) {
-            System.out.println("[TensorOpsGPU] FP16 matmul (GemmEx): включён");
+            log.info("[TensorOpsGPU] FP16 matmul (GemmEx): включён");
         }
 
         RMSNORM_EPS = TensorOpsGpuInit.resolveRmsNormEps(FP16_MATMUL);
@@ -128,7 +135,7 @@ public final class TensorOpsGPU {
 
         FLASH_ATTENTION = TensorOpsGpuInit.resolveFlashAttention(available);
         if (FLASH_ATTENTION) {
-            System.out.println("[TensorOpsGPU] FlashAttention-2: включён (d_head=16 обязателен)");
+            log.info("[TensorOpsGPU] FlashAttention-2: включён (d_head=16 обязателен)");
         }
 
         if (!available && !TensorOpsGpuInit.allowNoGpuOverride()) {

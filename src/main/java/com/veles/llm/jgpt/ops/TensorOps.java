@@ -584,7 +584,6 @@ public final class TensorOps {
         if (normGammaGpu.numFloats() < dModel) {
             return null;
         }
-        long needW1 = (long) dModel * (w1Gpu.numFloats() / dModel);
         if (w1Gpu.numFloats() % dModel != 0 || w1Gpu.numFloats() <= 0) {
             return null;
         }
@@ -601,7 +600,6 @@ public final class TensorOps {
         GpuForwardBlockWorkspace ws = GpuForwardBlockWorkspace.local();
         boolean needHostCache = cache != null;
         boolean needDevCache = devCache != null;
-        boolean needCache = needHostCache || needDevCache;
         boolean fp16 = needHostCache && cache.fp16ForFusedGpuBackwardConsumptionSlots();
         Tensor xNorm2 = null;
         Tensor ffnOut = null;
@@ -2418,13 +2416,6 @@ public final class TensorOps {
         }
     }
 
-    /**
-     * Запись голов K/V prefill в плоский device-буфер кэша (тот же расклад, что у
-     * {@link com.veles.llm.jgpt.model.KvCache}).
-     * <p>
-     * На голову — одно H2D с непрерывным сегментом {@code seqLen * d_head} (вместо {@code seqLen} вызовов по
-     * одному токену).
-     */
     /** K/V из 4D device-буферов голов в плоский device-кэш (ядро D2D, без CPU). */
     public static void copyKvHeadsIntoCacheGpuDevice(
             GpuFloatBuffer srcKHeads4d,
@@ -2443,6 +2434,13 @@ public final class TensorOps {
                 srcVHeads4d, vBuf, numHeads, seqLen, maxSeqLen, dHead, batchIdx, batch);
     }
 
+    /**
+     * Запись голов K/V prefill в плоский device-буфер кэша (тот же расклад, что у
+     * {@link com.veles.llm.jgpt.model.KvCache}).
+     * <p>
+     * На голову — одно H2D с непрерывным сегментом {@code seqLen * d_head} (вместо {@code seqLen} вызовов по
+     * одному токену).
+     */
     public static void copyKvHeadsIntoCacheGpu(
             Tensor kHeads,
             Tensor vHeads,
@@ -2673,19 +2671,6 @@ public final class TensorOps {
                 d[destBase + i * ds[2] + j * ds[3]] = sbuf[i * ss[0] + j * ss[1]];
             }
         }
-    }
-
-    private static void copyFrom(Tensor src, Tensor dest) {
-        if (!Arrays.equals(src.getShape(), dest.getShape())) {
-            throw new IllegalArgumentException(
-                    "copyFrom shape mismatch: "
-                            + Arrays.toString(src.getShape())
-                            + " vs "
-                            + Arrays.toString(dest.getShape()));
-        }
-        float[] s = src.internalBuffer();
-        float[] d = dest.internalBuffer();
-        System.arraycopy(s, 0, d, 0, s.length);
     }
 
     /** Добавляет к scores[b,i,j] значение mask[i,j] (типично 0 или -inf). */

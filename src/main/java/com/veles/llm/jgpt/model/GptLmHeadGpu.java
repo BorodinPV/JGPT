@@ -75,7 +75,7 @@ final class GptLmHeadGpu {
                     dModel,
                     vocab,
                     TensorOpsGPU.useFp16Matmul());
-        } catch (Throwable t) {
+        } catch (Exception t) {
             if (FUSED_LM_HEAD_FAILURE_LOGGED.compareAndSet(false, true)) {
                 log.warn(
                         "JGPT_FUSED_LM_HEAD: fused LM head недоступен или выбросил исключение; откат на RMSNorm+matmul ({})",

@@ -3,7 +3,7 @@ package com.veles.llm.jgpt.training;
 import com.veles.llm.jgpt.core.Tensor;
 
 public class AdamOptimizerTest {
-    public static void main(String[] args) {
+    public static void main(String[] unused) {
         System.out.println("🧪 Testing Adam Optimizer...");
 
         // Простая задача: минимизировать f(x) = x²

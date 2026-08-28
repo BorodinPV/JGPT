@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import com.veles.llm.jgpt.util.LogFmt;
 
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Счётчики шагов оптимизатора и overflow (NaN/Inf в loss/градиентах) при FP16 — для отладки mixed
@@ -14,6 +15,7 @@ import org.slf4j.Logger;
  */
 public final class Fp16Metrics {
 
+    private static final Logger log = LoggerFactory.getLogger(Fp16Metrics.class);
     private static final Fp16Metrics GLOBAL = new Fp16Metrics();
 
     private final AtomicLong overflowCount = new AtomicLong();
@@ -49,15 +51,14 @@ public final class Fp16Metrics {
         long total = totalSteps.get();
         long overflow = overflowCount.get();
         if (total == 0) {
-            System.out.printf(Locale.ROOT, "Метрики FP16: 0 шагов, 0 переполнений%n");
+            log.info("Метрики FP16: 0 шагов, 0 переполнений");
             return;
         }
-        System.out.printf(
-                Locale.ROOT,
-                "Метрики FP16: %d шагов, %d переполнений (%.2f%%)%n",
+        log.info(
+                "Метрики FP16: {} шагов, {} переполнений ({}%)",
                 total,
                 overflow,
-                100.0f * overflow / total);
+                String.format(Locale.ROOT, "%.2f", 100.0f * overflow / total));
     }
 
     /** Одна строка в лог; при {@code totalSteps == 0} — no-op. */

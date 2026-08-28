@@ -195,7 +195,7 @@ final class LlmTrainerCrossEntropy {
     }
 
     static int effectiveSampledCandidateCount(LLMTrainer t, int vocabSize) {
-        return Math.max(2, Math.min(t.config.sampledCeCandidates, vocabSize));
+        return Math.clamp(t.config.sampledCeCandidates, 2, Math.max(2, vocabSize));
     }
 
     static boolean canDeviceSampledTrainForward(LLMTrainer t) {

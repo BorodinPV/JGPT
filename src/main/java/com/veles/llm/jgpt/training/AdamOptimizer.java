@@ -145,14 +145,8 @@ public final class AdamOptimizer {
         float[] p = param.internalBuffer();
         float[] g = adamGradientBuffer(grad);
 
-        Tensor mT = m.get(param);
-        Tensor vT = v.get(param);
-        if (mT == null) {
-            mT = new Tensor(param.getShape());
-            vT = new Tensor(param.getShape());
-            m.put(param, mT);
-            v.put(param, vT);
-        }
+        Tensor mT = m.computeIfAbsent(param, t -> new Tensor(t.getShape()));
+        Tensor vT = v.computeIfAbsent(param, t -> new Tensor(t.getShape()));
         float[] mVal = mT.internalBuffer();
         float[] vVal = vT.internalBuffer();
 
@@ -233,14 +227,8 @@ public final class AdamOptimizer {
 
         int off = 0;
         for (Tensor param : params) {
-            Tensor mT = m.get(param);
-            Tensor vT = v.get(param);
-            if (mT == null) {
-                mT = new Tensor(param.getShape());
-                vT = new Tensor(param.getShape());
-                m.put(param, mT);
-                v.put(param, vT);
-            }
+            Tensor mT = m.computeIfAbsent(param, t -> new Tensor(t.getShape()));
+            Tensor vT = v.computeIfAbsent(param, t -> new Tensor(t.getShape()));
             float[] pBuf = param.internalBuffer();
             float[] gBuf = adamGradientBuffer(param);
             float[] mVal = mT.internalBuffer();
@@ -462,6 +450,7 @@ public final class AdamOptimizer {
         v.clear();
         step = 0;
         recomputeBiasCorrection();
+        TL_ADAM_PACK.remove();
     }
 
     /**
@@ -581,11 +570,7 @@ public final class AdamOptimizer {
             if (mGpu == null || mGpu.isClosed()) {
                 continue;
             }
-            Tensor cpuMT = m.get(cpuParam);
-            if (cpuMT == null) {
-                cpuMT = new Tensor(cpuParam.getShape());
-                m.put(cpuParam, cpuMT);
-            }
+            Tensor cpuMT = m.computeIfAbsent(cpuParam, t -> new Tensor(t.getShape()));
             mGpu.downloadTo(cpuMT.internalBuffer(), 0, cpuMT.size());
         }
         for (Map.Entry<Tensor, GpuTensor> e : gpuV.entrySet()) {
@@ -594,11 +579,7 @@ public final class AdamOptimizer {
             if (vGpu == null || vGpu.isClosed()) {
                 continue;
             }
-            Tensor cpuVT = v.get(cpuParam);
-            if (cpuVT == null) {
-                cpuVT = new Tensor(cpuParam.getShape());
-                v.put(cpuParam, cpuVT);
-            }
+            Tensor cpuVT = v.computeIfAbsent(cpuParam, t -> new Tensor(t.getShape()));
             vGpu.downloadTo(cpuVT.internalBuffer(), 0, cpuVT.size());
         }
     }

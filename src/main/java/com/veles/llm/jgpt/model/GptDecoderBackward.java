@@ -67,16 +67,15 @@ final class GptDecoderBackward {
                     attnResident,
                     ffnResident);
 
-            if (DebugGpuTrain.perLayerFiniteCheck()) {
-                if (TensorOpsGPU.anyNonFiniteGpuDevice(gradNext, flat)) {
-                    log.warn(
-                            "Non-finite gradient after decoder layer {} ({} elements). "
-                                    + "Enable JGPT_DEBUG_GPU_TRAIN=1 for JSONL diagnostics; "
-                                    + "JGPT_BWD_LAYER_FINITE_CHECK=0 and no debug = one check after stack only.",
-                            layer,
-                            flat);
-                    GptModelDebugLog.layerGrad(layer, flat);
-                }
+            if (DebugGpuTrain.perLayerFiniteCheck()
+                    && TensorOpsGPU.anyNonFiniteGpuDevice(gradNext, flat)) {
+                log.warn(
+                        "Non-finite gradient after decoder layer {} ({} elements). "
+                                + "Enable JGPT_DEBUG_GPU_TRAIN=1 for JSONL diagnostics; "
+                                + "JGPT_BWD_LAYER_FINITE_CHECK=0 and no debug = one check after stack only.",
+                        layer,
+                        flat);
+                GptModelDebugLog.layerGrad(layer, flat);
             }
 
             GpuFloatBuffer tmp = gradCur;
@@ -84,15 +83,14 @@ final class GptDecoderBackward {
             gradNext = tmp;
         }
 
-        if (!DebugGpuTrain.perLayerFiniteCheck()) {
-            if (TensorOpsGPU.anyNonFiniteGpuDevice(gradCur, flat)) {
-                log.warn(
-                        "Non-finite gradient after decoder stack ({} elements). "
-                                + "Enable JGPT_DEBUG_GPU_TRAIN=1 for JSONL or JGPT_BWD_LAYER_FINITE_CHECK=1 "
-                                + "to localize by layer.",
-                        flat);
-                GptModelDebugLog.layerGrad(-1, flat);
-            }
+        if (!DebugGpuTrain.perLayerFiniteCheck()
+                && TensorOpsGPU.anyNonFiniteGpuDevice(gradCur, flat)) {
+            log.warn(
+                    "Non-finite gradient after decoder stack ({} elements). "
+                            + "Enable JGPT_DEBUG_GPU_TRAIN=1 for JSONL or JGPT_BWD_LAYER_FINITE_CHECK=1 "
+                            + "to localize by layer.",
+                    flat);
+            GptModelDebugLog.layerGrad(-1, flat);
         }
 
         m.tokenEmbedding.backwardScatterFromDeviceGrad(m.lastInputTokens, gradCur, batch, seqLen);

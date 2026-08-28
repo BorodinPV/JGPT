@@ -32,7 +32,8 @@ public enum StepBeyondPlanPolicy {
         try {
             String e = System.getenv("JGPT_IF_STEP_BEYOND_PLAN");
             return fromEnv(e);
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore inaccessible env
             return SKIP;
         }
     }

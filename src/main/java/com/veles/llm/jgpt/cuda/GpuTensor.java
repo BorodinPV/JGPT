@@ -14,6 +14,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Тензор, данные которого живут на GPU в одном {@link GpuFloatBuffer} (долгоживущий device-буфер).
  * Цель — шаги обучения без H2D/D2H на каждый GEMM: ядра и cuBLAS принимают {@link #devicePointer()}; на хост
@@ -22,7 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Ожидаемый цикл: {@link #allocate(int[])} / {@link #fromHostTensor(Tensor)} → при необходимости
  * {@link #zeroGrad()} перед backward → ядра пишут в {@link #gradDevicePointer()} → обновление весов на device
  * (например AdamW) → {@link #close()} или try-with-resources. Если не закрыть явно, отложенное освобождение
- * через {@link #drainLeaked()} после GC (в stderr — предупреждение). В пулах потоков всё равно вызывайте
+ * через {@link #drainLeaked()} после GC (в логе — предупреждение). В пулах потоков всё равно вызывайте
  * {@code close()} по завершении задачи.
  *
  * <p>Градиент (опционально): ленивый второй буфер того же размера — {@link #zeroGrad()}, {@link #gradDevicePointer()}.
@@ -30,6 +33,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p><b>Не thread-safe.</b>
  */
 public final class GpuTensor implements AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(GpuTensor.class);
 
     private static final ReferenceQueue<GpuTensor> REF_QUEUE = new ReferenceQueue<>();
     private static final Set<TensorPhantom> PHANTOMS = ConcurrentHashMap.newKeySet();
@@ -101,10 +106,9 @@ public final class GpuTensor implements AutoCloseable {
                 return;
             }
             if (!ph.closedExplicitly.get()) {
-                System.err.println(
-                        "[GpuTensor] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого тензора (data ptr=0x"
-                                + Long.toHexString(d != null ? d.devicePointer() : 0L)
-                                + ")");
+                log.warn(
+                        "[GpuTensor] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого тензора (data ptr=0x{})",
+                        Long.toHexString(d != null ? d.devicePointer() : 0L));
             }
             if (d != null) {
                 d.close();

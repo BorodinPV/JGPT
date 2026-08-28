@@ -17,7 +17,8 @@ final class LlmTrainerEvalAndSample {
 
     private static final int SAMPLE_MAX_NEW_TOKENS = 64;
     private static final float SAMPLE_TEMP = 0.9f;
-    private static final int SAMPLE_TOP_K = 40;
+    private static final int SAMPLE_TOP_K = 50;
+    private static final String SAMPLE_BADGE = "SAMPLE";
 
     private static final String[] AUTO_PROMPTS_RU = {
         "мороз и солнце день чудесный",
@@ -51,11 +52,11 @@ final class LlmTrainerEvalAndSample {
         String prompt = pickSamplePrompt(t, epochOneBased);
         log.info(
                 "{} промежуточная генерация: эпоха {}/{}, шаг {}",
-                LogFmt.badge("SAMPLE"),
+                LogFmt.badge(SAMPLE_BADGE),
                 epochOneBased,
                 t.config.epochs,
                 t.globalStep);
-        log.info("{} промпт: {}", LogFmt.badge("SAMPLE"), prompt);
+        log.info("{} промпт: {}", LogFmt.badge(SAMPLE_BADGE), prompt);
         try {
             t.model.zeroGradParameters();
             String out =
@@ -66,12 +67,12 @@ final class LlmTrainerEvalAndSample {
                             SAMPLE_MAX_NEW_TOKENS,
                             SAMPLE_TEMP,
                             SAMPLE_TOP_K);
-            log.info("{} сгенерировано: {}", LogFmt.badge("SAMPLE"), out);
+            log.info("{} сгенерировано: {}", LogFmt.badge(SAMPLE_BADGE), out);
             if (t.trainingStatsWriter != null) {
                 t.trainingStatsWriter.onSample(t.globalStep, out);
             }
         } catch (Exception e) {
-            log.warn("{} генерация не удалась: {}", LogFmt.badge("SAMPLE"), e.getMessage());
+            log.warn("{} генерация не удалась: {}", LogFmt.badge(SAMPLE_BADGE), e.getMessage());
         } finally {
             t.synchronizeTrainingPipelineAfterGpuAuxiliaryInfer("sample");
         }

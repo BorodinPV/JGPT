@@ -13,7 +13,7 @@ import java.util.Arrays;
  */
 public final class FullTrainingTest {
 
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] unused) {
         System.out.println("🧪 Testing Full GPT Training...");
 
         TrainingConfig config =

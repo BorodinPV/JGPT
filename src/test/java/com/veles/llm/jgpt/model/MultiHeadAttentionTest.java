@@ -6,7 +6,7 @@ import com.veles.llm.jgpt.ops.TensorOps;
 import java.util.Arrays;
 
 public class MultiHeadAttentionTest {
-    public static void main(String[] args) {
+    public static void main(String[] unused) {
         System.out.println("🧪 Testing Multi-Head Attention...");
 
         int batch = 2;
@@ -16,10 +16,10 @@ public class MultiHeadAttentionTest {
 
         Tensor x = randomTensor(new int[]{batch, seqLen, dModel});
 
-        Tensor Wq = randomTensor(new int[]{dModel, dModel}, 0.1f);
-        Tensor Wk = randomTensor(new int[]{dModel, dModel}, 0.1f);
-        Tensor Wv = randomTensor(new int[]{dModel, dModel}, 0.1f);
-        Tensor Wo = randomTensor(new int[]{dModel, dModel}, 0.1f);
+        Tensor wq = randomTensor(new int[]{dModel, dModel}, 0.1f);
+        Tensor wk = randomTensor(new int[]{dModel, dModel}, 0.1f);
+        Tensor wv = randomTensor(new int[]{dModel, dModel}, 0.1f);
+        Tensor wo = randomTensor(new int[]{dModel, dModel}, 0.1f);
 
         Tensor mask = TensorOps.createCausalMask(seqLen);
 
@@ -28,7 +28,7 @@ public class MultiHeadAttentionTest {
                 numHeads, dModel, dModel / numHeads);
 
         long start = System.nanoTime();
-        Tensor output = TensorOps.multiHeadAttention(x, Wq, Wk, Wv, Wo, numHeads, mask);
+        Tensor output = TensorOps.multiHeadAttention(x, wq, wk, wv, wo, numHeads, mask);
         long end = System.nanoTime();
 
         System.out.printf("✅ Output shape: %s (ожидалось [%d, %d, %d])%n",

@@ -53,7 +53,7 @@ public final class TrainingProfiler {
         if (ds != null && !ds.isBlank()) {
             try {
                 detail = Integer.parseInt(ds.trim());
-            } catch (NumberFormatException ignored) {
+            } catch (NumberFormatException _) {
                 // keep default
             }
         }

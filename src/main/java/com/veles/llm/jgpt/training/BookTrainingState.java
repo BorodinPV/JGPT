@@ -15,7 +15,7 @@ import java.util.Set;
  */
 public final class BookTrainingState {
 
-    private final LinkedHashSet<String> completed;
+    private final Set<String> completed;
     private String current;
 
     public BookTrainingState(LinkedHashSet<String> completed, String current) {

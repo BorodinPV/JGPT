@@ -53,7 +53,7 @@ final class TensorOpsGpuVramLog {
         };
         for (long[] p : rect) {
             if (Math.multiplyExact(p[0], p[1]) == n) {
-                if (sb.length() > 0) {
+                if (!sb.isEmpty()) {
                     sb.append("; ");
                 }
                 sb.append(p[0]).append('×').append(p[1]).append(" float");
@@ -61,11 +61,11 @@ final class TensorOpsGpuVramLog {
         }
         if (n % 1024L == 0L) {
             long rows = n / 1024L;
-            if (sb.length() > 0) {
+            if (!sb.isEmpty()) {
                 sb.append("; ");
             }
             sb.append("плоскость 1024×").append(rows).append(" (часто dModel×tokens)");
         }
-        return sb.length() == 0 ? "(нет совпадений с типовыми прямоугольниками)" : sb.toString();
+        return sb.isEmpty() ? "(нет совпадений с типовыми прямоугольниками)" : sb.toString();
     }
 }

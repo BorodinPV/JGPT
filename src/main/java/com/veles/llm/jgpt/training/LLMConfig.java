@@ -14,6 +14,8 @@ public final class LLMConfig {
 
     private static final Logger log = LoggerFactory.getLogger(LLMConfig.class);
 
+    private static final String ENV_FALSE = "false";
+
     public final String name;
     public final int vocabSize;
     public final int maxSeqLen;
@@ -100,20 +102,18 @@ public final class LLMConfig {
     }
 
     /**
-     * Крупный пресет: vocab 8000, контекст <b>2048</b>, 20 слоёв, ~55M параметров по {@link #estimateParameters()}.
-     * <p>
-     * Внимание по VRAM: attention и кэши растут примерно как {@code O(seq²)} на слой; {@code batchSize=1} и
-     * {@code sampled CE} обязательны на картах ~10 ГиБ. При {@code cudaMalloc}/OOM: уменьшить {@code maxSeqLen},
-     * {@code numLayers} или {@code JGPT_SAMPLED_CE_CANDIDATES}; не поднимать {@code JGPT_BATCH_SIZE}.
+     * Каноническая геометрия AllBooks / InferChat (~34.9M по {@link #estimateParameters()}):
+     * vocab 8000, seq 1024, d_model 384, 24 головы (d_head=16), 12 слоёв, SwiGLU d_intermediate=1536.
+     * Пресеты {@code env/*.env} могут сменить только batch/seq/layers через {@code JGPT_*}; без override это и есть train.
      */
-    public static LLMConfig smart50M() {
+    public static LLMConfig canonical() {
         return new LLMConfig(
-                "JGPT-50M-Smart",
+                "JGPT-35M",
                 8000,
-                2048,
+                1024,
                 384,
                 24,
-                20,
+                12,
                 1536,
                 1,
                 6,
@@ -122,9 +122,19 @@ public final class LLMConfig {
     }
 
     /**
+     * Историческое имя; то же, что {@link #canonical()}.
+     *
+     * @deprecated используйте {@link #canonical()}
+     */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public static LLMConfig smart50M() {
+        return canonical();
+    }
+
+    /**
      * @deprecated Заменён на {@link #small16M()} (≈16M, контекст 512).
      */
-    @Deprecated
+    @Deprecated(since = "1.0", forRemoval = false)
     public static LLMConfig small18M() {
         return small16M();
     }
@@ -164,7 +174,8 @@ public final class LLMConfig {
             if (v > 0f && Float.isFinite(v)) {
                 return v;
             }
-        } catch (NumberFormatException ignored) {
+        } catch (NumberFormatException _) {
+            // ignore invalid LR override
         }
         return defaultValue;
     }
@@ -195,8 +206,8 @@ public final class LLMConfig {
      * Runtime override from env {@code JGPT_MAX_SEQ_LEN}.
      * <p>
      * Позволяет уменьшить контекст без перекомпиляции. Актуально при OOM:
-     * с 20 слоями и 24 головами кэш attention для backward = {@code heads × seq² × 2 bytes × layers}.
-     * При seq=2048 → ~4 ГиБ; при seq=1024 → ~1 ГиБ.
+     * attention backward ~ {@code heads × seq² × 2 bytes × layers}.
+     * При seq=1024 и 12 слоях это около 0.6 ГиБ; при seq=512 — вчетверо меньше.
      * <p>Пример: {@code JGPT_MAX_SEQ_LEN=1024 ./scripts/jgpt-smart.sh}
      */
     public static LLMConfig applySeqLenOverrideFromEnv(LLMConfig base) {
@@ -370,7 +381,7 @@ public final class LLMConfig {
             try {
                 int v = Integer.parseInt(env.trim());
                 return Math.max(0, v);
-            } catch (NumberFormatException ignored) {
+            } catch (NumberFormatException _) {
                 return defaultValue;
             }
         }
@@ -379,7 +390,7 @@ public final class LLMConfig {
             try {
                 int v = Integer.parseInt(prop.trim());
                 return Math.max(0, v);
-            } catch (NumberFormatException ignored) {
+            } catch (NumberFormatException _) {
                 return defaultValue;
             }
         }
@@ -415,7 +426,7 @@ public final class LLMConfig {
             try {
                 int v = Integer.parseInt(env.trim());
                 return v <= 0 ? Integer.MAX_VALUE : v;
-            } catch (NumberFormatException ignored) {
+            } catch (NumberFormatException _) {
                 return defaultValue;
             }
         }
@@ -424,7 +435,7 @@ public final class LLMConfig {
             try {
                 int v = Integer.parseInt(prop.trim());
                 return v <= 0 ? Integer.MAX_VALUE : v;
-            } catch (NumberFormatException ignored) {
+            } catch (NumberFormatException _) {
                 return defaultValue;
             }
         }
@@ -484,7 +495,7 @@ public final class LLMConfig {
         if (e != null && !e.isBlank()) {
             try {
                 return Math.max(0, Integer.parseInt(e.trim()));
-            } catch (NumberFormatException ignored) {
+            } catch (NumberFormatException _) {
                 return 0;
             }
         }
@@ -492,7 +503,7 @@ public final class LLMConfig {
         if (p != null && !p.isBlank()) {
             try {
                 return Math.max(0, Integer.parseInt(p.trim()));
-            } catch (NumberFormatException ignored) {
+            } catch (NumberFormatException _) {
                 return 0;
             }
         }
@@ -506,7 +517,7 @@ public final class LLMConfig {
     }
 
     /**
-     * Снимок VRAM вокруг training decoder forward (NDJSON session debug log): env {@code JGPT_TRAIN_VRAM_STEP_PROBE=1} /
+     * Снимок VRAM вокруг training decoder forward (SLF4J {@code [VRAM] decoderBefore/After}): env {@code JGPT_TRAIN_VRAM_STEP_PROBE=1} /
      * prop {@code jgpt.train.vramStepProbe}. Интервал по счётчику вызовов {@link com.veles.llm.jgpt.model.GPTModel#forwardGpuDecoder}:
      * env {@code JGPT_TRAIN_VRAM_STEP_PROBE_EVERY} / prop {@code jgpt.train.vramStepProbeEvery} (по умолчанию {@code 50}).
      *
@@ -560,11 +571,11 @@ public final class LLMConfig {
      */
     public static boolean earlyStopOverfitFromEnv(boolean defaultValue) {
         String e = System.getenv("JGPT_EARLY_STOP_OVERFIT");
-        if (e == null || e.isBlank()) return defaultValue;
+        if (e == null || e.isBlank()) {
+            return defaultValue;
+        }
         String t = e.trim();
-        if ("0".equals(t) || "false".equalsIgnoreCase(t)) return false;
-        if ("1".equals(t) || "true".equalsIgnoreCase(t)) return true;
-        return defaultValue;
+        return isTruthyToken(t) || (!isFalsyToken(t) && defaultValue);
     }
 
     private static int readNonNegativeEnvInt(String key, int defaultValue) {
@@ -573,7 +584,9 @@ public final class LLMConfig {
             try {
                 int v = Integer.parseInt(e.trim());
                 return Math.max(0, v);
-            } catch (NumberFormatException ignored) {}
+            } catch (NumberFormatException _) {
+                // ignore invalid env int
+            }
         }
         return defaultValue;
     }
@@ -582,28 +595,22 @@ public final class LLMConfig {
      * Явное {@code 0}/{@code false} — выкл.; {@code 1}/{@code true} — вкл.; не задано ни env, ни property —
      * {@link TensorOpsGPU#isGpuAvailable()} (предпочитать GPU-реализацию, если она есть).
      */
+    private static boolean isFalsyToken(String t) {
+        return "0".equals(t) || ENV_FALSE.equalsIgnoreCase(t);
+    }
+
+    private static boolean isTruthyToken(String t) {
+        return "1".equals(t) || "true".equalsIgnoreCase(t);
+    }
+
     private static boolean readBoolEnvOrPropDefaultGpuWhenUnset(String envKey, String propKey) {
         String e = System.getenv(envKey);
         if (e != null && !e.isBlank()) {
-            String t = e.trim();
-            if ("0".equals(t) || "false".equalsIgnoreCase(t)) {
-                return false;
-            }
-            if ("1".equals(t) || "true".equalsIgnoreCase(t)) {
-                return true;
-            }
-            return false;
+            return isTruthyToken(e.trim());
         }
         String p = System.getProperty(propKey);
         if (p != null && !p.isBlank()) {
-            String t = p.trim();
-            if ("0".equals(t) || "false".equalsIgnoreCase(t)) {
-                return false;
-            }
-            if ("1".equals(t) || "true".equalsIgnoreCase(t)) {
-                return true;
-            }
-            return false;
+            return isTruthyToken(p.trim());
         }
         return TensorOpsGPU.isGpuAvailable();
     }
@@ -616,7 +623,7 @@ public final class LLMConfig {
         try {
             int parsed = Integer.parseInt(raw.trim());
             return parsed > 0 ? parsed : defaultValue;
-        } catch (NumberFormatException ignored) {
+        } catch (NumberFormatException _) {
             return defaultValue;
         }
     }
@@ -627,7 +634,7 @@ public final class LLMConfig {
             try {
                 int parsed = Integer.parseInt(env.trim());
                 return parsed > 0 ? parsed : defaultValue;
-            } catch (NumberFormatException ignored) {
+            } catch (NumberFormatException _) {
                 return defaultValue;
             }
         }
@@ -636,7 +643,7 @@ public final class LLMConfig {
             try {
                 int parsed = Integer.parseInt(prop.trim());
                 return parsed > 0 ? parsed : defaultValue;
-            } catch (NumberFormatException ignored) {
+            } catch (NumberFormatException _) {
                 return defaultValue;
             }
         }
@@ -748,7 +755,7 @@ public final class LLMConfig {
             return false;
         }
         String t = raw.trim();
-        return "0".equals(t) || "false".equalsIgnoreCase(t);
+        return "0".equals(t) || ENV_FALSE.equalsIgnoreCase(t);
     }
 
     /** Должно совпадать с {@link GPTModel#countParameters()} для тех же гиперпараметров. */

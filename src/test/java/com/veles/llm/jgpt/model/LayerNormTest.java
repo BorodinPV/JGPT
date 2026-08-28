@@ -11,10 +11,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @EnabledIfGpu
-public class LayerNormTest {
+class LayerNormTest {
 
     @Test
-    public void layerNormForwardShapeAndFinite() {
+    void layerNormForwardShapeAndFinite() {
         Tensor x = Tensor.fromArray(
                 new float[]{1, 2, 3, 4, 5, 6},
                 new int[]{2, 3});
@@ -29,7 +29,7 @@ public class LayerNormTest {
     }
 
     @Test
-    public void layerNormBackwardBetaMatchesOnesGrad() {
+    void layerNormBackwardBetaMatchesOnesGrad() {
         int lastDim = 3;
         int outer = 2;
         Tensor x = Tensor.fromArray(

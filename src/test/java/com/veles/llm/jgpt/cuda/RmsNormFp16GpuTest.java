@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Паритет FP32 / FP16 forward RMSNorm на GPU (FP16 — округление x, γ до half; RMS в FP32).
  */
-public class RmsNormFp16GpuTest {
+class RmsNormFp16GpuTest {
 
     private static float maxAbsDiff(float[] a, float[] b) {
         float m = 0f;
@@ -34,7 +34,7 @@ public class RmsNormFp16GpuTest {
     }
 
     @Test
-    public void gpuRmsNormFp32MatchesCpuFp32AndFp16Close() {
+    void gpuRmsNormFp32MatchesCpuFp32AndFp16Close() {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }

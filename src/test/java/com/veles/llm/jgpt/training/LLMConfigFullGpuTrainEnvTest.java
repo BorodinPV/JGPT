@@ -1,5 +1,6 @@
 package com.veles.llm.jgpt.training;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -46,12 +47,13 @@ class LLMConfigFullGpuTrainEnvTest {
         String t = env.trim();
         boolean wantsFull = "1".equals(t) || "true".equalsIgnoreCase(t);
         System.setProperty("jgpt.fullGpuTrain", "false");
-        assertTrue(
-                LLMConfig.fullGpuTrainStepFromEnv() == wantsFull,
+        assertEquals(
+                wantsFull,
+                LLMConfig.fullGpuTrainStepFromEnv(),
                 "env JGPT_FULL_GPU_TRAIN должен определять сырой разбор при несовпадении с property");
     }
 
     private static void assertEqualsCanonical() {
-        assertTrue(LLMConfig.effectiveFullGpuTrainStepFromEnv() == LLMConfig.canonicalGpuTrain());
+        assertEquals(LLMConfig.canonicalGpuTrain(), LLMConfig.effectiveFullGpuTrainStepFromEnv());
     }
 }

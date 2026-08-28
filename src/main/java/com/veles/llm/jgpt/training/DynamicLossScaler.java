@@ -314,7 +314,8 @@ public final class DynamicLossScaler {
                     return v;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore invalid env or property
         }
         try {
             String p = System.getProperty(envKeyToProperty(envKey));
@@ -324,7 +325,8 @@ public final class DynamicLossScaler {
                     return v;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore invalid env or property
         }
         return defaultValue;
     }
@@ -336,7 +338,8 @@ public final class DynamicLossScaler {
                 int parsed = Integer.parseInt(e.trim());
                 return Math.max(0, parsed);
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore invalid env or property
         }
         try {
             String p = System.getProperty(envKeyToProperty(envKey));
@@ -344,7 +347,8 @@ public final class DynamicLossScaler {
                 int parsed = Integer.parseInt(p.trim());
                 return Math.max(0, parsed);
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore invalid env or property
         }
         return defaultValue;
     }
@@ -358,7 +362,8 @@ public final class DynamicLossScaler {
                     return parsed;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore invalid env or property
         }
         try {
             String p = System.getProperty(envKeyToProperty(envKey));
@@ -368,7 +373,8 @@ public final class DynamicLossScaler {
                     return parsed;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore invalid env or property
         }
         return defaultValue;
     }
@@ -397,7 +403,8 @@ public final class DynamicLossScaler {
                     return v;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore invalid env or property
         }
         try {
             String p = System.getProperty(envKeyToProperty(envKey));
@@ -407,7 +414,8 @@ public final class DynamicLossScaler {
                     return v;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore invalid env or property
         }
         return defaultDivisor;
     }

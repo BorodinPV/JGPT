@@ -22,7 +22,7 @@ class DataLoaderPinnedHostTest {
     void buildBatch_direct_whenPinnedRequested() {
         try {
             TensorCudaLibrary.load();
-        } catch (UnsatisfiedLinkError e) {
+        } catch (UnsatisfiedLinkError _) {
             assumeTrue(false, "skip: no libjgpt_cuda");
         }
         BPETokenizer tok = BPETokenizer.train(List.of("the cat sat on the mat the dog"), 48);
@@ -41,7 +41,7 @@ class DataLoaderPinnedHostTest {
     void allocatePinnedHost_reportsPinned_whenSupported() {
         try {
             TensorCudaLibrary.load();
-        } catch (UnsatisfiedLinkError e) {
+        } catch (UnsatisfiedLinkError _) {
             assumeTrue(false, "skip: no libjgpt_cuda");
         }
         Tensor t = Tensor.allocatePinnedHost(new int[]{2, 3});

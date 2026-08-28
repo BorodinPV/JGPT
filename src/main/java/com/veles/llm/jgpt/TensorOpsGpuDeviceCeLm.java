@@ -5,7 +5,19 @@ import java.util.Objects;
 /** CE, gather по id, LM-head по кандидатам; JNI в {@link TensorOpsGPU}. */
 final class TensorOpsGpuDeviceCeLm {
 
-    private TensorOpsGpuDeviceCeLm() {}
+    private static final String NAME_LOGITS = "logits";
+    private static final String NAME_TARGETS = "targets";
+    private static final String NAME_NORMED_HIDDEN = "normedHidden";
+    private static final String NAME_LM_HEAD_WEIGHTS = "lmHeadWeights";
+    private static final String NAME_CANDIDATE_LOGITS = "candidateLogits";
+    private static final String NAME_CANDIDATE_GRAD = "candidateGrad";
+    private static final String NAME_CANDIDATE_IDS = "candidateIds";
+    private static final String MSG_CE_LOGITS_GRAD = "CE logits/grad";
+    private static final String MSG_CE_TARGETS_ROWS = "CE targets row count";
+
+    private TensorOpsGpuDeviceCeLm() {
+        // utility class
+    }
 
     static float crossEntropySoftmaxGradLossGpuDevice(
             GpuFloatBuffer logits,
@@ -21,11 +33,11 @@ final class TensorOpsGpuDeviceCeLm {
         }
         long rows = (long) batch * seqLen;
         long need = rows * vocab;
-        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE logits/grad", need);
-        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE targets row count", rows);
-        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, "logits"), need, "logits");
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount(MSG_CE_LOGITS_GRAD, need);
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount(MSG_CE_TARGETS_ROWS, rows);
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, NAME_LOGITS), need, NAME_LOGITS);
         TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(grad, "grad"), need, "grad");
-        Objects.requireNonNull(targets, "targets");
+        Objects.requireNonNull(targets, NAME_TARGETS);
         if (targets.length < rows) {
             throw new IllegalArgumentException(
                     "targets too small: need " + rows + " floats, have " + targets.length);
@@ -48,12 +60,12 @@ final class TensorOpsGpuDeviceCeLm {
         }
         long rows = (long) batch * seqLen;
         long need = rows * vocab;
-        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE logits/grad", need);
-        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE targets row count", rows);
-        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, "logits"), need, "logits");
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount(MSG_CE_LOGITS_GRAD, need);
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount(MSG_CE_TARGETS_ROWS, rows);
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, NAME_LOGITS), need, NAME_LOGITS);
         TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(grad, "grad"), need, "grad");
         TensorOpsGpuBufferChecks.requireMinInts(
-                TensorOpsGpuBufferChecks.requireGpuInt(targets, "targets"), rows, "targets");
+                TensorOpsGpuBufferChecks.requireGpuInt(targets, NAME_TARGETS), rows, NAME_TARGETS);
         return TensorOpsGPU.crossEntropySoftmaxGradLossGPUDeviceTargetsDevice(
                 logits.devicePointer(),
                 targets.devicePointer(),
@@ -79,12 +91,12 @@ final class TensorOpsGpuDeviceCeLm {
         }
         long rows = (long) batch * seqLen;
         long need = rows * vocab;
-        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE logits/grad", need);
-        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE targets row count", rows);
-        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, "logits"), need, "logits");
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount(MSG_CE_LOGITS_GRAD, need);
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount(MSG_CE_TARGETS_ROWS, rows);
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, NAME_LOGITS), need, NAME_LOGITS);
         TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(grad, "grad"), need, "grad");
         TensorOpsGpuBufferChecks.requireMinInts(
-                TensorOpsGpuBufferChecks.requireGpuInt(targets, "targets"), rows, "targets");
+                TensorOpsGpuBufferChecks.requireGpuInt(targets, NAME_TARGETS), rows, NAME_TARGETS);
         TensorOpsGPU.crossEntropySoftmaxGradLossGPUDeviceTargetsDeviceAsync(
                 logits.devicePointer(),
                 targets.devicePointer(),
@@ -108,12 +120,12 @@ final class TensorOpsGpuDeviceCeLm {
         if (batch <= 0 || seqLen <= 0 || vocab <= 0) {
             throw new IllegalArgumentException("batch, seqLen, vocab must be positive");
         }
-        Objects.requireNonNull(targets, "targets");
+        Objects.requireNonNull(targets, NAME_TARGETS);
         long rows = (long) batch * seqLen;
         long need = rows * vocab;
-        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE logits/grad", need);
-        TensorOpsGpuBufferChecks.requireJniFlatElementCount("CE targets row count", rows);
-        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, "logits"), need, "logits");
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount(MSG_CE_LOGITS_GRAD, need);
+        TensorOpsGpuBufferChecks.requireJniFlatElementCount(MSG_CE_TARGETS_ROWS, rows);
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(logits, NAME_LOGITS), need, NAME_LOGITS);
         TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(grad, "grad"), need, "grad");
         if (targets.length < rows) {
             throw new IllegalArgumentException("targets too small: need " + rows + ", have " + targets.length);
@@ -141,11 +153,11 @@ final class TensorOpsGpuDeviceCeLm {
         TensorOpsGpuBufferChecks.requireJniFlatElementCount("gather logits plane", logitNeed);
         TensorOpsGpuBufferChecks.requireJniFlatElementCount("gather candidate plane", candidateNeed);
         TensorOpsGpuBufferChecks.requireMinFloats(
-                TensorOpsGpuBufferChecks.requireGpu(logits, "logits"), logitNeed, "logits");
+                TensorOpsGpuBufferChecks.requireGpu(logits, NAME_LOGITS), logitNeed, NAME_LOGITS);
         TensorOpsGpuBufferChecks.requireMinInts(
-                TensorOpsGpuBufferChecks.requireGpuInt(candidateIds, "candidateIds"), candidateNeed, "candidateIds");
+                TensorOpsGpuBufferChecks.requireGpuInt(candidateIds, NAME_CANDIDATE_IDS), candidateNeed, NAME_CANDIDATE_IDS);
         TensorOpsGpuBufferChecks.requireMinFloats(
-                TensorOpsGpuBufferChecks.requireGpu(candidateLogits, "candidateLogits"), candidateNeed, "candidateLogits");
+                TensorOpsGpuBufferChecks.requireGpu(candidateLogits, NAME_CANDIDATE_LOGITS), candidateNeed, NAME_CANDIDATE_LOGITS);
         TensorOpsGPU.gatherLogitsByIdsGPUDevice(
                 logits.devicePointer(),
                 candidateIds.devicePointer(),
@@ -171,13 +183,13 @@ final class TensorOpsGpuDeviceCeLm {
         long weightNeed = (long) dModel * vocab;
         long candidateNeed = (long) rows * candidates;
         TensorOpsGpuBufferChecks.requireMinFloats(
-                TensorOpsGpuBufferChecks.requireGpu(normedHidden, "normedHidden"), hiddenNeed, "normedHidden");
+                TensorOpsGpuBufferChecks.requireGpu(normedHidden, NAME_NORMED_HIDDEN), hiddenNeed, NAME_NORMED_HIDDEN);
         TensorOpsGpuBufferChecks.requireMinFloats(
-                TensorOpsGpuBufferChecks.requireGpu(lmHeadWeights, "lmHeadWeights"), weightNeed, "lmHeadWeights");
+                TensorOpsGpuBufferChecks.requireGpu(lmHeadWeights, NAME_LM_HEAD_WEIGHTS), weightNeed, NAME_LM_HEAD_WEIGHTS);
         TensorOpsGpuBufferChecks.requireMinInts(
-                TensorOpsGpuBufferChecks.requireGpuInt(candidateIds, "candidateIds"), candidateNeed, "candidateIds");
+                TensorOpsGpuBufferChecks.requireGpuInt(candidateIds, NAME_CANDIDATE_IDS), candidateNeed, NAME_CANDIDATE_IDS);
         TensorOpsGpuBufferChecks.requireMinFloats(
-                TensorOpsGpuBufferChecks.requireGpu(candidateLogits, "candidateLogits"), candidateNeed, "candidateLogits");
+                TensorOpsGpuBufferChecks.requireGpu(candidateLogits, NAME_CANDIDATE_LOGITS), candidateNeed, NAME_CANDIDATE_LOGITS);
         TensorOpsGPU.lmHeadCandidateLogitsGPUDevice(
                 normedHidden.devicePointer(),
                 lmHeadWeights.devicePointer(),
@@ -201,11 +213,11 @@ final class TensorOpsGpuDeviceCeLm {
         }
         long need = (long) rows * candidates;
         TensorOpsGpuBufferChecks.requireMinFloats(
-                TensorOpsGpuBufferChecks.requireGpu(candidateLogits, "candidateLogits"), need, "candidateLogits");
+                TensorOpsGpuBufferChecks.requireGpu(candidateLogits, NAME_CANDIDATE_LOGITS), need, NAME_CANDIDATE_LOGITS);
         TensorOpsGpuBufferChecks.requireMinInts(
-                TensorOpsGpuBufferChecks.requireGpuInt(candidateIds, "candidateIds"), need, "candidateIds");
+                TensorOpsGpuBufferChecks.requireGpuInt(candidateIds, NAME_CANDIDATE_IDS), need, NAME_CANDIDATE_IDS);
         TensorOpsGpuBufferChecks.requireMinFloats(
-                TensorOpsGpuBufferChecks.requireGpu(candidateGrad, "candidateGrad"), need, "candidateGrad");
+                TensorOpsGpuBufferChecks.requireGpu(candidateGrad, NAME_CANDIDATE_GRAD), need, NAME_CANDIDATE_GRAD);
         return TensorOpsGPU.sampledCrossEntropyGradLossGPUDeviceFirstSlot(
                 candidateLogits.devicePointer(),
                 candidateIds.devicePointer(),
@@ -233,13 +245,13 @@ final class TensorOpsGpuDeviceCeLm {
         long hiddenNeed = (long) rows * dModel;
         long weightNeed = (long) dModel * vocab;
         TensorOpsGpuBufferChecks.requireMinInts(
-                TensorOpsGpuBufferChecks.requireGpuInt(candidateIds, "candidateIds"), candNeed, "candidateIds");
+                TensorOpsGpuBufferChecks.requireGpuInt(candidateIds, NAME_CANDIDATE_IDS), candNeed, NAME_CANDIDATE_IDS);
         TensorOpsGpuBufferChecks.requireMinFloats(
-                TensorOpsGpuBufferChecks.requireGpu(candidateGrad, "candidateGrad"), candNeed, "candidateGrad");
+                TensorOpsGpuBufferChecks.requireGpu(candidateGrad, NAME_CANDIDATE_GRAD), candNeed, NAME_CANDIDATE_GRAD);
         TensorOpsGpuBufferChecks.requireMinFloats(
-                TensorOpsGpuBufferChecks.requireGpu(normedHidden, "normedHidden"), hiddenNeed, "normedHidden");
+                TensorOpsGpuBufferChecks.requireGpu(normedHidden, NAME_NORMED_HIDDEN), hiddenNeed, NAME_NORMED_HIDDEN);
         TensorOpsGpuBufferChecks.requireMinFloats(
-                TensorOpsGpuBufferChecks.requireGpu(lmHeadWeights, "lmHeadWeights"), weightNeed, "lmHeadWeights");
+                TensorOpsGpuBufferChecks.requireGpu(lmHeadWeights, NAME_LM_HEAD_WEIGHTS), weightNeed, NAME_LM_HEAD_WEIGHTS);
         TensorOpsGpuBufferChecks.requireMinFloats(
                 TensorOpsGpuBufferChecks.requireGpu(dHidden, "dHidden"), hiddenNeed, "dHidden");
         TensorOpsGpuBufferChecks.requireMinFloats(

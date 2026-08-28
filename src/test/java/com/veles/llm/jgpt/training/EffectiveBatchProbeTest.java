@@ -148,7 +148,7 @@ final class EffectiveBatchProbeTest {
         try {
             int v = Integer.parseInt(raw.trim());
             return v > 0 ? Math.min(v, 4096) : 256;
-        } catch (NumberFormatException e) {
+        } catch (NumberFormatException _) {
             return 256;
         }
     }
@@ -344,7 +344,7 @@ final class EffectiveBatchProbeTest {
             try {
                 runSingleOptimizerStep(lc, tokenizer, runDir, microBatchForAccumProbe, acc, loaderText);
                 maxAccum = acc;
-            } catch (Throwable t) {
+            } catch (Throwable _) {
                 break;
             }
         }

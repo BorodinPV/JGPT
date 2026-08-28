@@ -76,7 +76,6 @@ class CrossEntropyGpuTest {
         Tensor logitsDir = Tensor.allocateDirect(new int[] {batch, seqLen, vocab});
         Tensor targetDir = Tensor.allocateDirect(new int[] {batch, seqLen});
         FloatBuffer ld = logitsDir.directFloatBuffer();
-        int ti = 0;
         for (int i = 0; i < n; i++) {
             ld.put(i, rng.nextFloat() * 4f - 2f);
         }

@@ -7,15 +7,20 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Буфер int32 на GPU (для CE targets и т.п.). Освобождать через {@link #close()} или try-with-resources.
  *
- * <p>Если ссылку потеряли без {@link #close()}, освобождение после GC — {@link #drainLeaked()}; в stderr —
+ * <p>Если ссылку потеряли без {@link #close()}, освобождение после GC — {@link #drainLeaked()}; в логе —
  * предупреждение. Класс не рассчитан на параллельные вызовы с одного объекта без внешней синхронизации.
  *
  * <p>Загрузка нативной библиотеки — при инициализации {@link TensorOpsGPU}.
  */
 public final class GpuIntBuffer implements AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(GpuIntBuffer.class);
 
     private static final ReferenceQueue<GpuIntBuffer> REF_QUEUE = new ReferenceQueue<>();
 
@@ -70,9 +75,9 @@ public final class GpuIntBuffer implements AutoCloseable {
                 return;
             }
             if (!ph.closedExplicitly.get()) {
-                System.err.println(
-                        "[GpuIntBuffer] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого буфера @0x"
-                                + Long.toHexString(ph.ptr));
+                log.warn(
+                        "[GpuIntBuffer] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого буфера @0x{}",
+                        Long.toHexString(ph.ptr));
             }
             if (TensorOpsGPU.isGpuAvailable() && ph.ptr != 0L) {
                 nativeFree(ph.ptr);

@@ -104,7 +104,6 @@ class GpuFloatBufferCopyContractTest {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
-        int n = 12;
         int srcOff = 3;
         int copyLen = 5;
         ByteBuffer bb = ByteBuffer.allocateDirect(64 * Float.BYTES).order(ByteOrder.nativeOrder());

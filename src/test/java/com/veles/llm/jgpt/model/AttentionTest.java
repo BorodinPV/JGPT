@@ -6,21 +6,21 @@ import com.veles.llm.jgpt.ops.TensorOps;
 import java.util.Arrays;
 
 public class AttentionTest {
-    public static void main(String[] args) {
+    public static void main(String[] unused) {
         int batch = 2;
         int seqLen = 4;
-        int d_k = 8;
-        int d_v = 8;
+        int dK = 8;
+        int dV = 8;
 
-        Tensor Q = randomTensor(new int[]{batch, seqLen, d_k});
-        Tensor K = randomTensor(new int[]{batch, seqLen, d_k});
-        Tensor V = randomTensor(new int[]{batch, seqLen, d_v});
+        Tensor q = randomTensor(new int[]{batch, seqLen, dK});
+        Tensor k = randomTensor(new int[]{batch, seqLen, dK});
+        Tensor v = randomTensor(new int[]{batch, seqLen, dV});
 
-        float scale = 1.0f / (float) Math.sqrt(d_k);
+        float scale = 1.0f / (float) Math.sqrt(dK);
 
         System.out.println("🧪 Testing Scaled Dot-Product Attention...");
         long start = System.nanoTime();
-        Tensor output = TensorOps.scaledDotProductAttention(Q, K, V, scale);
+        Tensor output = TensorOps.scaledDotProductAttention(q, k, v, scale);
         long end = System.nanoTime();
 
         System.out.printf("✅ Attention output shape: %s%n", Arrays.toString(output.getShape()));

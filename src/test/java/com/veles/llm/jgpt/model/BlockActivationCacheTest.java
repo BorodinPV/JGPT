@@ -1,5 +1,6 @@
 package com.veles.llm.jgpt.model;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -12,7 +13,7 @@ class BlockActivationCacheTest {
     void clearResetsSlots() {
         BlockActivationCache cache = new BlockActivationCache();
         cache.xIn.store(Tensor.fromArray(new float[] {1f, 2f}, new int[] {2}), false);
-        assertTrue(cache.xIn.getTensor() != null);
+        assertNotNull(cache.xIn.getTensor());
         cache.clear();
         assertNull(cache.xIn.getTensor());
     }

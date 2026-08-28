@@ -19,9 +19,6 @@ final class GpuSampledLmHeadBackwardWorkspace {
     private static final ThreadLocal<GpuSampledLmHeadBackwardWorkspace> LOCAL =
             ThreadLocal.withInitial(GpuSampledLmHeadBackwardWorkspace::new);
 
-    private int cachedRows = -1;
-    private int cachedDModel;
-
     /** ∂L/∂normedHidden из LM head: [rows * dModel]. */
     private GpuFloatBuffer dHidden;
     /** ∂L/∂x перед финальным RMSNorm: [rows * dModel]. */
@@ -39,7 +36,6 @@ final class GpuSampledLmHeadBackwardWorkspace {
         GpuSampledLmHeadBackwardWorkspace w = LOCAL.get();
         if (w != null) {
             w.closeAllGpuBuffers();
-            w.cachedRows = -1;
         }
         LOCAL.remove();
     }
@@ -58,9 +54,6 @@ final class GpuSampledLmHeadBackwardWorkspace {
         dHidden = GpuBufferUtils.ensure(dHidden, flat);
         dGradBeforeNorm = GpuBufferUtils.ensure(dGradBeforeNorm, flat);
         dGGamma = GpuBufferUtils.ensure(dGGamma, dModel);
-
-        cachedRows = rows;
-        cachedDModel = dModel;
     }
 
     GpuFloatBuffer getDHidden() {
@@ -79,6 +72,5 @@ final class GpuSampledLmHeadBackwardWorkspace {
         dHidden = GpuBufferUtils.closeAndNull(dHidden);
         dGradBeforeNorm = GpuBufferUtils.closeAndNull(dGradBeforeNorm);
         dGGamma = GpuBufferUtils.closeAndNull(dGGamma);
-        cachedRows = -1;
     }
 }

@@ -6,7 +6,7 @@ import com.veles.llm.jgpt.ops.TensorOps;
 import java.util.Arrays;
 
 public class RoPEAttentionTest {
-    public static void main(String[] args) {
+    public static void main(String[] unused) {
         System.out.println("🧪 Testing RoPE + Multi-Head Attention...");
 
         int batch = 2;
@@ -16,10 +16,10 @@ public class RoPEAttentionTest {
 
         Tensor x = randomTensor(new int[]{batch, seqLen, dModel});
 
-        Tensor Wq = randomTensor(new int[]{dModel, dModel}, 0.1f);
-        Tensor Wk = randomTensor(new int[]{dModel, dModel}, 0.1f);
-        Tensor Wv = randomTensor(new int[]{dModel, dModel}, 0.1f);
-        Tensor Wo = randomTensor(new int[]{dModel, dModel}, 0.1f);
+        Tensor wq = randomTensor(new int[]{dModel, dModel}, 0.1f);
+        Tensor wk = randomTensor(new int[]{dModel, dModel}, 0.1f);
+        Tensor wv = randomTensor(new int[]{dModel, dModel}, 0.1f);
+        Tensor wo = randomTensor(new int[]{dModel, dModel}, 0.1f);
 
         Tensor mask = TensorOps.createCausalMask(seqLen);
 
@@ -28,12 +28,12 @@ public class RoPEAttentionTest {
                 numHeads, dModel, dModel / numHeads);
 
         long start = System.nanoTime();
-        Tensor output1 = TensorOps.multiHeadAttention(x, Wq, Wk, Wv, Wo, numHeads, mask);
+        Tensor output1 = TensorOps.multiHeadAttention(x, wq, wk, wv, wo, numHeads, mask);
         long end = System.nanoTime();
         System.out.printf("⏱️  Without RoPE: %.2f ms%n", (end - start) / 1_000_000.0);
 
         start = System.nanoTime();
-        Tensor output2 = TensorOps.multiHeadAttentionWithRoPE(x, Wq, Wk, Wv, Wo, numHeads, mask, true);
+        Tensor output2 = TensorOps.multiHeadAttentionWithRoPE(x, wq, wk, wv, wo, numHeads, mask, true);
         end = System.nanoTime();
         System.out.printf("⏱️  With RoPE: %.2f ms%n", (end - start) / 1_000_000.0);
 

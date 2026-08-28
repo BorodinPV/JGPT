@@ -6,7 +6,7 @@ import com.veles.llm.jgpt.ops.TensorOps;
 import java.util.Arrays;
 
 public class FFNTest {
-    public static void main(String[] args) {
+    public static void main(String[] unused) {
         System.out.println("🧪 Testing Feed-Forward Network...");
 
         int batch = 2;
@@ -16,24 +16,24 @@ public class FFNTest {
 
         Tensor x = randomTensor(new int[]{batch, seqLen, dModel});
 
-        Tensor W1 = randomTensor(new int[]{dModel, dIntermediate}, 0.1f);
-        Tensor W2 = randomTensor(new int[]{dIntermediate, dModel}, 0.1f);
-        Tensor W3 = randomTensor(new int[]{dModel, dIntermediate}, 0.1f);
+        Tensor w1 = randomTensor(new int[]{dModel, dIntermediate}, 0.1f);
+        Tensor w2 = randomTensor(new int[]{dIntermediate, dModel}, 0.1f);
+        Tensor w3 = randomTensor(new int[]{dModel, dIntermediate}, 0.1f);
 
-        Tensor W1Gelu = randomTensor(new int[]{dModel, dIntermediate}, 0.1f);
-        Tensor W2Gelu = randomTensor(new int[]{dIntermediate, dModel}, 0.1f);
+        Tensor w1Gelu = randomTensor(new int[]{dModel, dIntermediate}, 0.1f);
+        Tensor w2Gelu = randomTensor(new int[]{dIntermediate, dModel}, 0.1f);
 
         System.out.printf("Input shape: %s%n", Arrays.toString(x.getShape()));
         System.out.printf("d_model: %d, d_intermediate: %d%n", dModel, dIntermediate);
 
         long start = System.nanoTime();
-        Tensor outputSwiGLU = TensorOps.feedForwardSwiGLU(x, W1, W2, W3);
+        Tensor outputSwiGLU = TensorOps.feedForwardSwiGLU(x, w1, w2, w3);
         long end = System.nanoTime();
         System.out.printf("⏱️  SwiGLU: %.2f ms%n", (end - start) / 1_000_000.0);
         System.out.printf("✅ SwiGLU output shape: %s%n", Arrays.toString(outputSwiGLU.getShape()));
 
         start = System.nanoTime();
-        Tensor outputGELU = TensorOps.feedForwardGELU(x, W1Gelu, W2Gelu);
+        Tensor outputGELU = TensorOps.feedForwardGELU(x, w1Gelu, w2Gelu);
         end = System.nanoTime();
         System.out.printf("⏱️  GELU: %.2f ms%n", (end - start) / 1_000_000.0);
         System.out.printf("✅ GELU output shape: %s%n", Arrays.toString(outputGELU.getShape()));

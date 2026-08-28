@@ -24,7 +24,10 @@ class TensorCudaLibraryTest {
                         try {
                             gate.await();
                             TensorCudaLibrary.load();
-                        } catch (Throwable t) {
+                        } catch (InterruptedException _) {
+                            Thread.currentThread().interrupt();
+                            errors.incrementAndGet();
+                        } catch (Throwable _) {
                             errors.incrementAndGet();
                         }
                     });
@@ -46,7 +49,7 @@ class TensorCudaLibraryTest {
         if (!TensorCudaLibrary.isLoaded()) {
             try {
                 TensorCudaLibrary.load();
-            } catch (UnsatisfiedLinkError e) {
+            } catch (UnsatisfiedLinkError _) {
                 return;
             }
         }

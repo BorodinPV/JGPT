@@ -19,7 +19,12 @@ OUTPUT_DIR = "data/books"
 def remove_garbage_chars(text):
     """Section 2.2: Remove garbage Unicode characters."""
     # Control chars (except \n, \t, \r)
-    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    keep = []
+    for ch in text:
+        o = ord(ch)
+        if ch in '\n\t\r' or (o >= 32 and o != 127):
+            keep.append(ch)
+    text = ''.join(keep)
     # Replacement character
     text = text.replace('\ufffd', '')
     # BOM and special markers
@@ -46,17 +51,17 @@ def remove_garbage_chars(text):
 def remove_artifacts(text):
     """Section 2.3: Remove HTML/XML tags, markup, URLs, emails."""
     # Remove HTML/XML tags
-    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'<[^>]{1,256}>', '', text)
     # Remove Markdown bold/italic
-    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
-    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'\*\*([^*]{1,500})\*\*', r'\1', text)
+    text = re.sub(r'\*([^*]{1,500})\*', r'\1', text)
     text = re.sub(r'__([^_]+)__', r'\1', text)
     text = re.sub(r'_([^_]+)_', r'\1', text)
     # Remove URLs
     text = re.sub(r'https?://\S+', '', text)
     text = re.sub(r'www\.\S+', '', text)
     # Remove emails
-    text = re.sub(r'\S+@\S+\.\S+', '', text)
+    text = re.sub(r'[^@\s]{1,64}@[^@\s.]{1,64}\.[A-Za-z]{2,24}', '', text)
     return text
 
 
@@ -80,7 +85,7 @@ def fix_punctuation_spacing(text):
 
 def fix_ellipsis(text):
     """Section 1.3: Unified ellipsis."""
-    text = re.sub(r'\.\s*\.\s*\.', '...', text)
+    text = re.sub(r'\.(?:\s*\.){2}', '...', text)
     return text
 
 
@@ -230,7 +235,6 @@ def conversation_to_text(conversations):
     """
     parts = []
     for turn in conversations:
-        role = turn.get('role', '')
         content = turn.get('content', '')
         if content and content.strip():
             parts.append(content.strip())

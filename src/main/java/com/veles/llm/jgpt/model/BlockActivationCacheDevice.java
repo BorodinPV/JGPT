@@ -8,8 +8,9 @@ import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
-import java.util.logging.Level;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Активации одного decoder-блока на VRAM для fused backward без полного кэша на хосте ({@link
@@ -26,7 +27,7 @@ import java.util.logging.Logger;
  */
 public final class BlockActivationCacheDevice implements AutoCloseable {
 
-    private static final Logger CACHE_LOG = Logger.getLogger(BlockActivationCacheDevice.class.getName());
+    private static final Logger log = LoggerFactory.getLogger(BlockActivationCacheDevice.class);
 
     /** Слоты кэша (одинаковое число логических float в FP16 и FP32 режимах). */
     public enum SlotId {
@@ -119,7 +120,11 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
     /** Интервал очистки пула (в количестве обращений). По умолчанию 100. */
     private static final int POOL_CLEANUP_INTERVAL = blockCachePoolCleanupIntervalFromEnv();
 
-    public BlockActivationCacheDevice() {}
+    private static final String DIM_BATCH_HEADS_SEQ = "batchHeads*seqLen";
+
+    public BlockActivationCacheDevice() {
+        // Slots are allocated in ensure(); empty ctor is required by the pool and try-with-resources.
+    }
 
     /** Как фактически выделен кэш после {@link #ensure}; до ensure — {@code false}. */
     public boolean isFp16ActivationStorage() {
@@ -414,12 +419,21 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         long plane = mulExact("batch*seqLen*dModel", rows, (long) dModel);
         int dHead = dModel / numHeads;
         long batchHeads = mulExact("batch*numHeads", (long) batch, (long) numHeads);
-        long headFlat = mulExact("batchHeads*seqLen*dHead", mulExact("batchHeads*seqLen", batchHeads, (long) seqLen), (long) dHead);
+        long headFlat =
+                mulExact(
+                        DIM_BATCH_HEADS_SEQ + "*dHead",
+                        mulExact(DIM_BATCH_HEADS_SEQ, batchHeads, (long) seqLen),
+                        (long) dHead);
         // In flash attention mode attnProbs (S²) is replaced by LSE + O_heads (both tiny/moderate).
         boolean flash = TensorOpsGPU.FLASH_ATTENTION;
-        long probs = flash ? 0L :
-                mulExact("batchHeads*seqLen*seqLen", mulExact("batchHeads*seqLen", batchHeads, (long) seqLen), (long) seqLen);
-        long lseFlat = flash ? mulExact("batchHeads*seqLen", batchHeads, (long) seqLen) : 0L;
+        long probs =
+                flash
+                        ? 0L
+                        : mulExact(
+                                DIM_BATCH_HEADS_SEQ + "*seqLen",
+                                mulExact(DIM_BATCH_HEADS_SEQ, batchHeads, (long) seqLen),
+                                (long) seqLen);
+        long lseFlat = flash ? mulExact(DIM_BATCH_HEADS_SEQ, batchHeads, (long) seqLen) : 0L;
         long ffnMid = mulExact("batch*seqLen*dIntermediate", rows, (long) dIntermediate);
 
         // lseFlat and headFlat (for attnOutHeads) are float32-only; add them to size estimate
@@ -442,22 +456,19 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
                 long actualApprox;
                 try {
                     actualApprox = Math.multiplyExact(totalFloats, storageFp16 ? 2L : 4L);
-                } catch (ArithmeticException ex) {
+                } catch (ArithmeticException _) {
                     actualApprox = -1L;
                 }
-                CACHE_LOG.log(
-                        Level.WARNING,
-                        "JGPT_BLOCK_CACHE_MAX_BYTES={0} below estimate {1} B (totalFloats={2}, bytes/elem={3}); "
+                log.warn(
+                        "JGPT_BLOCK_CACHE_MAX_BYTES={} below estimate {} B (totalFloats={}, bytes/elem={}); "
                                 + "allocating anyway. Purged thread-local pool first. Disable cap with JGPT_BLOCK_CACHE_MAX_BYTES=0. "
-                                + "Actual device cache VRAM ~{4} B ({5}).",
-                        new Object[] {
-                            maxBytes,
-                            needBytes,
-                            totalFloats,
-                            bpe,
-                            actualApprox,
-                            activationCacheFp16StorageFromEnv() ? "FP16 slots" : "FP32 slots"
-                        });
+                                + "Actual device cache VRAM ~{} B ({}).",
+                        maxBytes,
+                        needBytes,
+                        totalFloats,
+                        bpe,
+                        actualApprox,
+                        activationCacheFp16StorageFromEnv() ? "FP16 slots" : "FP32 slots");
             }
         }
 
@@ -632,7 +643,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
                     return false;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
             /* SecurityManager и т.п. */
         }
         return Boolean.getBoolean("jgpt.activationCache.fp16");
@@ -689,7 +700,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         try {
             int v = Integer.parseInt(t);
             return v < 1 ? 2 : Math.min(v, 64);
-        } catch (NumberFormatException ex) {
+        } catch (NumberFormatException _) {
             return 2;
         }
     }
@@ -706,7 +717,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         try {
             long v = Long.parseLong(t);
             return v < 0L ? 0L : v;
-        } catch (NumberFormatException ex) {
+        } catch (NumberFormatException _) {
             return 0L;
         }
     }
@@ -723,7 +734,7 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
         try {
             int v = Integer.parseInt(t);
             return v < 1 ? 100 : v;
-        } catch (NumberFormatException ex) {
+        } catch (NumberFormatException _) {
             return 100;
         }
     }
@@ -830,8 +841,8 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
             }
         }
 
-        if (totalFreed > 0 && CACHE_LOG.isLoggable(Level.FINE)) {
-            CACHE_LOG.log(Level.FINE, "Cleaned up {0} stale pooled buffers from thread-local pool", totalFreed);
+        if (totalFreed > 0) {
+            log.debug("Cleaned up {} stale pooled buffers from thread-local pool", totalFreed);
         }
     }
 
@@ -840,29 +851,26 @@ public final class BlockActivationCacheDevice implements AutoCloseable {
      * Должна вызываться при завершении эпохи или при OOM.
      */
     public static void purgeThreadLocalPool() {
-        if (CACHE_LOG.isLoggable(Level.FINE)) {
-            CACHE_LOG.fine("purgeThreadLocalPool invoked");
-        }
+        log.debug("purgeThreadLocalPool invoked");
         Map<ArchKey, ArrayDeque<PooledBuffers>> m = BLOCK_CACHE_POOL.get();
-        if (m.isEmpty()) {
-            return;
-        }
-
         long totalFreed = 0;
-        for (ArrayDeque<PooledBuffers> q : m.values()) {
-            while (!q.isEmpty()) {
-                PooledBuffers p = q.poll();
-                if (p != null) {
-                    p.closeAll();
-                    totalFreed++;
+        if (!m.isEmpty()) {
+            for (ArrayDeque<PooledBuffers> q : m.values()) {
+                while (!q.isEmpty()) {
+                    PooledBuffers p = q.poll();
+                    if (p != null) {
+                        p.closeAll();
+                        totalFreed++;
+                    }
                 }
             }
+            m.clear();
         }
-        m.clear();
-        POOL_ACCESS_COUNT.set(0L);
+        BLOCK_CACHE_POOL.remove();
+        POOL_ACCESS_COUNT.remove();
 
         if (totalFreed > 0) {
-            CACHE_LOG.log(Level.INFO, "Purged {0} pooled buffers from thread-local pool", totalFreed);
+            log.info("Purged {} pooled buffers from thread-local pool", totalFreed);
         }
     }
 

@@ -10,7 +10,7 @@ final class TensorOpsGpuInit {
             if (Boolean.getBoolean("jgpt.allow.no.gpu")) {
                 return true;
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
             // ignore
         }
         try {
@@ -21,7 +21,7 @@ final class TensorOpsGpuInit {
                     return true;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
             // ignore
         }
         return false;
@@ -36,7 +36,7 @@ final class TensorOpsGpuInit {
                     return v;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
             // ignore
         }
         try {
@@ -47,7 +47,7 @@ final class TensorOpsGpuInit {
                     return v;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
             // ignore
         }
         return fp16MatmulEnabled ? 1e-5f : 1e-6f;
@@ -62,7 +62,7 @@ final class TensorOpsGpuInit {
                     return v;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
             // ignore
         }
         return 0;
@@ -84,16 +84,16 @@ final class TensorOpsGpuInit {
                     fp16FromEnv = false;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
             // ignore
         }
-        boolean fp16Matmul = fp16FromEnv != null ? fp16FromEnv : false;
+        boolean fp16Matmul = Boolean.TRUE.equals(fp16FromEnv);
         if (fp16FromEnv == null) {
             try {
                 if (Boolean.getBoolean("jgpt.fp16.matmul")) {
                     fp16Matmul = true;
                 }
-            } catch (Exception ignored) {
+            } catch (Exception _) {
                 // ignore
             }
         }
@@ -108,7 +108,7 @@ final class TensorOpsGpuInit {
             if (v != null && ("1".equals(v.trim()) || "true".equalsIgnoreCase(v.trim()))) {
                 flashAttn = true;
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
             // ignore
         }
         return flashAttn && gpuAvailable;

@@ -3,6 +3,8 @@ package com.veles.llm.jgpt.training;
 /** Чтение env/prop для конструктора тренера и сводок в лог. */
 final class LlmTrainerEnvUtils {
 
+    private static final String ENV_FALSE = "false";
+
     private LlmTrainerEnvUtils() {}
 
     static boolean readBooleanEnv(String key, boolean defaultValue) {
@@ -13,11 +15,12 @@ final class LlmTrainerEnvUtils {
                 if ("1".equals(t) || "true".equalsIgnoreCase(t)) {
                     return true;
                 }
-                if ("0".equals(t) || "false".equalsIgnoreCase(t)) {
+                if ("0".equals(t) || ENV_FALSE.equalsIgnoreCase(t)) {
                     return false;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore invalid or inaccessible env
         }
         return defaultValue;
     }
@@ -53,7 +56,8 @@ final class LlmTrainerEnvUtils {
                     return v;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore invalid env int
         }
         return defaultValue;
     }
@@ -65,7 +69,8 @@ final class LlmTrainerEnvUtils {
                 int v = Integer.parseInt(e.trim());
                 return Math.max(0, v);
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore invalid env int
         }
         return 0;
     }
@@ -77,7 +82,8 @@ final class LlmTrainerEnvUtils {
                 int v = Integer.parseInt(e.trim());
                 return Math.max(0, v);
             }
-        } catch (Exception ignored) {
+        } catch (Exception _) {
+            // ignore invalid env int
         }
         return 0;
     }
@@ -87,13 +93,13 @@ final class LlmTrainerEnvUtils {
             return true;
         }
         String p = System.getProperty("jgpt.batch.prefetch");
-        if (p != null && ("0".equals(p.trim()) || "false".equalsIgnoreCase(p.trim()))) {
+        if (p != null && ("0".equals(p.trim()) || ENV_FALSE.equalsIgnoreCase(p.trim()))) {
             return false;
         }
         String v = System.getenv("JGPT_BATCH_PREFETCH");
         if (v != null) {
             String t = v.trim();
-            if ("0".equals(t) || "false".equalsIgnoreCase(t) || "no".equalsIgnoreCase(t)) {
+            if ("0".equals(t) || ENV_FALSE.equalsIgnoreCase(t) || "no".equalsIgnoreCase(t)) {
                 return false;
             }
         }

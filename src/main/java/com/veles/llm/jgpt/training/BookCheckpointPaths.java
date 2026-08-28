@@ -5,7 +5,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -135,7 +134,8 @@ public final class BookCheckpointPaths {
                             max = v;
                             best = p;
                         }
-                    } catch (NumberFormatException ignored) {
+                    } catch (NumberFormatException _) {
+                        // Filename matched prefix/suffix but the middle is not a number.
                     }
                 }
             }

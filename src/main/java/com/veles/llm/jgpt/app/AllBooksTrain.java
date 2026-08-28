@@ -72,6 +72,7 @@ import org.slf4j.LoggerFactory;
 public final class AllBooksTrain {
 
     private static final Logger log = LoggerFactory.getLogger(AllBooksTrain.class);
+    private static final String CHECKPOINTS_DIR = "checkpoints";
 
     public static void main(String[] args) throws Exception {
         TensorOpsGPU.requireCuda("AllBooksTrain");
@@ -94,7 +95,7 @@ public final class AllBooksTrain {
         log.info("=".repeat(60));
         log.info("[ALL-BOOKS] обучение на всём корпусе (единый датасет)");
         log.info("[DATA] каталог с текстами: {}", dataDir);
-        log.info("[CKPT] чекпоинты: {}", root.resolve("checkpoints").resolve("all_books"));
+        log.info("[CKPT] чекпоинты: {}", root.resolve(CHECKPOINTS_DIR).resolve("all_books"));
         log.info("=".repeat(60));
 
         List<Path> books = listTxtFilesSorted(dataDir);
@@ -110,18 +111,25 @@ public final class AllBooksTrain {
                                 LLMConfig.applyPresetNumLayersOverrideFromEnv(
                                         LLMConfig.applySeqLenOverrideFromEnv(
                                                 LLMConfig.applyBatchSizeOverrideFromEnv(
-                                                        LLMConfig.smart50M()))))));
-        runCore(root, dataDir, books, llm);
+                                                        LLMConfig.canonical()))))));
+        runCore(root, books, llm);
     }
 
-    private static void runCore(Path root, Path dataDir, List<Path> books, LLMConfig llm)
+    private static void runCore(Path root, List<Path> books, LLMConfig llm)
             throws Exception {
-        Path checkpointsDir = root.resolve("checkpoints").resolve("all_books");
-        Path tokenizerPath = root.resolve("checkpoints").resolve("tokenizer_global.bin");
+        Path checkpointsDir = root.resolve(CHECKPOINTS_DIR).resolve("all_books");
+        Path tokenizerPath = root.resolve(CHECKPOINTS_DIR).resolve("tokenizer_global.bin");
 
-        log.info("[CFG] seq={}, d_model={}, layers={}, heads={}, vocab={}, lr={}",
-                llm.maxSeqLen, llm.dModel, llm.numLayers, llm.numHeads, llm.vocabSize,
-                String.format(Locale.ROOT, "%.4g", llm.learningRate));
+        log.info(
+                "[CFG] seq={}, d_model={}, d_ff={}, layers={}, heads={}, vocab={}, lr={}, ~{} params",
+                llm.maxSeqLen,
+                llm.dModel,
+                llm.dIntermediate,
+                llm.numLayers,
+                llm.numHeads,
+                llm.vocabSize,
+                String.format(Locale.ROOT, "%.4g", llm.learningRate),
+                String.format(Locale.US, "%,d", llm.estimateParameters()));
 
         // --- токенизатор ---
         BPETokenizer tokenizer;
@@ -135,9 +143,7 @@ public final class AllBooksTrain {
                 allTexts.add(readUtf8(p));
             }
             tokenizer = BPETokenizer.train(allTexts, llm.vocabSize);
-            // Освобождаем память immediately после обучения
             allTexts.clear();
-            System.gc();
             Files.createDirectories(tokenizerPath.getParent());
             tokenizer.save(tokenizerPath.toString());
             log.info("[DATA] токенизатор сохранён: {} (vocab={})",
@@ -152,49 +158,43 @@ public final class AllBooksTrain {
 
         int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
         log.info("[DATA] кодирование: {} потоков (последовательно для экономии памяти)", threads);
-        ExecutorService pool = Executors.newFixedThreadPool(threads);
 
         // Обрабатываем файлы последовательно чтобы не держать все токены в памяти
         long totalChars = 0;
         int skipped = 0;
         int minTokens = llm.maxSeqLen + 1;
-        
-        for (int i = 0; i < books.size(); i++) {
-            Path p = books.get(i);
-            int[] tokens;
-            try {
-                // Кодируем один файл, ждём результат, освобождаем текст
-                Future<int[]> future = pool.submit((Callable<int[]>) () -> {
-                    String text = readUtf8(p);
-                    int[] encoded = tokenizer.encode(text, true);
-                    // text goes out of scope here for GC
-                    return encoded;
-                });
-                tokens = future.get();
-            } catch (Exception e) {
-                log.warn("[DATA] ошибка кодирования {}: {}", p.getFileName(), e.getMessage());
-                skipped++;
-                continue;
-            }
-            totalChars += p.toFile().length();
-            log.info("[DATA]   {} → {} токенов", p.getFileName(), tokens.length);
-            if (tokens.length < minTokens) {
-                log.warn("[DATA] пропущена (слишком короткая): {} ({} токенов < {})",
-                        p.getFileName(), tokens.length, minTokens);
-                skipped++;
-                continue;
-            }
-            dataLoader.loadTokens(tokens);
-            log.info("[DATA]   {} → +{} окон (итого {})",
-                    p.getFileName(), tokens.length / llm.maxSeqLen, dataLoader.numSequences());
-            
-            // Явно запрашиваем GC после каждого файла для освобождения int[]
-            if ((i + 1) % 3 == 0) {
-                System.gc();
+
+        try (ExecutorService pool = Executors.newFixedThreadPool(threads)) {
+            for (Path p : books) {
+                int[] tokens;
+                try {
+                    // Кодируем один файл, ждём результат, освобождаем текст
+                    Future<int[]> future = pool.submit((Callable<int[]>) () -> {
+                        String text = readUtf8(p);
+                        return tokenizer.encode(text, true);
+                    });
+                    tokens = future.get();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                } catch (Exception e) {
+                    log.warn("[DATA] ошибка кодирования {}: {}", p.getFileName(), e.getMessage());
+                    skipped++;
+                    continue;
+                }
+                totalChars += p.toFile().length();
+                log.info("[DATA]   {} → {} токенов", p.getFileName(), tokens.length);
+                if (tokens.length < minTokens) {
+                    log.warn("[DATA] пропущена (слишком короткая): {} ({} токенов < {})",
+                            p.getFileName(), tokens.length, minTokens);
+                    skipped++;
+                    continue;
+                }
+                dataLoader.loadTokens(tokens);
+                log.info("[DATA]   {} → +{} окон (итого {})",
+                        p.getFileName(), tokens.length / llm.maxSeqLen, dataLoader.numSequences());
             }
         }
-        
-        pool.shutdown();
         log.info("[DATA] итого: {} символов, {} книг загружено, {} пропущено",
                 String.format("%,d", totalChars), books.size() - skipped, skipped);
         int nSeq = dataLoader.numSequences();
@@ -347,7 +347,7 @@ public final class AllBooksTrain {
                         try {
                             return Integer.parseInt(
                                     n.replace("checkpoint_epoch_", "").replace(".bin", ""));
-                        } catch (NumberFormatException e) {
+                        } catch (NumberFormatException _) {
                             return -1;
                         }
                     }));
@@ -392,7 +392,7 @@ public final class AllBooksTrain {
                 return 0d;
             }
             return v;
-        } catch (NumberFormatException ex) {
+        } catch (NumberFormatException _) {
             log.warn("[CFG] JGPT_VAL_FRACTION: не число — hold-out отключён");
             return 0d;
         }
@@ -406,7 +406,7 @@ public final class AllBooksTrain {
         }
         try {
             return Long.parseLong(e.trim());
-        } catch (NumberFormatException ex) {
+        } catch (NumberFormatException _) {
             log.warn("[CFG] JGPT_VAL_SEED: не число — используем 42");
             return 42L;
         }

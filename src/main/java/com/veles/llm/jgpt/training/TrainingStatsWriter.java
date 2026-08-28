@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -34,8 +35,8 @@ public final class TrainingStatsWriter {
         if (v != null && !v.isBlank()) {
             try {
                 int n = Integer.parseInt(v.trim());
-                return Math.max(10, Math.min(n, 500_000));
-            } catch (NumberFormatException ignored) {
+                return Math.clamp(n, 10, 500_000);
+            } catch (NumberFormatException _) {
                 // fall through
             }
         }
@@ -139,8 +140,9 @@ public final class TrainingStatsWriter {
      */
     public void syncProgressFromResume(int step, int epochOneBased, int totalEpochs) {
         this.currentStep = Math.max(0, step);
-        int ep = Math.max(1, Math.min(epochOneBased, Math.max(1, totalEpochs)));
-        this.currentEpoch = ep + "/" + Math.max(1, totalEpochs);
+        int totalEp = Math.max(1, totalEpochs);
+        int ep = Math.clamp(epochOneBased, 1, totalEp);
+        this.currentEpoch = ep + "/" + totalEp;
         write();
     }
 
@@ -228,7 +230,7 @@ public final class TrainingStatsWriter {
     private String buildJson() {
         StringBuilder sb = new StringBuilder(4096);
         sb.append("{\n");
-        sb.append("  \"updated\": \"").append(LocalDateTime.now().format(DT)).append("\",\n");
+        sb.append("  \"updated\": \"").append(LocalDateTime.now(ZoneOffset.UTC).format(DT)).append("\",\n");
         sb.append("  \"updated_ms\": ").append(System.currentTimeMillis()).append(",\n");
         sb.append("  \"current_step\": ").append(currentStep).append(",\n");
         sb.append("  \"total_steps\": ").append(totalSteps).append(",\n");

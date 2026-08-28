@@ -6,14 +6,19 @@ import java.lang.ref.ReferenceQueue;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Буфер FP16 (half) на GPU: {@code numHalfs} элементов по 2 байта. Используется для кэша активаций при
  * {@code JGPT_ACTIVATION_CACHE_FP16=1}.
  *
- * <p>Отложенное освобождение без {@link #close()} — см. {@link #drainLeaked()} (после GC). Предупреждение в stderr,
+ * <p>Отложенное освобождение без {@link #close()} — см. {@link #drainLeaked()} (после GC). Предупреждение в логе,
  * если {@link #close()} не вызывали.
  */
 public final class GpuHalfBuffer implements AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(GpuHalfBuffer.class);
 
     private static final ReferenceQueue<GpuHalfBuffer> REF_QUEUE = new ReferenceQueue<>();
 
@@ -67,10 +72,10 @@ public final class GpuHalfBuffer implements AutoCloseable {
             if (!ph.nativeFreed.compareAndSet(false, true)) {
                 return;
             }
-            if (!ph.closedExplicitly.get()) {
-                System.err.println(
-                        "[GpuHalfBuffer] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого буфера @0x"
-                                + Long.toHexString(ph.ptr));
+            if (!ph.closedExplicitly.get() && log.isWarnEnabled()) {
+                log.warn(
+                        "[GpuHalfBuffer] ПРЕДУПРЕЖДЕНИЕ: освобождение VRAM незакрытого буфера @0x{}",
+                        Long.toHexString(ph.ptr));
             }
             if (TensorOpsGPU.isGpuAvailable() && ph.ptr != 0L) {
                 nativeFree(ph.ptr);

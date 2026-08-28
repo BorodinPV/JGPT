@@ -6,11 +6,12 @@ import com.veles.llm.jgpt.model.GPTModel;
 import com.veles.llm.jgpt.training.LLMConfig;
 
 import java.io.BufferedReader;
-import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
+import java.util.Arrays;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,7 +20,7 @@ import org.slf4j.LoggerFactory;
  * Инференс после обучения {@link AllBooksTrain}: загрузка весов и BPE, ввод промптов в консоли (или один запуск с
  * {@code --prompt}).
  *
- * <p>Геометрия модели как при обучении на базе {@link LLMConfig#smart50M()} с учётом {@code JGPT_MAX_SEQ_LEN} и
+ * <p>Геометрия модели как при обучении на базе {@link LLMConfig#canonical()} с учётом {@code JGPT_MAX_SEQ_LEN} и
  * {@code JGPT_PRESET_NUM_LAYERS} из окружения; при необходимости переопределите явно {@code --seq-len} и {@code --layers}.
  *
  * <p>Пример:
@@ -34,7 +35,11 @@ public final class InferChat {
 
     private static final Logger log = LoggerFactory.getLogger(InferChat.class);
 
-    private InferChat() {}
+    private static final String PROMPT_EQ = "--prompt=";
+
+    private InferChat() {
+        // no instances
+    }
 
     public static void main(String[] args) throws Exception {
         TensorOpsGPU.requireCuda("InferChat");
@@ -49,36 +54,32 @@ public final class InferChat {
         int layersOverride = -1;
         String singlePrompt = null;
 
-        for (int i = 0; i < args.length; i++) {
-            String a = args[i];
-            if ("--help".equals(a) || "-h".equals(a)) {
-                printUsage();
-                return;
-            }
-            if ("--boo".equals(a) && i + 1 < args.length) {
-                boo = args[++i];
-            } else if ("--model".equals(a) && i + 1 < args.length) {
-                modelRel = args[++i];
-            } else if ("--tokenizer".equals(a) && i + 1 < args.length) {
-                tokenizerRel = args[++i];
-            } else if ("--max-new-tokens".equals(a) && i + 1 < args.length) {
-                maxNewTokens = Math.max(1, Integer.parseInt(args[++i]));
-            } else if ("--temperature".equals(a) && i + 1 < args.length) {
-                temperature = Float.parseFloat(args[++i]);
-            } else if ("--top-k".equals(a) && i + 1 < args.length) {
-                topK = Math.max(1, Integer.parseInt(args[++i]));
-            } else if ("--seq-len".equals(a) && i + 1 < args.length) {
-                seqLenOverride = Math.max(1, Integer.parseInt(args[++i]));
-            } else if ("--layers".equals(a) && i + 1 < args.length) {
-                layersOverride = Math.max(1, Integer.parseInt(args[++i]));
-            } else if ("--prompt".equals(a) && i + 1 < args.length) {
-                singlePrompt = args[++i];
-            } else if (a.startsWith("--prompt=") && a.length() > "--prompt=".length()) {
-                singlePrompt = a.substring("--prompt=".length());
-            } else {
-                log.error("Неизвестный или неполный аргумент: {} (см. --help)", a);
-                printUsage();
-                System.exit(2);
+        ArrayDeque<String> argv = new ArrayDeque<>(Arrays.asList(args));
+        while (!argv.isEmpty()) {
+            String a = argv.removeFirst();
+            switch (a) {
+                case "--help", "-h" -> {
+                    printUsage();
+                    return;
+                }
+                case "--boo" -> boo = requireArg(argv, a);
+                case "--model" -> modelRel = requireArg(argv, a);
+                case "--tokenizer" -> tokenizerRel = requireArg(argv, a);
+                case "--max-new-tokens" -> maxNewTokens = Math.max(1, Integer.parseInt(requireArg(argv, a)));
+                case "--temperature" -> temperature = Float.parseFloat(requireArg(argv, a));
+                case "--top-k" -> topK = Math.max(1, Integer.parseInt(requireArg(argv, a)));
+                case "--seq-len" -> seqLenOverride = Math.max(1, Integer.parseInt(requireArg(argv, a)));
+                case "--layers" -> layersOverride = Math.max(1, Integer.parseInt(requireArg(argv, a)));
+                case "--prompt" -> singlePrompt = requireArg(argv, a);
+                default -> {
+                    if (a.startsWith(PROMPT_EQ) && a.length() > PROMPT_EQ.length()) {
+                        singlePrompt = a.substring(PROMPT_EQ.length());
+                    } else {
+                        log.error("Неизвестный или неполный аргумент: {} (см. --help)", a);
+                        printUsage();
+                        System.exit(2);
+                    }
+                }
             }
         }
 
@@ -127,7 +128,7 @@ public final class InferChat {
                 String out =
                         LlmTextGeneration.generateText(
                                 model, tokenizer, singlePrompt, maxNewTokens, temperature, topK);
-                System.out.println(out);
+                log.info("{}", out);
                 return;
             }
 
@@ -143,33 +144,33 @@ public final class InferChat {
                     maxNewTokens,
                     temperature,
                     topK);
-            BufferedReader stdin =
-                    new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-            while (true) {
-                console.printf("> ");
-                console.flush();
-                String line = stdin.readLine();
-                if (line == null) {
-                    break;
+            try (BufferedReader stdin =
+                    new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
+                while (true) {
+                    console.printf("> ");
+                    console.flush();
+                    String line = stdin.readLine();
+                    if (line == null) {
+                        break;
+                    }
+                    String trimmed = line.trim();
+                    if (trimmed.isEmpty()) {
+                        break;
+                    }
+                    if ("quit".equalsIgnoreCase(trimmed) || "exit".equalsIgnoreCase(trimmed)) {
+                        break;
+                    }
+                    try {
+                        String out =
+                                LlmTextGeneration.generateText(
+                                        model, tokenizer, trimmed, maxNewTokens, temperature, topK);
+                        log.info("{}", out);
+                    } catch (Exception e) {
+                        log.warn("Генерация: {}", e.getMessage());
+                    }
                 }
-                String trimmed = line.trim();
-                if (trimmed.isEmpty()) {
-                    break;
-                }
-                if ("quit".equalsIgnoreCase(trimmed) || "exit".equalsIgnoreCase(trimmed)) {
-                    break;
-                }
-                try {
-                    String out =
-                            LlmTextGeneration.generateText(
-                                    model, tokenizer, trimmed, maxNewTokens, temperature, topK);
-                    System.out.println(out);
-                    System.out.println();
-                } catch (Exception e) {
-                    log.warn("Генерация: {}", e.getMessage());
-                }
+                log.info("Выход.");
             }
-            log.info("Выход.");
         } finally {
             if (TensorOpsGPU.isGpuAvailable()) {
                 TensorOpsGPU.synchronizeStream();
@@ -182,7 +183,7 @@ public final class InferChat {
     private static LLMConfig geometryFromEnvAndOverrides(int seqLenOverride, int layersOverride) {
         LLMConfig base =
                 LLMConfig.applyPresetNumLayersOverrideFromEnv(
-                        LLMConfig.applySeqLenOverrideFromEnv(LLMConfig.smart50M()));
+                        LLMConfig.applySeqLenOverrideFromEnv(LLMConfig.canonical()));
         int seq = seqLenOverride > 0 ? seqLenOverride : base.maxSeqLen;
         int layers = layersOverride > 0 ? layersOverride : base.numLayers;
         if (seq == base.maxSeqLen && layers == base.numLayers) {
@@ -217,8 +218,18 @@ public final class InferChat {
         return global;
     }
 
+    private static String requireArg(ArrayDeque<String> argv, String flag) {
+        String v = argv.pollFirst();
+        if (v == null) {
+            log.error("Нет значения для {} (см. --help)", flag);
+            printUsage();
+            System.exit(2);
+        }
+        return v;
+    }
+
     private static void printUsage() {
-        System.err.println(
+        log.info(
                 """
                 InferChat — промпты к обученной модели (CUDA обязательна).
 
@@ -226,16 +237,17 @@ public final class InferChat {
                   --boo DIR              корень проекта (по умолчанию .)
                   --model PATH           веса относительно boo (по умолчанию checkpoints/all_books/model_final.bin)
                   --tokenizer PATH       BPE; по умолчанию checkpoints/tokenizer_global.bin или all_books/tokenizer_final.bin
-                  --seq-len N            max контекст (иначе env JGPT_MAX_SEQ_LEN / smart50M)
-                  --layers N             число слоёв (иначе env JGPT_PRESET_NUM_LAYERS / smart50M)
+                  --seq-len N            max контекст (иначе env JGPT_MAX_SEQ_LEN / canonical 1024)
+                  --layers N             число слоёв (иначе env JGPT_PRESET_NUM_LAYERS / canonical 12)
                   --max-new-tokens N     длина продолжения (по умолчанию 128)
                   --temperature F        (по умолчанию 0.8)
                   --top-k N              (по умолчанию 50)
                   --prompt TEXT          один промпт и выход (без интерактива)
-                  --prompt=TEXT          то же одним аргументом (удобно для mvn -Dexec.args без кавычек к пробелам)
+                  {}TEXT          то же одним аргументом (удобно для mvn -Dexec.args без кавычек к пробелам)
                   -h, --help             эта справка
 
                 Окружение: JGPT_CUDA_LIB, JGPT_MAX_SEQ_LEN, JGPT_PRESET_NUM_LAYERS, JGPT_GENERATE_GPU_KV, … как при train.
-                """);
+                """,
+                PROMPT_EQ);
     }
 }

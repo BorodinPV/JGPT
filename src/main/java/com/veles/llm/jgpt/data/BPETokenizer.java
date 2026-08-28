@@ -6,7 +6,6 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -97,7 +96,7 @@ public final class BPETokenizer {
     }
 
     private static Map<String, Integer> buildMergeRanks(List<String[]> merges) {
-        Map<String, Integer> ranks = new HashMap<>(merges.size() * 2);
+        Map<String, Integer> ranks = HashMap.newHashMap(merges.size());
         for (int i = 0; i < merges.size(); i++) {
             ranks.put(merges.get(i)[0] + '\0' + merges.get(i)[1], i);
         }
@@ -324,7 +323,7 @@ public final class BPETokenizer {
                 continue;
             }
             if (token.equals(UNK_TOKEN)) {
-                if (pendingSpace && sb.length() > 0) {
+                if (pendingSpace && !sb.isEmpty()) {
                     sb.append(' ');
                 }
                 sb.append('?');
@@ -336,10 +335,8 @@ public final class BPETokenizer {
             String core = wordEnd ? token.substring(0, token.length() - WORD_END.length()) : token;
             // После </w> ждём пробел перед следующим «словом». Если следующий токен сам — пробельная
             // словоформа (пробелы как отдельный матч \\s+), в core уже есть пробел — не дублировать.
-            if (pendingSpace && sb.length() > 0) {
-                if (core.isEmpty() || !Character.isWhitespace(core.charAt(0))) {
-                    sb.append(' ');
-                }
+            if (pendingSpace && !sb.isEmpty() && (core.isEmpty() || !Character.isWhitespace(core.charAt(0)))) {
+                sb.append(' ');
             }
             sb.append(core);
             // Сбрасываем pendingSpace если токен состоит только из пробелов —

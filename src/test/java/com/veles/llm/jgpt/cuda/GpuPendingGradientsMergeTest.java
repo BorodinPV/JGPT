@@ -168,7 +168,7 @@ class GpuPendingGradientsMergeTest {
         Tensor param = new Tensor(new int[] {2});
         try (GpuFloatBuffer delta = GpuFloatBuffer.allocate(2)) {
             delta.copyFrom(new float[] {1f, 2f}, 0, 2);
-            try (GpuPendingGradients.Scope ignored = GpuPendingGradients.acquire()) {
+            try (GpuPendingGradients.Scope _ = GpuPendingGradients.acquire()) {
                 GpuPendingGradients.accumulate(param, delta, 2);
                 assertTrue(GpuPendingGradients.isDirty(param));
                 assertTrue(GpuPendingGradients.currentThreadDebugSummary().contains("dirtyEntries=1"));

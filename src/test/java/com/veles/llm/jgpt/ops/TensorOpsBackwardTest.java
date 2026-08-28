@@ -9,13 +9,13 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @EnabledIfGpu
 @DisplayName("TensorOpsBackward")
-public class TensorOpsBackwardTest {
+class TensorOpsBackwardTest {
 
     // ========== Add Backward ==========
 
     @Test
     @DisplayName("addBackward accumulates gradients correctly")
-    public void addBackwardAccumulates() {
+    void addBackwardAccumulates() {
         Tensor gradC = new Tensor(new int[]{3});
         gradC.zeroGrad();
         gradC.gradBuffer()[0] = 1f;
@@ -39,7 +39,7 @@ public class TensorOpsBackwardTest {
 
     @Test
     @DisplayName("subtractBackward accumulates with negation")
-    public void subtractBackwardAccumulates() {
+    void subtractBackwardAccumulates() {
         Tensor gradC = new Tensor(new int[]{3});
         gradC.zeroGrad();
         gradC.gradBuffer()[0] = 1f;
@@ -63,7 +63,7 @@ public class TensorOpsBackwardTest {
 
     @Test
     @DisplayName("addBackward rejects null inputs")
-    public void addBackwardRejectsNull() {
+    void addBackwardRejectsNull() {
         Tensor t = new Tensor(new int[]{3});
         t.zeroGrad();
         assertThrows(NullPointerException.class,
@@ -76,7 +76,7 @@ public class TensorOpsBackwardTest {
 
     @Test
     @DisplayName("addBackward rejects shape mismatch")
-    public void addBackwardRejectsShapeMismatch() {
+    void addBackwardRejectsShapeMismatch() {
         Tensor gradC = new Tensor(new int[]{3});
         gradC.zeroGrad();
         Tensor gradA = new Tensor(new int[]{3});
@@ -92,7 +92,7 @@ public class TensorOpsBackwardTest {
 
     @Test
     @DisplayName("matmulBackward matches analytical gradients")
-    public void matmulBackwardMatchesAnalytic() {
+    void matmulBackwardMatchesAnalytic() {
         Tensor a = Tensor.fromArray(new float[]{1f, 2f}, new int[]{1, 2});
         Tensor b = Tensor.fromArray(new float[]{3f, 4f}, new int[]{2, 1});
 
@@ -117,7 +117,7 @@ public class TensorOpsBackwardTest {
 
     @Test
     @DisplayName("transpose swaps dimensions correctly")
-    public void transposeSwapsDims() {
+    void transposeSwapsDims() {
         Tensor t = Tensor.fromArray(new float[]{1, 2, 3, 4}, new int[]{2, 2});
         Tensor tr = TensorOpsBackward.transpose(t);
         assertEquals(2, tr.getShape()[0]);
@@ -130,7 +130,7 @@ public class TensorOpsBackwardTest {
 
     @Test
     @DisplayName("transpose rejects non-2D tensor")
-    public void transposeRejectsNon2D() {
+    void transposeRejectsNon2D() {
         Tensor t = new Tensor(new int[]{2, 2, 2});
         assertThrows(IllegalArgumentException.class,
                 () -> TensorOpsBackward.transpose(t));
@@ -140,7 +140,7 @@ public class TensorOpsBackwardTest {
 
     @Test
     @DisplayName("accumulateGradientInto adds update to target")
-    public void accumulateGradientIntoAdds() {
+    void accumulateGradientIntoAdds() {
         Tensor target = new Tensor(new int[]{2});
         target.zeroGrad();
 
@@ -158,7 +158,7 @@ public class TensorOpsBackwardTest {
 
     @Test
     @DisplayName("accumulateGradientInto initializes grad if needed")
-    public void accumulateGradientIntoInitializesGrad() {
+    void accumulateGradientIntoInitializesGrad() {
         Tensor target = new Tensor(new int[]{2});
         // Don't call zeroGrad() - should be initialized by method
         Tensor update = Tensor.fromArray(new float[]{1f, 2f}, new int[]{2});
@@ -174,7 +174,7 @@ public class TensorOpsBackwardTest {
 
     @Test
     @DisplayName("reluBackward only passes positive gradients")
-    public void reluBackwardOnlyPositive() {
+    void reluBackwardOnlyPositive() {
         Tensor gradOut = Tensor.fromArray(new float[]{1f, 2f, 3f}, new int[]{3});
         Tensor input = Tensor.fromArray(new float[]{-1f, 0f, 1f}, new int[]{3});
         Tensor gradIn = new Tensor(new int[]{3});
@@ -191,7 +191,7 @@ public class TensorOpsBackwardTest {
 
     @Test
     @DisplayName("crossEntropySoftmaxBackward basic case")
-    public void crossEntropySoftmaxBackwardBasic() {
+    void crossEntropySoftmaxBackwardBasic() {
         Tensor logits = Tensor.fromArray(new float[]{0f, 0f}, new int[]{1, 1, 2});
         Tensor target = Tensor.fromArray(new float[]{1f}, new int[]{1, 1});
 
@@ -204,7 +204,7 @@ public class TensorOpsBackwardTest {
 
     @Test
     @DisplayName("crossEntropySoftmaxBackward rejects null")
-    public void crossEntropySoftmaxBackwardRejectsNull() {
+    void crossEntropySoftmaxBackwardRejectsNull() {
         Tensor t = new Tensor(new int[]{1, 1, 2});
         assertThrows(NullPointerException.class,
                 () -> TensorOpsBackward.crossEntropySoftmaxBackward(null, t));

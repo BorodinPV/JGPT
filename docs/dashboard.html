@@ -365,7 +365,7 @@
     line-height: 1.7;
     color: var(--text);
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
     max-height: 110px;
     overflow-y: auto;
   }
@@ -402,9 +402,9 @@
   </div>
   <div class="header-right">
     <span id="updated">—</span>
-    <label id="auto-refresh">
+    <label id="auto-refresh" for="auto-chk">
       <input type="checkbox" id="auto-chk" checked>
-      <span id="auto-refresh-label"></span>
+      <span id="auto-refresh-label">Авто</span>
     </label>
     <button id="refresh-btn" onclick="loadStats()">↻ Обновить</button>
   </div>
@@ -515,7 +515,7 @@ const STATS_URL = (() => {
 })();
 const AUTO_REFRESH_MS = (() => {
   const q = new URLSearchParams(location.search).get('refresh');
-  const n = q != null ? parseInt(q, 10) : NaN;
+  const n = q != null ? Number.parseInt(q, 10) : Number.NaN;
   return Number.isFinite(n) && n >= 2 ? n * 1000 : 5000;
 })();
 
@@ -644,11 +644,11 @@ function statusItem(cls, dotCls, text) {
 function escHtml(s) {
   if (!s) return '';
   return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 /**
@@ -661,7 +661,7 @@ function parseEpoch(epochStr) {
   if (!epochStr) return null;
   const m = String(epochStr).match(/^(\d+)\/(\d+)$/);
   if (!m) return null;
-  const cur = parseInt(m[1]), total = parseInt(m[2]);
+  const cur = Number.parseInt(m[1], 10), total = Number.parseInt(m[2], 10);
   if (!Number.isFinite(cur) || !Number.isFinite(total) || total <= 0) return null;
   return { cur, total };
 }
@@ -699,8 +699,8 @@ function computeEtaSecs(d) {
   }
   // Fallback: tokens_per_sec
   if (secPerStep == null) {
-    const seqLen = parseInt((d.config || {}).seq_len) || 0;
-    const batch  = parseInt((d.config || {}).batch)   || 1;
+    const seqLen = Number.parseInt((d.config || {}).seq_len, 10) || 0;
+    const batch  = Number.parseInt((d.config || {}).batch, 10)   || 1;
     const tps    = d.tokens_per_sec || 0;
     if (seqLen > 0 && tps > 0) secPerStep = (seqLen * batch) / tps;
   }
@@ -855,7 +855,7 @@ let cachedStats = null;
 function saveChartCustomToStorage() {
   const from = $('chart-custom-from'), to = $('chart-custom-to');
   if (!from || !to) return;
-  try { localStorage.setItem(LS_CHART_CUSTOM_FROM, from.value || ''); localStorage.setItem(LS_CHART_CUSTOM_TO, to.value || ''); } catch (e) {}
+  try { localStorage.setItem(LS_CHART_CUSTOM_FROM, from.value || ''); localStorage.setItem(LS_CHART_CUSTOM_TO, to.value || ''); } catch { /* quota / private mode */ }
 }
 
 function restoreChartCustomFromStorage() {
@@ -863,7 +863,18 @@ function restoreChartCustomFromStorage() {
   if (!sel || sel.value !== 'custom') return;
   const from = $('chart-custom-from'), to = $('chart-custom-to');
   if (!from || !to) return;
-  try { const sf = localStorage.getItem(LS_CHART_CUSTOM_FROM), st = localStorage.getItem(LS_CHART_CUSTOM_TO); if (sf != null && sf !== '') from.value = sf; if (st != null && st !== '') to.value = st; } catch (e) {}
+  try {
+    const sf = localStorage.getItem(LS_CHART_CUSTOM_FROM);
+    const st = localStorage.getItem(LS_CHART_CUSTOM_TO);
+    if (sf != null && sf !== '') {
+      from.value = sf;
+    }
+    if (st != null && st !== '') {
+      to.value = st;
+    }
+  } catch {
+    /* quota / private mode */
+  }
 }
 
 function prepareChartToolbarBeforeCharts(d) {
@@ -872,7 +883,7 @@ function prepareChartToolbarBeforeCharts(d) {
   if (!sel || sel.value !== 'custom') return;
   const from = $('chart-custom-from'), to = $('chart-custom-to');
   if (!from || !to || (from.value && to.value)) return;
-  try { const f = localStorage.getItem(LS_CHART_CUSTOM_FROM), t = localStorage.getItem(LS_CHART_CUSTOM_TO); if (f === '' && t === '') return; } catch (e) {}
+  try { const f = localStorage.getItem(LS_CHART_CUSTOM_FROM), t = localStorage.getItem(LS_CHART_CUSTOM_TO); if (f === '' && t === '') return; } catch { /* quota / private mode */ }
   prefillCustomIfEmpty(d);
   if (from.value && to.value) saveChartCustomToStorage();
 }
@@ -987,6 +998,19 @@ function renderCharts(d) {
   }
 }
 
+function evalToneClass(hasEval, d, none, good, mid, bad) {
+  if (!hasEval || d.best_loss <= 0) {
+    return none;
+  }
+  if (d.last_eval_loss <= d.best_loss + 0.02) {
+    return good;
+  }
+  if (d.last_eval_loss <= d.best_loss + 0.15) {
+    return mid;
+  }
+  return bad;
+}
+
 // ─── Основная функция отрисовки ───────────────────────────────
 function render(d) {
   // ── Статус тренировки
@@ -994,7 +1018,13 @@ function render(d) {
   const statusEl = $('train-status'), statusTxtEl = $('train-status-text');
   if (statusEl) {
     statusEl.className = 'train-status ' + trainStatus;
-    statusTxtEl.textContent = trainStatus === 'live' ? 'Обучение' : trainStatus === 'idle' ? 'Пауза' : 'Неактивно';
+    let statusLabel = 'Неактивно';
+    if (trainStatus === 'live') {
+      statusLabel = 'Обучение';
+    } else if (trainStatus === 'idle') {
+      statusLabel = 'Пауза';
+    }
+    statusTxtEl.textContent = statusLabel;
   }
 
   // ── Дата обновления
@@ -1004,14 +1034,9 @@ function render(d) {
   // ── Ключевые метрики
   const hasEval = d.last_eval_loss > 0 || (d.eval_steps || []).length > 0;
   // lossColor: только если уже был хоть один eval и best_loss > 0
-  const lossColor = (!hasEval || d.best_loss <= 0)
-    ? 'col-cyan'
-    : d.last_eval_loss <= d.best_loss + 0.02 ? 'col-green'
-    : d.last_eval_loss <= d.best_loss + 0.15  ? 'col-yellow' : 'col-red';
+  const lossColor = evalToneClass(hasEval, d, 'col-cyan', 'col-green', 'col-yellow', 'col-red');
 
-  const evalAccent = (!hasEval || d.best_loss <= 0) ? 'accent-cyan'
-    : d.last_eval_loss <= d.best_loss + 0.02 ? 'accent-green'
-    : d.last_eval_loss <= d.best_loss + 0.15  ? 'accent-yellow' : 'accent-red';
+  const evalAccent = evalToneClass(hasEval, d, 'accent-cyan', 'accent-green', 'accent-yellow', 'accent-red');
 
   // Найдём шаг лучшего eval
   let bestStep = null;
@@ -1056,7 +1081,11 @@ function render(d) {
   }
   const fillEl = $('pb-fill');
   fillEl.style.width = progress.pct + '%';
-  if (trainStatus === 'live') fillEl.classList.add('live'); else fillEl.classList.remove('live');
+  if (trainStatus === 'live') {
+    fillEl.classList.add('live');
+  } else {
+    fillEl.classList.remove('live');
+  }
 
   // ── Статус-блок
   const statuses = [];
@@ -1081,13 +1110,15 @@ function render(d) {
     statuses.push(statusItem('status-ok', 'dot-ok', 'Лучший eval обновился на последней оценке'));
 
   const overflowPct = d.current_step > 0 ? (d.skipped_steps / d.current_step * 100).toFixed(1) : '0.0';
-  if (parseFloat(overflowPct) >= 3)
+  if (Number.parseFloat(overflowPct) >= 3) {
     statuses.push(statusItem('status-warn', 'dot-warn', `Переполнений градиентов: <strong>${d.skipped_steps}</strong> (${overflowPct}%)`));
-  else
+  } else {
     statuses.push(statusItem('status-ok', 'dot-ok', `Переполнений градиентов: ${d.skipped_steps} (${overflowPct}%) — норма`));
+  }
 
-  if (!statuses.some(s => s.includes('status-error') || s.includes('status-warn')))
+  if (!statuses.some(s => s.includes('status-error') || s.includes('status-warn'))) {
     statuses.unshift(statusItem('status-ok', 'dot-ok', '<strong>Всё нормально</strong> — обучение идёт штатно'));
+  }
 
   $('status-list').innerHTML = statuses.join('');
 
@@ -1095,8 +1126,8 @@ function render(d) {
   renderCharts(d);
 
   // ── Стабильность
-  const ovColor = parseFloat(overflowPct) >= 3 ? 'col-yellow' : 'col-green';
-  const ovAccent = parseFloat(overflowPct) >= 3 ? 'accent-yellow' : 'accent-green';
+  const ovColor = Number.parseFloat(overflowPct) >= 3 ? 'col-yellow' : 'col-green';
+  const ovAccent = Number.parseFloat(overflowPct) >= 3 ? 'accent-yellow' : 'accent-green';
   const lastOvStep = (d.overflow_steps || []).length
     ? `последний на шаге ${d.overflow_steps[d.overflow_steps.length - 1].toLocaleString('ru')}`
     : '';
@@ -1172,26 +1203,41 @@ async function loadStats() {
 let autoTimer = null;
 function setupAuto() {
   clearInterval(autoTimer);
-  if ($('auto-chk').checked) autoTimer = setInterval(loadStats, AUTO_REFRESH_MS);
+  if ($('auto-chk').checked) {
+    autoTimer = setInterval(loadStats, AUTO_REFRESH_MS);
+  }
 }
 $('auto-chk').addEventListener('change', setupAuto);
 
 (function initChartPeriodUi() {
   const sel = $('chart-period-preset');
   if (!sel) return;
-  try { const saved = localStorage.getItem(LS_CHART_PERIOD); if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved; } catch (e) {}
+  try { const saved = localStorage.getItem(LS_CHART_PERIOD); if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved; } catch { /* quota / private mode */ }
   restoreChartCustomFromStorage();
   syncChartCustomVisibility();
   sel.addEventListener('change', () => {
-    try { localStorage.setItem(LS_CHART_PERIOD, sel.value); } catch (e) {}
+    try { localStorage.setItem(LS_CHART_PERIOD, sel.value); } catch { /* quota / private mode */ }
     syncChartCustomVisibility();
-    if (sel.value === 'custom') { restoreChartCustomFromStorage(); if (cachedStats) { prefillCustomIfEmpty(cachedStats); saveChartCustomToStorage(); } }
-    if (cachedStats) renderCharts(cachedStats);
+    if (sel.value === 'custom') {
+      restoreChartCustomFromStorage();
+      if (cachedStats) {
+        prefillCustomIfEmpty(cachedStats);
+        saveChartCustomToStorage();
+      }
+    }
+    if (cachedStats) {
+      renderCharts(cachedStats);
+    }
   });
   ['chart-custom-from', 'chart-custom-to'].forEach(id => {
     const el = $(id);
     if (!el) return;
-    const redraw = () => { saveChartCustomToStorage(); if (cachedStats) renderCharts(cachedStats); };
+    const redraw = () => {
+      saveChartCustomToStorage();
+      if (cachedStats) {
+        renderCharts(cachedStats);
+      }
+    };
     el.addEventListener('change', redraw);
     el.addEventListener('input', redraw);
   });

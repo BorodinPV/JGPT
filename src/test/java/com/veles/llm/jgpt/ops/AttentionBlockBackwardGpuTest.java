@@ -89,10 +89,10 @@ class AttentionBlockBackwardGpuTest {
     private static void referenceMultiHeadAttentionWithRoPEBackward(
             Tensor gradOut,
             Tensor xNorm,
-            Tensor Wq,
-            Tensor Wk,
-            Tensor Wv,
-            Tensor Wo,
+            Tensor wq,
+            Tensor wk,
+            Tensor wv,
+            Tensor wo,
             int numHeads,
             Tensor mask,
             BlockActivationCache cache,
@@ -115,7 +115,7 @@ class AttentionBlockBackwardGpuTest {
 
         Tensor xFlat = Tensor.wrap(xNorm.internalBuffer(), new int[] {batch * seqLen, dModel});
         Tensor gradOutFlat = Tensor.wrap(gradOut.gradBuffer(), new int[] {batch * seqLen, dModel});
-        Tensor gradConcatFlat = TensorOps.matmul(gradOutFlat, TensorOpsBackward.transpose(Wo));
+        Tensor gradConcatFlat = TensorOps.matmul(gradOutFlat, TensorOpsBackward.transpose(wo));
         Tensor gradConcatData = Tensor.wrap(gradConcatFlat.internalBuffer(), xs);
 
         Tensor dHeads4 = TensorOps.splitHeads(gradConcatData, numHeads);
@@ -164,9 +164,9 @@ class AttentionBlockBackwardGpuTest {
         Tensor dQFlat = Tensor.wrap(dQ.internalBuffer(), new int[] {batch * seqLen, dModel});
         Tensor dKFlat = Tensor.wrap(dK.internalBuffer(), new int[] {batch * seqLen, dModel});
         Tensor dVFlat = Tensor.wrap(dV.internalBuffer(), new int[] {batch * seqLen, dModel});
-        Tensor gradXQ = TensorOps.matmul(dQFlat, TensorOpsBackward.transpose(Wq));
-        Tensor gradXK = TensorOps.matmul(dKFlat, TensorOpsBackward.transpose(Wk));
-        Tensor gradXV = TensorOps.matmul(dVFlat, TensorOpsBackward.transpose(Wv));
+        Tensor gradXQ = TensorOps.matmul(dQFlat, TensorOpsBackward.transpose(wq));
+        Tensor gradXK = TensorOps.matmul(dKFlat, TensorOpsBackward.transpose(wk));
+        Tensor gradXV = TensorOps.matmul(dVFlat, TensorOpsBackward.transpose(wv));
         float[] gx = gradX.gradBuffer();
         float[] gxq = gradXQ.internalBuffer();
         float[] gxk = gradXK.internalBuffer();

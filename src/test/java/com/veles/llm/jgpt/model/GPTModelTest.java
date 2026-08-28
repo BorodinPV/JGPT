@@ -5,7 +5,7 @@ import com.veles.llm.jgpt.core.Tensor;
 import java.util.Arrays;
 
 public class GPTModelTest {
-    public static void main(String[] args) {
+    public static void main(String[] unused) {
         System.out.println("🧪 Testing GPT Model...");
 
         int vocabSize = 1000;

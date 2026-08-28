@@ -99,7 +99,7 @@ public final class DataLoader {
         }
         try {
             return Long.parseLong(e.trim());
-        } catch (NumberFormatException ex) {
+        } catch (NumberFormatException _) {
             return 42L;
         }
     }
@@ -164,7 +164,7 @@ public final class DataLoader {
         boolean eof = false;
 
         try (BufferedReader reader = Files.newBufferedReader(path)) {
-            while (!eof) {
+            while (true) {
                 while (sb.length() < nextProbeChars) {
                     int toRead = Math.min(buf.length, nextProbeChars - sb.length());
                     int n = reader.read(buf, 0, toRead);
@@ -188,8 +188,6 @@ public final class DataLoader {
                 nextProbeChars += Math.max(32_768, nextProbeChars / 2);
             }
         }
-
-        return sb.toString();
     }
 
     /**

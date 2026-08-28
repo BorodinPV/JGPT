@@ -11,10 +11,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-public class GpuFloatBufferTest {
+class GpuFloatBufferTest {
 
     @Test
-    public void testGpuFloatBufferMatmulMatchesCpu() {
+    void testGpuFloatBufferMatmulMatchesCpu() {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
@@ -44,7 +44,7 @@ public class GpuFloatBufferTest {
     }
 
     @Test
-    public void testMatmulAddReluLargeGpuMatchesReference() {
+    void testMatmulAddReluLargeGpuMatchesReference() {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
@@ -81,7 +81,7 @@ public class GpuFloatBufferTest {
     }
 
     @Test
-    public void drainLeakedAfterCloseDoesNotThrow() {
+    void drainLeakedAfterCloseDoesNotThrow() {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
@@ -92,7 +92,7 @@ public class GpuFloatBufferTest {
     }
 
     @Test
-    public void drainLeakedProcessesPhantomAfterGcHint() throws Exception {
+    void drainLeakedProcessesPhantomAfterGcHint() throws Exception {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }
@@ -107,7 +107,7 @@ public class GpuFloatBufferTest {
     }
 
     @Test
-    public void drainDeferredGpuBuffersAfterCloseDoesNotThrow() {
+    void drainDeferredGpuBuffersAfterCloseDoesNotThrow() {
         if (!TensorOpsGPU.isGpuAvailable()) {
             return;
         }

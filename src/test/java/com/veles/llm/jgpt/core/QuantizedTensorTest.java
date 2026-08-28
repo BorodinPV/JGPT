@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class QuantizedTensorTest {
 
     @Test
-    public void roundTripSmall() {
+    void roundTripSmall() {
         Tensor t = Tensor.fromArray(new float[]{-1f, 0f, 0.5f, 1f}, new int[]{2, 2});
         QuantizedTensor q = QuantizedTensor.fromTensor(t);
         Tensor back = q.toTensor();
@@ -22,20 +22,20 @@ class QuantizedTensorTest {
     }
 
     @Test
-    public void sameElementCountByteStorage() {
+    void sameElementCountByteStorage() {
         Tensor t = new Tensor(new int[]{100, 100});
         QuantizedTensor q = QuantizedTensor.fromTensor(t);
         assertEquals(t.internalBuffer().length, q.internalBuffer().length);
     }
 
     @Test
-    public void fromTensorRejectsNaN() {
+    void fromTensorRejectsNaN() {
         Tensor t = Tensor.fromArray(new float[] {1f, Float.NaN}, new int[] {2});
         assertThrows(IllegalArgumentException.class, () -> QuantizedTensor.fromTensor(t));
     }
 
     @Test
-    public void tinyMaxAbsUsesThatScale() {
+    void tinyMaxAbsUsesThatScale() {
         float v = 1e-13f;
         Tensor t = Tensor.fromArray(new float[] {v, -v * 0.5f}, new int[] {2});
         QuantizedTensor q = QuantizedTensor.fromTensor(t);
@@ -46,7 +46,7 @@ class QuantizedTensorTest {
     }
 
     @Test
-    public void allZerosScaleOne() {
+    void allZerosScaleOne() {
         Tensor t = new Tensor(new int[] {3});
         QuantizedTensor q = QuantizedTensor.fromTensor(t);
         assertEquals(1f, q.getScale());
@@ -56,7 +56,7 @@ class QuantizedTensorTest {
     }
 
     @Test
-    public void setRejectsNonFinite() {
+    void setRejectsNonFinite() {
         QuantizedTensor q = QuantizedTensor.fromTensor(Tensor.fromArray(new float[] {1f}, new int[] {1}));
         assertThrows(IllegalArgumentException.class, () -> q.set(Float.NaN, 0));
         assertThrows(IllegalArgumentException.class, () -> q.set(Float.POSITIVE_INFINITY, 0));
@@ -74,9 +74,8 @@ class QuantizedTensorTest {
 
     @Test
     void symmetricClampTo127() {
-        QuantizedTensor q = new QuantizedTensor(new int[] {2});
         float s = 1f;
-        q = QuantizedTensor.fromBytes(new byte[2], new int[] {2}, s);
+        QuantizedTensor q = QuantizedTensor.fromBytes(new byte[2], new int[] {2}, s);
         q.set(1.5f * s, 0);
         q.set(-1.5f * s, 1);
         assertEquals(127, q.internalBuffer()[0]);

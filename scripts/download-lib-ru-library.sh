@@ -91,6 +91,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+PYTHON=""
+if command -v python3 >/dev/null 2>&1 && python3 -c "import sys" >/dev/null 2>&1; then
+  PYTHON="python3"
+elif command -v python >/dev/null 2>&1 && python -c "import sys" >/dev/null 2>&1; then
+  PYTHON="python"
+else
+  echo "[libru] Need a working python3 or python on PATH." >&2
+  exit 1
+fi
+
 mkdir -p "$OUT_DIR" "$TMP_DIR"
 if [[ "$EXTRACT_ZIP" == "1" ]]; then
   mkdir -p "$EXTRACT_DIR"
@@ -106,12 +116,17 @@ NORM_LINKS="$TMP_DIR/norm_links.txt"
 FAILED_LINKS="$TMP_DIR/failed_links.txt"
 SKIPPED_LINKS="$TMP_DIR/skipped_links.txt"
 
+if [[ -n "$MAX_FILES" ]]; then
+  export JGPT_LIBRU_MAX_INDEX_PAGES="${JGPT_LIBRU_MAX_INDEX_PAGES:-24}"
+  echo "[libru] Limiting index crawl to $JGPT_LIBRU_MAX_INDEX_PAGES section pages (--max-files set)."
+fi
+
 echo "[libru] Fetching index: $BASE_URL"
 curl -fsSL --max-time "$TIMEOUT_SEC" \
   -A "Mozilla/5.0 (compatible; JGPT downloader/1.0)" \
   "$BASE_URL" > "$INDEX_HTML"
 
-python3 - <<'PY' "$INDEX_HTML" "$ALL_LINKS" "$BASE_URL"
+"$PYTHON" - <<'PY' "$INDEX_HTML" "$ALL_LINKS" "$BASE_URL"
 import sys
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
@@ -162,6 +177,14 @@ for url in result:
     if path_l.endswith("/") or path_l.endswith(".html") or path_l.endswith(".htm"):
         internal_pages.append(url)
 
+max_pages = 0
+try:
+    max_pages = int(__import__("os").environ.get("JGPT_LIBRU_MAX_INDEX_PAGES") or "0")
+except ValueError:
+    max_pages = 0
+if max_pages > 0:
+    internal_pages = internal_pages[:max_pages]
+
 for page_url in internal_pages:
     try:
         req = Request(page_url, headers={"User-Agent": user_agent})
@@ -187,7 +210,7 @@ with open(out_file, "w", encoding="utf-8") as f:
 PY
 
 # Only likely downloadable text files (no ripgrep dependency).
-python3 - <<'PY' "$ALL_LINKS" "$TEXT_LINKS"
+"$PYTHON" - <<'PY' "$ALL_LINKS" "$TEXT_LINKS"
 import re
 import sys
 
@@ -209,7 +232,7 @@ if [[ ! -s "$TEXT_LINKS" ]]; then
   exit 0
 fi
 
-python3 - <<'PY' "$TEXT_LINKS" "$NORM_LINKS"
+"$PYTHON" - <<'PY' "$TEXT_LINKS" "$NORM_LINKS"
 import re
 import sys
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
@@ -329,7 +352,7 @@ if [[ "$PREPARE_TXT" == "1" ]]; then
   fi
   echo "[libru] Preparing training txt from: ${PREP_ROOTS[*]}"
 
-  python3 - <<'PY' "${PREP_ROOTS[@]}" "$TXT_OUT_DIR" "$TXT_MIN_CHARS" "$RUSSIAN_ONLY"
+  "$PYTHON" - <<'PY' "${PREP_ROOTS[@]}" "$TXT_OUT_DIR" "$TXT_MIN_CHARS" "$RUSSIAN_ONLY"
 import html
 import re
 import sys
@@ -378,22 +401,68 @@ def collapse_spaces(s: str) -> str:
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
 
+def strip_non_text_markup(content: str) -> str:
+    # FB2 cover/attachments: itertext() otherwise dumps JPEG/PNG base64 into the corpus.
+    content = re.sub(r"(?is)<binary\b[^>]*>.*?</binary>", " ", content)
+    content = re.sub(r"(?is)<script\b[^>]*>.*?</script>", " ", content)
+    content = re.sub(r"(?is)<style\b[^>]*>.*?</style>", " ", content)
+    return content
+
+def drop_base64_blobs(text: str) -> str:
+    # Residual uuencode/base64 lines if a parser missed a binary block.
+    return re.sub(r"(?m)^[A-Za-z0-9+/]{72,}={0,2}\s*$", " ", text)
+
 def xml_to_text(content: str) -> str:
     content = re.sub(r"<\?xml[^>]*\?>", "", content, flags=re.IGNORECASE)
     content = re.sub(r"<!DOCTYPE[^>]*>", "", content, flags=re.IGNORECASE)
+    content = strip_non_text_markup(content)
     try:
         root = ET.fromstring(content)
+        skip_subtrees = {
+            "binary", "script", "style", "document-info", "publish-info",
+            "custom-info", "coverpage", "src-title-info", "image",
+        }
+        skip_tags = {
+            "id", "isbn", "src-url", "program-used", "version", "history",
+            "genre", "lang", "sequence", "src-ocr", "keywords",
+            "first-name", "middle-name", "last-name", "nickname", "home-page",
+            "email", "date",
+        }
+        note_bodies = {"notes", "comments", "footnotes"}
         chunks = []
-        for t in root.itertext():
-            t = t.strip()
-            if t:
-                chunks.append(t)
-        return collapse_spaces("\n".join(chunks))
+
+        def walk(el) -> None:
+            tag = el.tag.split("}")[-1].lower() if isinstance(el.tag, str) else ""
+            if tag in skip_subtrees:
+                return
+            if tag == "body":
+                name = (el.get("name") or "").strip().lower()
+                if name in note_bodies:
+                    return
+            if tag in skip_tags:
+                if el.tail and el.tail.strip():
+                    chunks.append(el.tail.strip())
+                return
+            href = ""
+            for k, v in el.attrib.items():
+                if k.split("}")[-1].lower() in ("href", "type") and v:
+                    href += " " + v
+            if tag == "a" and ("note" in href.lower() or href.strip().startswith("#")):
+                if el.tail and el.tail.strip():
+                    chunks.append(el.tail.strip())
+                return
+            if el.text and el.text.strip():
+                chunks.append(el.text.strip())
+            for child in list(el):
+                walk(child)
+            if el.tail and el.tail.strip():
+                chunks.append(el.tail.strip())
+
+        walk(root)
+        return collapse_spaces(drop_base64_blobs("\n".join(chunks)))
     except ET.ParseError:
-        stripped = re.sub(r"(?is)<script.*?>.*?</script>", " ", content)
-        stripped = re.sub(r"(?is)<style.*?>.*?</style>", " ", stripped)
-        stripped = re.sub(r"(?s)<[^>]+>", " ", stripped)
-        return collapse_spaces(stripped)
+        stripped = re.sub(r"(?s)<[^>]+>", " ", content)
+        return collapse_spaces(drop_base64_blobs(stripped))
 
 def extract_declared_lang(content: str) -> str:
     m = re.search(r"<lang>\s*([A-Za-z\-]{2,10})\s*</lang>", content, flags=re.IGNORECASE)

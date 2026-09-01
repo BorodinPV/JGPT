@@ -1,6 +1,7 @@
 package com.veles.llm.jgpt.ops;
 
 import com.veles.llm.jgpt.GpuFloatBuffer;
+import com.veles.llm.jgpt.GpuHalfBuffer;
 
 /**
  * Thread-local scratch для {@link TensorOps#tryMultiHeadAttentionWithRoPEGpuResident}: активации на device,
@@ -38,6 +39,13 @@ final class GpuAttentionResidentWorkspace {
     /** LSE FlashAttention [BH×S] на infer (без BlockActivationCache). */
     private GpuFloatBuffer flashLse;
     private int flashLseCap = -1;
+
+    /** Packed FP16 Q/K/V/O для cuDNN SDPA без f32 staging. */
+    private GpuHalfBuffer qHalf;
+    private GpuHalfBuffer kHalf;
+    private GpuHalfBuffer vHalf;
+    private GpuHalfBuffer oHalf;
+    private int halfHeadsCap = -1;
 
     private float[] hostOut;
 
@@ -118,6 +126,44 @@ final class GpuAttentionResidentWorkspace {
         return flashLse;
     }
 
+    void ensureHalfHeads(int numHalfs) {
+        if (numHalfs <= 0) {
+            throw new IllegalArgumentException("half heads size must be positive");
+        }
+        if (halfHeadsCap >= numHalfs
+                && qHalf != null
+                && !qHalf.isClosed()
+                && kHalf != null
+                && !kHalf.isClosed()
+                && vHalf != null
+                && !vHalf.isClosed()
+                && oHalf != null
+                && !oHalf.isClosed()) {
+            return;
+        }
+        qHalf = GpuBufferUtils.ensureHalf(qHalf, numHalfs);
+        kHalf = GpuBufferUtils.ensureHalf(kHalf, numHalfs);
+        vHalf = GpuBufferUtils.ensureHalf(vHalf, numHalfs);
+        oHalf = GpuBufferUtils.ensureHalf(oHalf, numHalfs);
+        halfHeadsCap = numHalfs;
+    }
+
+    GpuHalfBuffer getQHalf() {
+        return qHalf;
+    }
+
+    GpuHalfBuffer getKHalf() {
+        return kHalf;
+    }
+
+    GpuHalfBuffer getVHalf() {
+        return vHalf;
+    }
+
+    GpuHalfBuffer getOHalf() {
+        return oHalf;
+    }
+
     private void closeAll() {
         xIn = GpuBufferUtils.closeAndNull(xIn);
         xNorm = GpuBufferUtils.closeAndNull(xNorm);
@@ -128,8 +174,13 @@ final class GpuAttentionResidentWorkspace {
         attnOut = GpuBufferUtils.closeAndNull(attnOut);
         maskDev = GpuBufferUtils.closeAndNull(maskDev);
         flashLse = GpuBufferUtils.closeAndNull(flashLse);
+        qHalf = GpuBufferUtils.closeAndNull(qHalf);
+        kHalf = GpuBufferUtils.closeAndNull(kHalf);
+        vHalf = GpuBufferUtils.closeAndNull(vHalf);
+        oHalf = GpuBufferUtils.closeAndNull(oHalf);
         maskSeqLen = -1;
         flashLseCap = -1;
+        halfHeadsCap = -1;
     }
 
     @Override

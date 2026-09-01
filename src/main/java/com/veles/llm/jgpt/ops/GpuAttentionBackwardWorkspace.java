@@ -1,6 +1,7 @@
 package com.veles.llm.jgpt.ops;
 
 import com.veles.llm.jgpt.GpuFloatBuffer;
+import com.veles.llm.jgpt.GpuHalfBuffer;
 import com.veles.llm.jgpt.TensorOpsGPU;
 
 /**
@@ -60,6 +61,11 @@ final class GpuAttentionBackwardWorkspace {
     private GpuFloatBuffer gradWk;
     private GpuFloatBuffer gradWv;
     private GpuFloatBuffer gradWo;
+
+    private GpuHalfBuffer dOHalf;
+    private GpuHalfBuffer dQHalf;
+    private GpuHalfBuffer dKHalf;
+    private GpuHalfBuffer dVHalf;
 
     GpuAttentionBackwardWorkspace() {}
 
@@ -141,6 +147,12 @@ final class GpuAttentionBackwardWorkspace {
         gradWk = GpuBufferUtils.ensure(gradWk, weights);
         gradWv = GpuBufferUtils.ensure(gradWv, weights);
         gradWo = GpuBufferUtils.ensure(gradWo, weights);
+        if (flash) {
+            dOHalf = GpuBufferUtils.ensureHalf(dOHalf, headRows);
+            dQHalf = GpuBufferUtils.ensureHalf(dQHalf, headRows);
+            dKHalf = GpuBufferUtils.ensureHalf(dKHalf, headRows);
+            dVHalf = GpuBufferUtils.ensureHalf(dVHalf, headRows);
+        }
 
         cachedBatch = batch;
         cachedNumHeads = numHeads;
@@ -205,6 +217,10 @@ final class GpuAttentionBackwardWorkspace {
         gradWk = buffers[22];
         gradWv = buffers[23];
         gradWo = buffers[24];
+        dOHalf = GpuBufferUtils.closeAndNull(dOHalf);
+        dQHalf = GpuBufferUtils.closeAndNull(dQHalf);
+        dKHalf = GpuBufferUtils.closeAndNull(dKHalf);
+        dVHalf = GpuBufferUtils.closeAndNull(dVHalf);
     }
 
     @Override
@@ -276,6 +292,22 @@ final class GpuAttentionBackwardWorkspace {
 
     GpuFloatBuffer getGradVh() {
         return gradVh;
+    }
+
+    GpuHalfBuffer getDOHalf() {
+        return dOHalf;
+    }
+
+    GpuHalfBuffer getDQHalf() {
+        return dQHalf;
+    }
+
+    GpuHalfBuffer getDKHalf() {
+        return dKHalf;
+    }
+
+    GpuHalfBuffer getDVHalf() {
+        return dVHalf;
     }
 
     GpuFloatBuffer getDQ() {

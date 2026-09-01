@@ -39,6 +39,38 @@ int jgpt_cudnn_sdpa_bwd(
         int dHead,
         float scale);
 
+/**
+ * То же, что fwd/bwd, но Q/K/V/O/dO/dQ/dK/dV уже FP16 на device (без f32 staging).
+ * Указатели — {@code __half*}; stats/LSE по-прежнему float.
+ */
+int jgpt_cudnn_sdpa_fwd_half(
+        const void* q,
+        const void* k,
+        const void* v,
+        void* o,
+        float* stats,
+        int batch,
+        int nHeads,
+        int seq,
+        int dHead,
+        float scale);
+
+int jgpt_cudnn_sdpa_bwd_half(
+        const void* q,
+        const void* k,
+        const void* v,
+        const void* o,
+        const void* dO,
+        const float* stats,
+        void* dQ,
+        void* dK,
+        void* dV,
+        int batch,
+        int nHeads,
+        int seq,
+        int dHead,
+        float scale);
+
 /** Сборка графов + dummy execute (workspace/half staging) до cudaStreamBeginCapture. */
 void jgpt_cudnn_sdpa_prewarm(int batch, int nHeads, int seq, int dHead, float scale);
 void jgpt_cudnn_sdpa_cleanup(void);

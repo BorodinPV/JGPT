@@ -216,3 +216,76 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionBackwa
         fprintf(stderr, "flashAttentionBackwardGPUDeviceResident: flash_attn_bwd_run failed\n");
     }
 }
+
+JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionForwardGPUDeviceResidentHalf(
+    JNIEnv* env, jclass clazz,
+    jlong dQPtr, jlong dKPtr, jlong dVPtr, jlong dOutPtr, jlong dLSEPtr,
+    jint BH, jint S, jint dHead, jfloat scale, jint numHeads)
+{
+    (void) env;
+    (void) clazz;
+    if (!dQPtr || !dKPtr || !dVPtr || !dOutPtr || !dLSEPtr || BH <= 0 || S <= 0) {
+        return JNI_FALSE;
+    }
+    if (dHead != static_cast<jint>(kFaDh)) {
+        return JNI_FALSE;
+    }
+    int batch = BH;
+    int heads = 1;
+    fa_split_batch_heads(BH, numHeads, &batch, &heads);
+    jgpt_cuda_ensure_stream();
+    if (!jgpt_cudnn_sdpa_fwd_half(
+                reinterpret_cast<void*>(static_cast<uintptr_t>(dQPtr)),
+                reinterpret_cast<void*>(static_cast<uintptr_t>(dKPtr)),
+                reinterpret_cast<void*>(static_cast<uintptr_t>(dVPtr)),
+                reinterpret_cast<void*>(static_cast<uintptr_t>(dOutPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dLSEPtr)),
+                batch,
+                heads,
+                S,
+                kFaDh,
+                scale)) {
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionBackwardGPUDeviceResidentHalf(
+    JNIEnv* env, jclass clazz,
+    jlong dQPtr, jlong dKPtr, jlong dVPtr,
+    jlong dOPtr, jlong dOGradPtr, jlong dLSEPtr,
+    jlong dGradQPtr, jlong dGradKPtr, jlong dGradVPtr,
+    jint BH, jint S, jint dHead, jfloat scale, jint numHeads)
+{
+    (void) env;
+    (void) clazz;
+    if (!dQPtr || !dKPtr || !dVPtr || !dOPtr || !dOGradPtr || !dLSEPtr
+            || !dGradQPtr || !dGradKPtr || !dGradVPtr || BH <= 0 || S <= 0) {
+        return JNI_FALSE;
+    }
+    if (dHead != static_cast<jint>(kFaDh)) {
+        return JNI_FALSE;
+    }
+    int batch = BH;
+    int heads = 1;
+    fa_split_batch_heads(BH, numHeads, &batch, &heads);
+    jgpt_cuda_ensure_stream();
+    if (!jgpt_cudnn_sdpa_bwd_half(
+                reinterpret_cast<void*>(static_cast<uintptr_t>(dQPtr)),
+                reinterpret_cast<void*>(static_cast<uintptr_t>(dKPtr)),
+                reinterpret_cast<void*>(static_cast<uintptr_t>(dVPtr)),
+                reinterpret_cast<void*>(static_cast<uintptr_t>(dOPtr)),
+                reinterpret_cast<void*>(static_cast<uintptr_t>(dOGradPtr)),
+                reinterpret_cast<float*>(static_cast<uintptr_t>(dLSEPtr)),
+                reinterpret_cast<void*>(static_cast<uintptr_t>(dGradQPtr)),
+                reinterpret_cast<void*>(static_cast<uintptr_t>(dGradKPtr)),
+                reinterpret_cast<void*>(static_cast<uintptr_t>(dGradVPtr)),
+                batch,
+                heads,
+                S,
+                kFaDh,
+                scale)) {
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}

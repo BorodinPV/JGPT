@@ -1032,6 +1032,29 @@ public final class TensorOpsGPU {
 
     static native boolean cudnnSdpaAvailable0();
 
+    /**
+     * cuDNN SDPA на уже packed FP16 Q/K/V/O (без f32 staging). {@code false} — нет cuDNN / ошибка execute.
+     */
+    static native boolean flashAttentionForwardGPUDeviceResidentHalf(
+            long dQPtr, long dKPtr, long dVPtr, long dOutPtr, long dLSEPtr,
+            int BH, int S, int dHead, float scale, int numHeads);
+
+    static native boolean flashAttentionBackwardGPUDeviceResidentHalf(
+            long dQPtr,
+            long dKPtr,
+            long dVPtr,
+            long dOPtr,
+            long dOGradPtr,
+            long dLSEPtr,
+            long dGradQPtr,
+            long dGradKPtr,
+            long dGradVPtr,
+            int BH,
+            int S,
+            int dHead,
+            float scale,
+            int numHeads);
+
     /** Вызов FlashAttention-2 forward. BH = batch*numHeads; {@code dHead} должен быть {@link #FLASH_ATTENTION_D_HEAD}. */
     public static void flashAttentionForwardGpuDeviceResident(
             GpuFloatBuffer dQ, GpuFloatBuffer dK, GpuFloatBuffer dV,
@@ -1067,6 +1090,43 @@ public final class TensorOpsGPU {
             int BH, int S, int dHead, float scale, int numHeads) {
         TensorOpsGpuFlashAttention.flashAttentionBackwardGpuDeviceResident(
                 dQ, dK, dV, dO, dOGrad, dLSE, dGradQ, dGradK, dGradV, BH, S, dHead, scale, numHeads);
+    }
+
+    /**
+     * cuDNN Flash SDPA, Q/K/V/O — device FP16. {@code false} если cuDNN недоступен или execute не удался.
+     */
+    public static boolean flashAttentionForwardGpuDeviceResidentHalf(
+            long qHalf,
+            long kHalf,
+            long vHalf,
+            long oHalf,
+            GpuFloatBuffer dLSE,
+            int BH,
+            int S,
+            int dHead,
+            float scale,
+            int numHeads) {
+        return TensorOpsGpuFlashAttention.flashAttentionForwardGpuDeviceResidentHalf(
+                qHalf, kHalf, vHalf, oHalf, dLSE, BH, S, dHead, scale, numHeads);
+    }
+
+    public static boolean flashAttentionBackwardGpuDeviceResidentHalf(
+            long qHalf,
+            long kHalf,
+            long vHalf,
+            long oHalf,
+            long dOHalf,
+            GpuFloatBuffer dLSE,
+            long dQHalf,
+            long dKHalf,
+            long dVHalf,
+            int BH,
+            int S,
+            int dHead,
+            float scale,
+            int numHeads) {
+        return TensorOpsGpuFlashAttention.flashAttentionBackwardGpuDeviceResidentHalf(
+                qHalf, kHalf, vHalf, oHalf, dOHalf, dLSE, dQHalf, dKHalf, dVHalf, BH, S, dHead, scale, numHeads);
     }
 
     static native boolean ensureStridedBatchedPackScratch0(long rows, int dModel, int dIntermediate);

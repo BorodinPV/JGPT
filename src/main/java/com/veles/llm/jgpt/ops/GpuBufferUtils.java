@@ -1,6 +1,7 @@
 package com.veles.llm.jgpt.ops;
 
 import com.veles.llm.jgpt.GpuFloatBuffer;
+import com.veles.llm.jgpt.GpuHalfBuffer;
 
 /**
  * Общие операции над {@link GpuFloatBuffer} и хостовыми staging-массивами для GPU workspace.
@@ -42,6 +43,23 @@ final class GpuBufferUtils {
             buffer.close();
         }
         return GpuFloatBuffer.allocate(minFloats);
+    }
+
+    static GpuHalfBuffer ensureHalf(GpuHalfBuffer buffer, long minHalfs) {
+        if (buffer != null && !buffer.isClosed() && buffer.numHalfs() >= minHalfs) {
+            return buffer;
+        }
+        if (buffer != null && !buffer.isClosed()) {
+            buffer.close();
+        }
+        return GpuHalfBuffer.allocate(minHalfs);
+    }
+
+    static GpuHalfBuffer closeAndNull(GpuHalfBuffer b) {
+        if (b != null && !b.isClosed()) {
+            b.close();
+        }
+        return null;
     }
 
     static GpuFloatBuffer closeAndNull(GpuFloatBuffer b) {

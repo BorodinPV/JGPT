@@ -33,6 +33,36 @@ int jgpt_cudnn_sdpa_bwd(
         float) {
     return 0;
 }
+int jgpt_cudnn_sdpa_fwd_half(
+        const void*,
+        const void*,
+        const void*,
+        void*,
+        float*,
+        int,
+        int,
+        int,
+        int,
+        float) {
+    return 0;
+}
+int jgpt_cudnn_sdpa_bwd_half(
+        const void*,
+        const void*,
+        const void*,
+        const void*,
+        const void*,
+        const float*,
+        void*,
+        void*,
+        void*,
+        int,
+        int,
+        int,
+        int,
+        float) {
+    return 0;
+}
 void jgpt_cudnn_sdpa_prewarm(int, int, int, int, float) {}
 void jgpt_cudnn_sdpa_cleanup(void) {}
 
@@ -315,7 +345,7 @@ GraphSlot* get_or_build(int bwd, int batch, int nHeads, int seq, int d, float sc
         if (!g_logged) {
             g_logged = 1;
             fprintf(stderr,
-                    "[jgpt] cuDNN SDPA FlashAttention (cudnn %zu, B=%d H=%d S=%d Dh=%d, ws=%lld B)\n",
+                    "[jgpt] cuDNN SDPA FlashAttention (cudnn %zu, B=%d H=%d S=%d Dh=%d, ws=%lld B, packed half I/O)\n",
                     (size_t) cudnnGetVersion(),
                     batch,
                     nHeads,
@@ -414,6 +444,65 @@ int jgpt_cudnn_sdpa_available(void) {
     return handle() != nullptr ? 1 : 0;
 }
 
+int jgpt_cudnn_sdpa_fwd_half(
+        const void* q,
+        const void* k,
+        const void* v,
+        void* o,
+        float* stats,
+        int batch,
+        int nHeads,
+        int seq,
+        int dHead,
+        float scale) {
+    GraphSlot* slot = get_or_build(0, batch, nHeads, seq, dHead, scale);
+    if (slot == nullptr || q == nullptr || k == nullptr || v == nullptr || o == nullptr || stats == nullptr) {
+        return 0;
+    }
+    return execute_fwd_packed(
+            slot,
+            static_cast<__half*>(const_cast<void*>(q)),
+            static_cast<__half*>(const_cast<void*>(k)),
+            static_cast<__half*>(const_cast<void*>(v)),
+            static_cast<__half*>(o),
+            stats,
+            1);
+}
+
+int jgpt_cudnn_sdpa_bwd_half(
+        const void* q,
+        const void* k,
+        const void* v,
+        const void* o,
+        const void* dO,
+        const float* stats,
+        void* dQ,
+        void* dK,
+        void* dV,
+        int batch,
+        int nHeads,
+        int seq,
+        int dHead,
+        float scale) {
+    GraphSlot* slot = get_or_build(1, batch, nHeads, seq, dHead, scale);
+    if (slot == nullptr || q == nullptr || k == nullptr || v == nullptr || o == nullptr || dO == nullptr
+            || stats == nullptr || dQ == nullptr || dK == nullptr || dV == nullptr) {
+        return 0;
+    }
+    return execute_bwd_packed(
+            slot,
+            static_cast<__half*>(const_cast<void*>(q)),
+            static_cast<__half*>(const_cast<void*>(k)),
+            static_cast<__half*>(const_cast<void*>(v)),
+            static_cast<__half*>(const_cast<void*>(o)),
+            static_cast<__half*>(const_cast<void*>(dO)),
+            const_cast<float*>(stats),
+            static_cast<__half*>(dQ),
+            static_cast<__half*>(dK),
+            static_cast<__half*>(dV),
+            1);
+}
+
 int jgpt_cudnn_sdpa_fwd(
         const float* q,
         const float* k,
@@ -425,8 +514,7 @@ int jgpt_cudnn_sdpa_fwd(
         int seq,
         int dHead,
         float scale) {
-    GraphSlot* slot = get_or_build(0, batch, nHeads, seq, dHead, scale);
-    if (slot == nullptr || q == nullptr || k == nullptr || v == nullptr || o == nullptr || stats == nullptr) {
+    if (q == nullptr || k == nullptr || v == nullptr || o == nullptr || stats == nullptr) {
         return 0;
     }
     const size_t n = (size_t) batch * (size_t) nHeads * (size_t) seq * (size_t) dHead;
@@ -441,7 +529,7 @@ int jgpt_cudnn_sdpa_fwd(
     jgpt_extra_f32_to_f16(q, qh, n);
     jgpt_extra_f32_to_f16(k, kh, n);
     jgpt_extra_f32_to_f16(v, vh, n);
-    if (!execute_fwd_packed(slot, qh, kh, vh, oh, stats, 1)) {
+    if (!jgpt_cudnn_sdpa_fwd_half(qh, kh, vh, oh, stats, batch, nHeads, seq, dHead, scale)) {
         return 0;
     }
     jgpt_extra_f16_to_f32(oh, o, n);
@@ -463,9 +551,8 @@ int jgpt_cudnn_sdpa_bwd(
         int seq,
         int dHead,
         float scale) {
-    GraphSlot* slot = get_or_build(1, batch, nHeads, seq, dHead, scale);
-    if (slot == nullptr || q == nullptr || k == nullptr || v == nullptr || o == nullptr || dO == nullptr
-            || stats == nullptr || dQ == nullptr || dK == nullptr || dV == nullptr) {
+    if (q == nullptr || k == nullptr || v == nullptr || o == nullptr || dO == nullptr || stats == nullptr
+            || dQ == nullptr || dK == nullptr || dV == nullptr) {
         return 0;
     }
     const size_t n = (size_t) batch * (size_t) nHeads * (size_t) seq * (size_t) dHead;
@@ -486,7 +573,7 @@ int jgpt_cudnn_sdpa_bwd(
     jgpt_extra_f32_to_f16(v, vh, n);
     jgpt_extra_f32_to_f16(o, oh, n);
     jgpt_extra_f32_to_f16(dO, doh, n);
-    if (!execute_bwd_packed(slot, qh, kh, vh, oh, doh, const_cast<float*>(stats), dqh, dkh, dvh, 1)) {
+    if (!jgpt_cudnn_sdpa_bwd_half(qh, kh, vh, oh, doh, stats, dqh, dkh, dvh, batch, nHeads, seq, dHead, scale)) {
         return 0;
     }
     jgpt_extra_f16_to_f32(dqh, dQ, n);

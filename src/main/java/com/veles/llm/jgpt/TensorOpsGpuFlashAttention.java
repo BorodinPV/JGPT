@@ -86,4 +86,69 @@ final class TensorOpsGpuFlashAttention {
                 scale,
                 heads);
     }
+
+    static boolean flashAttentionForwardGpuDeviceResidentHalf(
+            long qHalf,
+            long kHalf,
+            long vHalf,
+            long oHalf,
+            GpuFloatBuffer dLSE,
+            int bh,
+            int s,
+            int dHead,
+            float scale,
+            int numHeads) {
+        TensorOpsGPU.requireCuda("TensorOpsGPU.flashAttentionForwardGpuDeviceResidentHalf");
+        if (dHead != TensorOpsGPU.FLASH_ATTENTION_D_HEAD || qHalf == 0L || kHalf == 0L || vHalf == 0L || oHalf == 0L) {
+            return false;
+        }
+        int heads = requireHeads(bh, numHeads);
+        return TensorOpsGPU.flashAttentionForwardGPUDeviceResidentHalf(
+                qHalf, kHalf, vHalf, oHalf, dLSE.devicePointer(), bh, s, dHead, scale, heads);
+    }
+
+    static boolean flashAttentionBackwardGpuDeviceResidentHalf(
+            long qHalf,
+            long kHalf,
+            long vHalf,
+            long oHalf,
+            long dOHalf,
+            GpuFloatBuffer dLSE,
+            long dQHalf,
+            long dKHalf,
+            long dVHalf,
+            int bh,
+            int s,
+            int dHead,
+            float scale,
+            int numHeads) {
+        TensorOpsGPU.requireCuda("TensorOpsGPU.flashAttentionBackwardGpuDeviceResidentHalf");
+        if (dHead != TensorOpsGPU.FLASH_ATTENTION_D_HEAD
+                || qHalf == 0L
+                || kHalf == 0L
+                || vHalf == 0L
+                || oHalf == 0L
+                || dOHalf == 0L
+                || dQHalf == 0L
+                || dKHalf == 0L
+                || dVHalf == 0L) {
+            return false;
+        }
+        int heads = requireHeads(bh, numHeads);
+        return TensorOpsGPU.flashAttentionBackwardGPUDeviceResidentHalf(
+                qHalf,
+                kHalf,
+                vHalf,
+                oHalf,
+                dOHalf,
+                dLSE.devicePointer(),
+                dQHalf,
+                dKHalf,
+                dVHalf,
+                bh,
+                s,
+                dHead,
+                scale,
+                heads);
+    }
 }

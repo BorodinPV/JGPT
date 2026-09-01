@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.veles.llm.jgpt.GpuFloatBuffer;
+import com.veles.llm.jgpt.GpuHalfBuffer;
 import com.veles.llm.jgpt.TensorOpsGPU;
 
 import java.util.Random;
@@ -31,6 +32,58 @@ class FlashAttnFp16ParityTest {
         Assumptions.assumeTrue(TensorOpsGPU.isGpuAvailable(), "CUDA");
         compareBackward(2, 64, 0x71);
         compareBackwardHeads(2, 4, 64, 0x72);
+    }
+
+    @Test
+    void packedHalfForwardMatchesFloatPath() {
+        Assumptions.assumeTrue(TensorOpsGPU.isGpuAvailable() && TensorOpsGPU.cudnnSdpaAvailable(), "cuDNN");
+        int batch = 2;
+        int heads = 4;
+        int s = 64;
+        int bh = batch * heads;
+        int n = bh * s * DH;
+        float[] q = randn(n, 0x81);
+        float[] k = randn(n, 0x82);
+        float[] v = randn(n, 0x83);
+        float scale = 1f / (float) Math.sqrt(DH);
+        try (GpuFloatBuffer dQ = GpuFloatBuffer.allocate(n);
+                GpuFloatBuffer dK = GpuFloatBuffer.allocate(n);
+                GpuFloatBuffer dV = GpuFloatBuffer.allocate(n);
+                GpuFloatBuffer dO = GpuFloatBuffer.allocate(n);
+                GpuFloatBuffer dLse = GpuFloatBuffer.allocate(bh * s);
+                GpuHalfBuffer hQ = GpuHalfBuffer.allocate(n);
+                GpuHalfBuffer hK = GpuHalfBuffer.allocate(n);
+                GpuHalfBuffer hV = GpuHalfBuffer.allocate(n);
+                GpuHalfBuffer hO = GpuHalfBuffer.allocate(n);
+                GpuFloatBuffer dOHalf = GpuFloatBuffer.allocate(n);
+                GpuFloatBuffer dLseHalf = GpuFloatBuffer.allocate(bh * s)) {
+            dQ.copyFrom(q, 0, n);
+            dK.copyFrom(k, 0, n);
+            dV.copyFrom(v, 0, n);
+            TensorOpsGPU.flashAttentionForwardGpuDeviceResident(dQ, dK, dV, dO, dLse, bh, s, DH, scale, heads);
+            TensorOpsGPU.convertFloatDeviceToHalfDevice(dQ.devicePointer(), hQ.devicePointer(), n);
+            TensorOpsGPU.convertFloatDeviceToHalfDevice(dK.devicePointer(), hK.devicePointer(), n);
+            TensorOpsGPU.convertFloatDeviceToHalfDevice(dV.devicePointer(), hV.devicePointer(), n);
+            assertTrue(
+                    TensorOpsGPU.flashAttentionForwardGpuDeviceResidentHalf(
+                            hQ.devicePointer(),
+                            hK.devicePointer(),
+                            hV.devicePointer(),
+                            hO.devicePointer(),
+                            dLseHalf,
+                            bh,
+                            s,
+                            DH,
+                            scale,
+                            heads));
+            TensorOpsGPU.convertHalfDeviceToFloatDevice(hO.devicePointer(), dOHalf.devicePointer(), n);
+            TensorOpsGPU.synchronizeStream();
+            float[] fromFloat = new float[n];
+            float[] fromHalf = new float[n];
+            dO.copyTo(fromFloat, 0, n);
+            dOHalf.copyTo(fromHalf, 0, n);
+            assertClose(fromFloat, fromHalf, 2e-3f, "O packed-half");
+        }
     }
 
     private static void compareForward(int bh, int s, int seed) {

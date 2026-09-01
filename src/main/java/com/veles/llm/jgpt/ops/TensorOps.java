@@ -1581,16 +1581,33 @@ public final class TensorOps {
             }
             int bAttn = batch * numHeads;
             if (useFlash) {
-                // Q=[bAttn,S,Dh]=getConcatFlat, K=getAttnOut, V=getQ, O=getK (reuse)
                 GpuFloatBuffer lseDev = devCache != null ? devCache.attnLseBuffer() : ws.ensureFlashLse(bAttn * seqLen);
-                TensorOpsGPU.flashAttentionForwardGpuDeviceResident(
-                        ws.getConcatFlat(), ws.getAttnOut(), ws.getQ(),
-                        ws.getK(),  // O output (head-wise) → stored here temporarily
+                boolean halfOk = tryFlashAttentionForwardPackedHalf(
+                        ws,
+                        devCache,
                         lseDev,
-                        bAttn, seqLen, dHead, scale, numHeads);
-                if (devCache != null) {
-                    // Save O_heads (before concatHeads overwrites ws.getK()) for backward D computation
-                    devCache.copySlotFromDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_OUT_HEADS, ws.getK(), headFloats);
+                        bAttn,
+                        seqLen,
+                        dHead,
+                        scale,
+                        numHeads,
+                        headFloats);
+                if (!halfOk) {
+                    TensorOpsGPU.flashAttentionForwardGpuDeviceResident(
+                            ws.getConcatFlat(),
+                            ws.getAttnOut(),
+                            ws.getQ(),
+                            ws.getK(),
+                            lseDev,
+                            bAttn,
+                            seqLen,
+                            dHead,
+                            scale,
+                            numHeads);
+                    if (devCache != null) {
+                        devCache.copySlotFromDeviceFloat(
+                                BlockActivationCacheDevice.SlotId.ATTN_OUT_HEADS, ws.getK(), headFloats);
+                    }
                 }
             } else {
                 GpuFloatBuffer maskDev = null;
@@ -2331,6 +2348,56 @@ public final class TensorOps {
         int deviceOff = headIdx * maxSeqLen * dHead;
         cache4d.copyTo(out.internalBuffer(), 0, prefixLen * dHead, deviceOff);
         return out;
+    }
+
+    /**
+     * cuDNN SDPA on packed FP16 Q/K/V/O. Writes float O into {@code ws.getK()} for concatHeads.
+     * With an FP16 device cache, Q/K/V/O stay in cache half slots (no second f32 convert around SDPA).
+     */
+    private static boolean tryFlashAttentionForwardPackedHalf(
+            GpuAttentionResidentWorkspace ws,
+            BlockActivationCacheDevice devCache,
+            GpuFloatBuffer lseDev,
+            int bAttn,
+            int seqLen,
+            int dHead,
+            float scale,
+            int numHeads,
+            int headFloats) {
+        if (!TensorOpsGPU.cudnnSdpaAvailable()) {
+            return false;
+        }
+        long qh;
+        long kh;
+        long vh;
+        long oh;
+        if (devCache != null && devCache.isFp16ActivationStorage()) {
+            qh = devCache.halfSlotDevicePointer(BlockActivationCacheDevice.SlotId.ATTN_Q_HEADS);
+            kh = devCache.halfSlotDevicePointer(BlockActivationCacheDevice.SlotId.ATTN_K_HEADS);
+            vh = devCache.halfSlotDevicePointer(BlockActivationCacheDevice.SlotId.ATTN_V_HEADS);
+            oh = devCache.halfSlotDevicePointer(BlockActivationCacheDevice.SlotId.ATTN_OUT_HEADS);
+        } else {
+            ws.ensureHalfHeads(headFloats);
+            TensorOpsGPU.convertFloatDeviceToHalfDevice(
+                    ws.getConcatFlat().devicePointer(), ws.getQHalf().devicePointer(), headFloats);
+            TensorOpsGPU.convertFloatDeviceToHalfDevice(
+                    ws.getAttnOut().devicePointer(), ws.getKHalf().devicePointer(), headFloats);
+            TensorOpsGPU.convertFloatDeviceToHalfDevice(
+                    ws.getQ().devicePointer(), ws.getVHalf().devicePointer(), headFloats);
+            qh = ws.getQHalf().devicePointer();
+            kh = ws.getKHalf().devicePointer();
+            vh = ws.getVHalf().devicePointer();
+            oh = ws.getOHalf().devicePointer();
+        }
+        if (!TensorOpsGPU.flashAttentionForwardGpuDeviceResidentHalf(
+                qh, kh, vh, oh, lseDev, bAttn, seqLen, dHead, scale, numHeads)) {
+            return false;
+        }
+        TensorOpsGPU.convertHalfDeviceToFloatDevice(oh, ws.getK().devicePointer(), headFloats);
+        if (devCache != null && !devCache.isFp16ActivationStorage()) {
+            devCache.copySlotFromDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_OUT_HEADS, ws.getK(), headFloats);
+        }
+        return true;
     }
 
     /**

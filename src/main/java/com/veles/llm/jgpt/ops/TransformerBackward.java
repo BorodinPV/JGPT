@@ -1067,10 +1067,14 @@ public final class TransformerBackward {
                 ws.getWv().copyFrom(Wv.internalBuffer(), 0, dModelSq);
                 ws.getWo().copyFrom(Wo.internalBuffer(), 0, dModelSq);
             }
-            cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_Q_HEADS, ws.getQHeads(), rows * dModel);
-            cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_K_HEADS, ws.getKHeads(), rows * dModel);
-            cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_V_HEADS, ws.getVHeads(), rows * dModel);
             boolean useFlash = TensorOpsGPU.FLASH_ATTENTION && dHead == 16;
+            boolean tryHalfFaBwd =
+                    useFlash && TensorOpsGPU.cudnnSdpaAvailable() && cache.isFp16ActivationStorage();
+            if (!tryHalfFaBwd) {
+                cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_Q_HEADS, ws.getQHeads(), rows * dModel);
+                cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_K_HEADS, ws.getKHeads(), rows * dModel);
+                cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_V_HEADS, ws.getVHeads(), rows * dModel);
+            }
             if (!useFlash) {
                 cache.copySlotToDeviceFloat(
                         BlockActivationCacheDevice.SlotId.ATTN_PROBS, ws.getProbs(), batchHeads * seqLen * seqLen);
@@ -1089,25 +1093,63 @@ public final class TransformerBackward {
             TensorOpsGPU.splitHeadsGpuDevice(
                     ws.getGradConcat(), ws.getDHeads(), batch, seqLen, dModel, numHeads);
             if (useFlash) {
-                /* FlashAttention-2 backward: recomputes attention from Q/K/V + LSE.
-                 * O_heads (saved in forward) is needed for D = dot(dO, O) computation. */
-                cache.copySlotToDeviceFloat(
-                        BlockActivationCacheDevice.SlotId.ATTN_OUT_HEADS, ws.getProbs(), batchHeads * seqLen * dHead);
-                TensorOpsGPU.flashAttentionBackwardGpuDeviceResident(
-                        ws.getQHeads(),
-                        ws.getKHeads(),
-                        ws.getVHeads(),
-                        ws.getProbs(),    // O_heads (borrowed from ws.getProbs() buffer for reuse)
-                        ws.getDHeads(),   // dO
-                        cache.attnLseBuffer(),
-                        ws.getGradQh(),
-                        ws.getGradKh(),
-                        ws.getGradVh(),
-                        batchHeads,
-                        seqLen,
-                        dHead,
-                        attScale,
-                        numHeads);
+                boolean halfBwd = tryHalfFaBwd;
+                if (halfBwd) {
+                    TensorOpsGPU.convertFloatDeviceToHalfDevice(
+                            ws.getDHeads().devicePointer(), ws.getDOHalf().devicePointer(), batchHeads * seqLen * dHead);
+                    halfBwd =
+                            TensorOpsGPU.flashAttentionBackwardGpuDeviceResidentHalf(
+                                    cache.halfSlotDevicePointer(BlockActivationCacheDevice.SlotId.ATTN_Q_HEADS),
+                                    cache.halfSlotDevicePointer(BlockActivationCacheDevice.SlotId.ATTN_K_HEADS),
+                                    cache.halfSlotDevicePointer(BlockActivationCacheDevice.SlotId.ATTN_V_HEADS),
+                                    cache.halfSlotDevicePointer(BlockActivationCacheDevice.SlotId.ATTN_OUT_HEADS),
+                                    ws.getDOHalf().devicePointer(),
+                                    cache.attnLseBuffer(),
+                                    ws.getDQHalf().devicePointer(),
+                                    ws.getDKHalf().devicePointer(),
+                                    ws.getDVHalf().devicePointer(),
+                                    batchHeads,
+                                    seqLen,
+                                    dHead,
+                                    attScale,
+                                    numHeads);
+                    if (halfBwd) {
+                        int n = batchHeads * seqLen * dHead;
+                        TensorOpsGPU.convertHalfDeviceToFloatDevice(
+                                ws.getDQHalf().devicePointer(), ws.getGradQh().devicePointer(), n);
+                        TensorOpsGPU.convertHalfDeviceToFloatDevice(
+                                ws.getDKHalf().devicePointer(), ws.getGradKh().devicePointer(), n);
+                        TensorOpsGPU.convertHalfDeviceToFloatDevice(
+                                ws.getDVHalf().devicePointer(), ws.getGradVh().devicePointer(), n);
+                    }
+                }
+                if (!halfBwd) {
+                    cache.copySlotToDeviceFloat(
+                            BlockActivationCacheDevice.SlotId.ATTN_Q_HEADS, ws.getQHeads(), rows * dModel);
+                    cache.copySlotToDeviceFloat(
+                            BlockActivationCacheDevice.SlotId.ATTN_K_HEADS, ws.getKHeads(), rows * dModel);
+                    cache.copySlotToDeviceFloat(
+                            BlockActivationCacheDevice.SlotId.ATTN_V_HEADS, ws.getVHeads(), rows * dModel);
+                    cache.copySlotToDeviceFloat(
+                            BlockActivationCacheDevice.SlotId.ATTN_OUT_HEADS,
+                            ws.getProbs(),
+                            batchHeads * seqLen * dHead);
+                    TensorOpsGPU.flashAttentionBackwardGpuDeviceResident(
+                            ws.getQHeads(),
+                            ws.getKHeads(),
+                            ws.getVHeads(),
+                            ws.getProbs(),
+                            ws.getDHeads(),
+                            cache.attnLseBuffer(),
+                            ws.getGradQh(),
+                            ws.getGradKh(),
+                            ws.getGradVh(),
+                            batchHeads,
+                            seqLen,
+                            dHead,
+                            attScale,
+                            numHeads);
+                }
             } else {
                 /* Classic backward: use cached softmax probs (more numerically stable). */
                 TensorOpsGPU.scaledDotProductAttentionBackwardGpuDevice(

@@ -163,4 +163,82 @@ class DecoderLayerCudaGraphTest {
             }
         }
     }
+
+    /** d_head=16: FlashAttention, если {@code JGPT_FLASH_ATTENTION=1}; иначе SDPA без S×S на 32L. */
+    @Test
+    void inferDecoder_graphMatchesEager_dHead16() {
+        if (!TensorOpsGPU.isGpuAvailable()) {
+            return;
+        }
+        if (System.getenv("JGPT_DECODER_LAYER_CUDA_GRAPH") != null) {
+            return;
+        }
+        String prevPipe = System.getProperty("jgpt.decoder.gpu.pipeline");
+        String prevGraph = System.getProperty("jgpt.decoder.layer.cudaGraph");
+        try {
+            int vocab = 48;
+            int maxSeq = 64;
+            int dModel = 32;
+            int heads = 2;
+            int layers = 2;
+            int dFf = 64;
+            int batch = 1;
+            int seqLen = 64;
+            int plane = batch * seqLen * dModel;
+
+            System.setProperty("jgpt.decoder.gpu.pipeline", "true");
+            System.setProperty("jgpt.decoder.layer.cudaGraph", "false");
+            GPTModel eager = new GPTModel(vocab, maxSeq, dModel, heads, layers, dFf, true);
+
+            System.setProperty("jgpt.decoder.layer.cudaGraph", "true");
+            GPTModel graphed = new GPTModel(vocab, maxSeq, dModel, heads, layers, dFf, true);
+
+            var ep = eager.getParameters();
+            var gp = graphed.getParameters();
+            for (int i = 0; i < ep.size(); i++) {
+                System.arraycopy(ep.get(i).internalBuffer(), 0, gp.get(i).internalBuffer(), 0, ep.get(i).size());
+            }
+            graphed.syncGpuResidentWeightsFromHost();
+            eager.syncGpuResidentWeightsFromHost();
+
+            float[] hx = new float[plane];
+            for (int i = 0; i < hx.length; i++) {
+                hx[i] = (float) Math.sin(i * 0.07) * 0.2f;
+            }
+            try (GpuFloatBuffer xE = GpuFloatBuffer.allocate(plane);
+                    GpuFloatBuffer xG = GpuFloatBuffer.allocate(plane)) {
+                xE.copyFrom(hx, 0, plane);
+                xG.copyFrom(hx, 0, plane);
+
+                GpuFloatBuffer oE = eager.forwardGpuDecoderInfer(xE, null, batch, seqLen);
+                GpuFloatBuffer oG1 = graphed.forwardGpuDecoderInfer(xG, null, batch, seqLen);
+                GpuFloatBuffer oG2 = graphed.forwardGpuDecoderInfer(xG, null, batch, seqLen);
+
+                float[] bE = new float[plane];
+                float[] b1 = new float[plane];
+                float[] b2 = new float[plane];
+                oE.copyTo(bE, 0, plane);
+                oG1.copyTo(b1, 0, plane);
+                oG2.copyTo(b2, 0, plane);
+
+                float tol = TensorOpsGPU.FLASH_ATTENTION && TensorOpsGPU.useFp16Matmul() ? 5e-2f : 2e-3f;
+                assertTrue(maxAbsDiff(bE, b1) < tol, "eager vs graph dHead16 " + maxAbsDiff(bE, b1));
+                assertTrue(maxAbsDiff(b1, b2) < 1e-5f, "graph replay dHead16 " + maxAbsDiff(b1, b2));
+            }
+
+            graphed.closeGpuResidentWeights();
+            eager.closeGpuResidentWeights();
+        } finally {
+            if (prevPipe == null) {
+                System.clearProperty("jgpt.decoder.gpu.pipeline");
+            } else {
+                System.setProperty("jgpt.decoder.gpu.pipeline", prevPipe);
+            }
+            if (prevGraph == null) {
+                System.clearProperty("jgpt.decoder.layer.cudaGraph");
+            } else {
+                System.setProperty("jgpt.decoder.layer.cudaGraph", prevGraph);
+            }
+        }
+    }
 }

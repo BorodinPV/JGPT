@@ -1,6 +1,7 @@
 package com.veles.llm.jgpt.ops;
 
 import com.veles.llm.jgpt.GpuFloatBuffer;
+import com.veles.llm.jgpt.TensorOpsGPU;
 
 /**
  * Thread-local scratch для fused attention backward на GPU.
@@ -32,6 +33,7 @@ final class GpuAttentionBackwardWorkspace {
     private int cachedNumHeads;
     private int cachedSeqLen;
     private int cachedDModel;
+    private boolean cachedFlash;
 
     private GpuFloatBuffer xFlat;
     private GpuFloatBuffer gradOutFlat;
@@ -93,22 +95,25 @@ final class GpuAttentionBackwardWorkspace {
             throw new IllegalArgumentException(
                     "dModel must be divisible by numHeads: dModel=" + dModel + ", numHeads=" + numHeads);
         }
+        int dHead = dModel / numHeads;
+        boolean flash = TensorOpsGPU.FLASH_ATTENTION && dHead == TensorOpsGPU.FLASH_ATTENTION_D_HEAD;
         if (batch == cachedBatch
                 && numHeads == cachedNumHeads
                 && seqLen == cachedSeqLen
-                && dModel == cachedDModel) {
+                && dModel == cachedDModel
+                && flash == cachedFlash) {
             return;
         }
 
         closeAllGpuBuffers();
 
-        int dHead = dModel / numHeads;
         long rows = GpuBufferUtils.mulExact("batch*seqLen", (long) batch, (long) seqLen);
         long rowPlane = GpuBufferUtils.mulExact("rows*dModel", rows, (long) dModel);
         long batchHeads = GpuBufferUtils.mulExact("batch*numHeads", (long) batch, numHeads);
         long bhSeq = GpuBufferUtils.mulExact("batchHeads*seqLen", batchHeads, (long) seqLen);
         long headRows = GpuBufferUtils.mulExact("headFlat", bhSeq, (long) dHead);
-        long probsSize = GpuBufferUtils.mulExact("probs", bhSeq, (long) seqLen);
+        /* FA bwd reuse probs as O_heads [BH,S,Dh]; S×S нужен только SDPA. */
+        long probsSize = flash ? headRows : GpuBufferUtils.mulExact("probs", bhSeq, (long) seqLen);
         long weights = GpuBufferUtils.mulExact("dModel*dModel", (long) dModel, dModel);
 
         xFlat = GpuBufferUtils.ensure(xFlat, rowPlane);
@@ -141,6 +146,7 @@ final class GpuAttentionBackwardWorkspace {
         cachedNumHeads = numHeads;
         cachedSeqLen = seqLen;
         cachedDModel = dModel;
+        cachedFlash = flash;
     }
 
     private void closeAllGpuBuffers() {

@@ -5,6 +5,7 @@
 
 #include "jgpt_cuda_cublas_common.cuh"
 #include "jgpt_cuda_tls_blob.cuh"
+#include "jgpt_cuda_fp16_device_gemm.h"
 
 static int alloc_device_float_triple(
         size_t szA, size_t szB, size_t szC, float** outA, float** outB, float** outC, const char* ctx) {
@@ -162,6 +163,16 @@ extern "C" void jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo(int M, int dModel
     if (!shared_x_strided_batched_packs_ensure(wNeed, cNeed)) {
         return;
     }
+    if (jgpt_device_fp16_gemm_enabled()) {
+        const size_t xElems = (size_t) M * (size_t) dModel;
+        const size_t ffnElems = (size_t) M * (size_t) dInt;
+        const size_t wElems = static_cast<size_t>(wNeed);
+        size_t halfN = wElems > xElems ? wElems : xElems;
+        if (ffnElems > halfN) {
+            halfN = ffnElems;
+        }
+        jgpt_device_fp16_gemm_prewarm(halfN, halfN);
+    }
 
     float* xNC = jgpt_qkv_c_pack_ptr();
     const float alpha = 1.0f;
@@ -172,25 +183,25 @@ extern "C" void jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo(int M, int dModel
         return;
     }
 
-    cublasStatus_t st = cublasSgemmStridedBatched(
+    cublasStatus_t st = jgpt_cublas_device_gemm_strided_colmajor(
             handle,
             CUBLAS_OP_N,
             CUBLAS_OP_N,
             dModel,
             M,
             dModel,
-            &alpha,
             jgpt_qkv_w_pack_ptr(),
             dModel,
             kn_qkv,
             xNC,
             dModel,
             0LL,
-            &beta,
             jgpt_qkv_c_pack_ptr(),
             dModel,
             mn_qkv,
-            3);
+            3,
+            alpha,
+            beta);
     if (st != CUBLAS_STATUS_SUCCESS) {
         fprintf(
                 stderr,
@@ -199,25 +210,25 @@ extern "C" void jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo(int M, int dModel
         return;
     }
 
-    st = cublasSgemmStridedBatched(
+    st = jgpt_cublas_device_gemm_strided_colmajor(
             handle,
             CUBLAS_OP_N,
             CUBLAS_OP_N,
             dInt,
             M,
             dModel,
-            &alpha,
             jgpt_qkv_w_pack_ptr(),
             dInt,
             kn_ffn,
             xNC,
             dModel,
             0LL,
-            &beta,
             jgpt_qkv_c_pack_ptr(),
             dInt,
             mn_ffn,
-            2);
+            2,
+            alpha,
+            beta);
     if (st != CUBLAS_STATUS_SUCCESS) {
         fprintf(
                 stderr,
@@ -226,23 +237,37 @@ extern "C" void jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo(int M, int dModel
         return;
     }
 
-    st = cublasSgemm(
+    st = jgpt_cublas_device_gemm_rowmajor(
             handle,
-            CUBLAS_OP_N,
-            CUBLAS_OP_N,
-            dModel,
+            0,
+            0,
             M,
             dModel,
-            &alpha,
-            jgpt_qkv_w_pack_ptr(),
             dModel,
             xNC,
-            dModel,
-            &beta,
+            jgpt_qkv_w_pack_ptr(),
             jgpt_qkv_c_pack_ptr(),
-            dModel);
+            alpha,
+            beta);
     if (st != CUBLAS_STATUS_SUCCESS) {
-        fprintf(stderr, "jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo: Wo Sgemm status %d\n", (int) st);
+        fprintf(stderr, "jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo: Wo GEMM status %d\n", (int) st);
+    }
+
+    /* FFN W2: A[M×dInt] — иначе первый capture делает cudaMalloc 4×1024×1536 half. */
+    st = jgpt_cublas_device_gemm_rowmajor(
+            handle,
+            0,
+            0,
+            M,
+            dInt,
+            dModel,
+            xNC,
+            jgpt_qkv_w_pack_ptr(),
+            jgpt_qkv_c_pack_ptr() + mn_ffn,
+            alpha,
+            beta);
+    if (st != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo: FFN W2 GEMM status %d\n", (int) st);
     }
 }
 
@@ -465,6 +490,7 @@ void jgpt_cuda_cleanup_thread_resources(void) {
     mb_free_cached();
     mm_free_half_cached();
     mb_free_half_cached();
+    jgpt_device_fp16_gemm_cleanup();
 }
 
 static int mm_ensure_half_AB(size_t nelemA, size_t nelemB, __half** outA, __half** outB) {

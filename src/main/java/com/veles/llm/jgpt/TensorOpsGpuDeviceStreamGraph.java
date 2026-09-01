@@ -58,7 +58,8 @@ final class TensorOpsGpuDeviceStreamGraph {
         if (dModel % numHeads != 0) {
             throw new IllegalArgumentException("dModel must be divisible by numHeads");
         }
-        TensorOpsGPU.decoderGraphPrewarmDeviceOps0(batch, seqLen, dModel, numHeads, dIntermediate);
+        TensorOpsGPU.decoderGraphPrewarmDeviceOps0(
+                batch, seqLen, dModel, numHeads, dIntermediate, TensorOpsGPU.FLASH_ATTENTION ? 1 : 0);
     }
 
     static boolean cudaStreamBeginCapture() {

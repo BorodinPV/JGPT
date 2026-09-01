@@ -229,10 +229,17 @@ final class GptDecoderStackRunner {
             return;
         }
         m.decoderLayerGraphRuntimeDisabled = true;
+        if (TensorOpsGPU.isGpuAvailable()) {
+            TensorOpsGPU.abortCudaStreamCaptureIfActive();
+        }
         destroyDecoderLayerCudaGraphs(m);
         m.decoderLayerGraphCaptureKey = Integer.MIN_VALUE;
         if (m.decoderLayerCudaGraphWanted) {
             log.warn("JGPT_DECODER_LAYER_CUDA_GRAPH: отключён ({}).", reason);
+        }
+        if (TensorOpsGPU.isGpuAvailable()) {
+            TensorOpsGPU.synchronizeDevice();
+            drainDeferredGpuBuffersThenTrimPools();
         }
     }
 
@@ -484,7 +491,6 @@ final class GptDecoderStackRunner {
                         }
                         if (TensorOpsGPU.cudaGraphExecLaunch(ex)) {
                             executed = true;
-                            TensorOpsGPU.synchronizeDevice();
                             scheduleDecoderGraphExecDestroyIfNotLast(m, i, m.numLayers);
                         } else {
                             log.warn(
@@ -493,25 +499,12 @@ final class GptDecoderStackRunner {
                                             "launchFailed", i, ex, cur, attnOut, blockOut, layerCache));
                             int lastErr = TensorOpsGPU.decoderGraphExecLaunchLastCudaError();
                             if (lastErr == TensorOpsGPU.CUDA_ERROR_MEMORY_ALLOCATION) {
-                                /*
-                                 * Накопленные cudaGraphExec нижних слоёв держат заметный VRAM; сбрасываем все exec —
-                                 * текущий forward для слоёв > i пойдёт через capture/eager без старых графов.
-                                 */
                                 log.warn(
-                                        "JGPT_DECODER_LAYER_CUDA_GRAPH: слой {} — OOM при replay; уничтожаем все decoder graph exec "
-                                                + "(освобождение VRAM), этот шаг — eager для оставшихся слоёв.",
+                                        "JGPT_DECODER_LAYER_CUDA_GRAPH: слой {} — OOM при replay; graph выключаем до конца JVM.",
                                         i);
-                                destroyDecoderLayerCudaGraphs(m);
-                                if (m.decoderLayerGraphDebugCaptureSnapshot != null) {
-                                    Arrays.fill(m.decoderLayerGraphDebugCaptureSnapshot, null);
-                                }
                                 releaseTransientFloatStagingForAllCaches(cachesPerLayer);
-                                TensorOpsGPU.synchronizeDevice();
-                                drainDeferredGpuBuffersThenTrimPools();
+                                disableDecoderLayerCudaGraph(m, "cudaGraphLaunch OOM on replay");
                                 decoderGraphSkipUntilEndOfForward = true;
-                                log.warn(
-                                        "JGPT_DECODER_LAYER_CUDA_GRAPH: до конца этого forward graph отключён (только eager); "
-                                                + "следующий forward снова попробует replay/capture.");
                                 executed = false;
                             } else {
                                 disableDecoderLayerCudaGraph(m, "cudaGraphLaunch failed");
@@ -606,20 +599,11 @@ final class GptDecoderStackRunner {
                                         if (lastErr == TensorOpsGPU.CUDA_ERROR_MEMORY_ALLOCATION) {
                                             log.warn(
                                                     "JGPT_DECODER_LAYER_CUDA_GRAPH: слой {} — OOM при первом launch после capture; "
-                                                            + "уничтожаем все decoder graph exec (нижние слои держали VRAM). "
-                                                            + "Дальше в этом forward — только eager (повторный capture отключён).",
+                                                            + "graph выключаем до конца JVM (повторный capture на eval/train снова OOM).",
                                                     i);
-                                            destroyDecoderLayerCudaGraphs(m);
-                                            if (m.decoderLayerGraphDebugCaptureSnapshot != null) {
-                                                Arrays.fill(m.decoderLayerGraphDebugCaptureSnapshot, null);
-                                            }
                                             releaseTransientFloatStagingForAllCaches(cachesPerLayer);
-                                            TensorOpsGPU.synchronizeDevice();
-                                            drainDeferredGpuBuffersThenTrimPools();
+                                            disableDecoderLayerCudaGraph(m, "cudaGraphLaunch OOM after capture");
                                             decoderGraphSkipUntilEndOfForward = true;
-                                            log.warn(
-                                                    "JGPT_DECODER_LAYER_CUDA_GRAPH: до конца этого forward graph отключён (только eager); "
-                                                            + "следующий forward снова попробует capture.");
                                         } else {
                                             TensorOpsGPU.cudaGraphExecDestroy(nexec);
                                             m.decoderLayerGraphExec[i] = 0L;

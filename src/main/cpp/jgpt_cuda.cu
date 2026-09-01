@@ -19,11 +19,13 @@
 #include "jgpt_cuda_stream.cuh"
 #include "jgpt_cuda_ffn_link.h"
 #include "jgpt_cuda_graph_prewarm.h"
+#include "jgpt_cuda_fp16_device_gemm.h"
 #include "jgpt_cuda_size_check.cuh"
 
 #include "jgpt_cuda_runtime.inl"
 #include "jgpt_cuda_matmul_staging.inl"
 #include "jgpt_cuda_kernels_launches_macros.inl"
+#include "jgpt_cuda_fp16_device_gemm.inl"
 
 #include "jgpt_cuda_jni_raii.cuh"
 

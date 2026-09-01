@@ -125,8 +125,11 @@ public final class TensorOpsGPU {
         GPU_MEMORY_MB = memory;
 
         FP16_MATMUL = TensorOpsGpuInit.resolveFp16Matmul(available);
+        if (available) {
+            setDeviceFp16GemmEnabled0(FP16_MATMUL);
+        }
         if (FP16_MATMUL) {
-            log.info("[TensorOpsGPU] FP16 matmul (GemmEx): включён");
+            log.info("[TensorOpsGPU] FP16 matmul (GemmEx Tensor Cores): host + device GEMM");
         }
 
         RMSNORM_EPS = TensorOpsGpuInit.resolveRmsNormEps(FP16_MATMUL);
@@ -135,7 +138,15 @@ public final class TensorOpsGPU {
 
         FLASH_ATTENTION = TensorOpsGpuInit.resolveFlashAttention(available);
         if (FLASH_ATTENTION) {
-            log.info("[TensorOpsGPU] FlashAttention-2: включён (d_head=16 обязателен)");
+            if (available && cudnnSdpaAvailable0()) {
+                log.info(
+                        "[TensorOpsGPU] FlashAttention-2: cuDNN SDPA (FP16 fused, B×H heads, d_head=16); fallback — WMMA");
+            } else if (FP16_MATMUL) {
+                log.info(
+                        "[TensorOpsGPU] FlashAttention-2: включён (d_head=16); FP16 I/O + Tensor Core WMMA QK^T");
+            } else {
+                log.info("[TensorOpsGPU] FlashAttention-2: включён (d_head=16 обязателен)");
+            }
         }
 
         if (!available && !TensorOpsGpuInit.allowNoGpuOverride()) {
@@ -151,6 +162,9 @@ public final class TensorOpsGPU {
 
     /** Инициализация GPU (один раз из static-блока). */
     private static native boolean initGPU();
+
+    /** Включает FP16 GemmEx на device-GEMM (train-путь). Согласовано с {@link #FP16_MATMUL}. */
+    private static native void setDeviceFp16GemmEnabled0(boolean enabled);
 
     private static native String getGPUName();
 
@@ -199,7 +213,8 @@ public final class TensorOpsGPU {
 
     /**
      * Device GEMM с опциональным транспонированием входов. {@code beta} — множитель существующего {@code C}
-     * (cuBLAS: {@code C = alpha * op(A)*op(B) + beta * C}).
+     * (cuBLAS: {@code C = alpha * op(A)*op(B) + beta * C}). При {@link #useFp16Matmul()} — FP16 Tensor Cores,
+     * результат в FP32.
      */
     public static native void matmulGPUDeviceEx(
             long dA,
@@ -215,15 +230,14 @@ public final class TensorOpsGPU {
     /**
      * Три независимых GEMM (как три раза {@link #matmulGpuDeviceEx} без транспонирования) с общим {@code xNorm [M×K]};
      * веса {@code Wq, Wk, Wv [K×N]}; выходы {@code Q, K, V [M×N]}. Реализация: D2D упаковка весов и один
-     * {@code cublasSgemmStridedBatched} (batch=3, нулевой stride второго операнда для повторного X) вместо трёх отдельных
-     * {@code cublasSgemm}.
+     * {@code cublasGemmStridedBatchedEx} FP16 (при {@link #useFp16Matmul()}) или {@code cublasSgemmStridedBatched}.
      */
     static native void matmulGpuDeviceQkvProjections0(
             long dXnorm, long dWq, long dWk, long dWv, long dQ, long dK, long dV, int M, int K, int N);
 
     /**
      * Два GEMM SwiGLU после второй RMSNorm: общий {@code xNorm [M×K]}, веса {@code W1, W3 [K×N]} ({@code N}=dIntermediate),
-     * выходы {@code h1, gate [M×N]}. Один {@code cublasSgemmStridedBatched} (batch=2) вместо двух {@code cublasSgemm}.
+     * выходы {@code h1, gate [M×N]}. Один strided-batched GEMM (batch=2); при {@link #useFp16Matmul()} — FP16 Tensor Cores.
      */
     static native void matmulGpuDeviceFfnW1W3Projections0(
             long dXnorm, long dW1, long dW3, long dH1, long dGate, int M, int K, int N);
@@ -997,22 +1011,42 @@ public final class TensorOpsGPU {
     /** FlashAttention-2 forward (causal). Q/K/V/O=[BH,S,dHead], LSE=[BH,S]. BH=batch*numHeads. */
     static native void flashAttentionForwardGPUDeviceResident(
             long dQPtr, long dKPtr, long dVPtr, long dOutPtr, long dLSEPtr,
-            int BH, int S, int dHead, float scale);
+            int BH, int S, int dHead, float scale, int numHeads);
 
     /** FlashAttention-2 backward (causal). Q/K/V/O/dO/LSE → dQ/dK/dV. */
     static native void flashAttentionBackwardGPUDeviceResident(
-            long dQPtr, long dKPtr, long dVPtr,
-            long dOPtr, long dOGradPtr, long dLSEPtr,
-            long dGradQPtr, long dGradKPtr, long dGradVPtr,
-            int BH, int S, int dHead, float scale);
+            long dQPtr,
+            long dKPtr,
+            long dVPtr,
+            long dOPtr,
+            long dOGradPtr,
+            long dLSEPtr,
+            long dGradQPtr,
+            long dGradKPtr,
+            long dGradVPtr,
+            int BH,
+            int S,
+            int dHead,
+            float scale,
+            int numHeads);
+
+    static native boolean cudnnSdpaAvailable0();
 
     /** Вызов FlashAttention-2 forward. BH = batch*numHeads; {@code dHead} должен быть {@link #FLASH_ATTENTION_D_HEAD}. */
     public static void flashAttentionForwardGpuDeviceResident(
             GpuFloatBuffer dQ, GpuFloatBuffer dK, GpuFloatBuffer dV,
             GpuFloatBuffer dOut, GpuFloatBuffer dLSE,
             int BH, int S, int dHead, float scale) {
+        flashAttentionForwardGpuDeviceResident(dQ, dK, dV, dOut, dLSE, BH, S, dHead, scale, 1);
+    }
+
+    /** Как {@link #flashAttentionForwardGpuDeviceResident} с {@code numHeads} для cuDNN (BHSD). */
+    public static void flashAttentionForwardGpuDeviceResident(
+            GpuFloatBuffer dQ, GpuFloatBuffer dK, GpuFloatBuffer dV,
+            GpuFloatBuffer dOut, GpuFloatBuffer dLSE,
+            int BH, int S, int dHead, float scale, int numHeads) {
         TensorOpsGpuFlashAttention.flashAttentionForwardGpuDeviceResident(
-                dQ, dK, dV, dOut, dLSE, BH, S, dHead, scale);
+                dQ, dK, dV, dOut, dLSE, BH, S, dHead, scale, numHeads);
     }
 
     /** Вызов FlashAttention-2 backward; {@code dHead} — как во forward, должен быть {@link #FLASH_ATTENTION_D_HEAD}. */
@@ -1021,8 +1055,18 @@ public final class TensorOpsGPU {
             GpuFloatBuffer dO, GpuFloatBuffer dOGrad, GpuFloatBuffer dLSE,
             GpuFloatBuffer dGradQ, GpuFloatBuffer dGradK, GpuFloatBuffer dGradV,
             int BH, int S, int dHead, float scale) {
+        flashAttentionBackwardGpuDeviceResident(
+                dQ, dK, dV, dO, dOGrad, dLSE, dGradQ, dGradK, dGradV, BH, S, dHead, scale, 1);
+    }
+
+    /** Как {@link #flashAttentionBackwardGpuDeviceResident} с {@code numHeads} для cuDNN (BHSD). */
+    public static void flashAttentionBackwardGpuDeviceResident(
+            GpuFloatBuffer dQ, GpuFloatBuffer dK, GpuFloatBuffer dV,
+            GpuFloatBuffer dO, GpuFloatBuffer dOGrad, GpuFloatBuffer dLSE,
+            GpuFloatBuffer dGradQ, GpuFloatBuffer dGradK, GpuFloatBuffer dGradV,
+            int BH, int S, int dHead, float scale, int numHeads) {
         TensorOpsGpuFlashAttention.flashAttentionBackwardGpuDeviceResident(
-                dQ, dK, dV, dO, dOGrad, dLSE, dGradQ, dGradK, dGradV, BH, S, dHead, scale);
+                dQ, dK, dV, dO, dOGrad, dLSE, dGradQ, dGradK, dGradV, BH, S, dHead, scale, numHeads);
     }
 
     static native boolean ensureStridedBatchedPackScratch0(long rows, int dModel, int dIntermediate);
@@ -1037,7 +1081,7 @@ public final class TensorOpsGPU {
     static native void clearStridedBatchedPackOverride0();
 
     static native void decoderGraphPrewarmDeviceOps0(
-            int batch, int seqLen, int dModel, int numHeads, int dIntermediate);
+            int batch, int seqLen, int dModel, int numHeads, int dIntermediate, int useFlash);
 
     static native boolean cudaStreamBeginCapture0();
 
@@ -1363,13 +1407,18 @@ public final class TensorOpsGPU {
         return FP16_MATMUL;
     }
 
+    /** cuDNN fused SDPA (FlashAttention) собран и не выключен {@code JGPT_CUDNN_SDPA=0}. */
+    public static boolean cudnnSdpaAvailable() {
+        return GPU_AVAILABLE && cudnnSdpaAvailable0();
+    }
+
     /** {@code eps} для RMSNorm: env/property или дефолт по {@link #useFp16Matmul()}. */
     public static float rmsNormEps() {
         return RMSNORM_EPS;
     }
 
     /**
-     * Один GEMM на GPU: при {@link #useFp16Matmul()} — FP16 compute, иначе FP32+TF32.
+     * Один GEMM на GPU: при {@link #useFp16Matmul()} — FP16 Tensor Cores ({@code GemmEx}), иначе FP32+TF32.
      */
     public static void matmulGPUMaybeFp16(float[] A, float[] B, float[] C, int M, int K, int N) {
         TensorOpsGpuHostMatmul.matmulGPUMaybeFp16(A, B, C, M, K, N);
@@ -1831,9 +1880,8 @@ public final class TensorOpsGPU {
     }
 
     /**
-     * Перед {@link #cudaStreamBeginCapture}: предвыделить SDPA aux на device, прогреть strided-batched QKV/FFN и
-     * batched GEMM attention на том же stream/handle, что forward — без {@code cudaMalloc} и ленивого workspace
-     * cuBLAS внутри графа.
+     * Перед {@link #cudaStreamBeginCapture}: прогреть strided-batched QKV/FFN. При FlashAttention — только FA
+     * {@code D}/smem attribute, без S×S SDPA aux. Иначе — SDPA aux + batched GEMM. Без {@code cudaMalloc} внутри графа.
      */
     public static void decoderGraphPrewarmDeviceOps(
             int batch, int seqLen, int dModel, int numHeads, int dIntermediate) {

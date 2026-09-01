@@ -3,6 +3,7 @@
  */
 
 #include "jgpt_cuda_jni_raii.cuh"
+#include "jgpt_cuda_fp16_device_gemm.h"
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_softmaxLastDimGPU(
     JNIEnv* env, jclass clazz, jfloatArray h_src, jfloatArray h_dst, jint batch, jint mid, jint inner,
@@ -366,9 +367,10 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_rmsNormMatmulLmHeadG
         fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: cuBLAS handle unavailable\n");
         return;
     }
-    cublasStatus_t st = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, vocab, rows, dModel, &alpha, w, vocab, normOut, dModel, &beta, logits, vocab);
+    cublasStatus_t st = jgpt_cublas_device_gemm_rowmajor(
+            handle, 0, 0, rows, dModel, vocab, normOut, w, logits, alpha, beta);
     if (st != CUBLAS_STATUS_SUCCESS) {
-        fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: cublasSgemm failed (status %d)\n", (int) st);
+        fprintf(stderr, "rmsNormMatmulLmHeadGPUDevice: device GEMM failed (status %d)\n", (int) st);
     }
 }
 

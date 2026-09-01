@@ -4,6 +4,8 @@
 
 // ========== Ядра (float32) ==========
 #include "jgpt_cuda_error_macros.cuh"
+#include "jgpt_cuda_fp16_device_gemm.h"
+#include "jgpt_cudnn_sdpa.h"
 
 /** Линейный индекс нити в 1D-сетке в long long (избегает переполнения int при большом gridDim.x). */
 __device__ __forceinline__ long long jgpt_extra_kernel_linear_idx_ll() {
@@ -1677,25 +1679,25 @@ static bool batched_sgemm_row_major_extra(
     long long strideA = (long long) M * (long long) K;
     long long strideB = (long long) K * (long long) N;
     long long strideC = (long long) M * (long long) N;
-    cublasStatus_t st = cublasSgemmStridedBatched(
+    cublasStatus_t st = jgpt_cublas_device_gemm_strided_colmajor(
             handle,
             CUBLAS_OP_N,
             CUBLAS_OP_N,
             N,
             M,
             K,
-            &alpha,
             d_B,
             N,
             strideB,
             d_A,
             K,
             strideA,
-            &beta,
             d_C,
             N,
             strideC,
-            batchCount);
+            batchCount,
+            alpha,
+            beta);
     if (st != CUBLAS_STATUS_SUCCESS) {
         fprintf(stderr, "[TensorOpsGPU] extra batched sgemm failed: status %d\n", (int) st);
         return false;
@@ -1717,17 +1719,25 @@ static bool batched_sgemm_row_major_transB(
     long long strideB = (long long) N * K;   // B is N×K row-major
     long long strideC = (long long) M * N;
     // cuBLAS col-major: C_col(N×M) = B_col^T(N×K) × A_col(K×M)
-    cublasStatus_t st = cublasSgemmStridedBatched(
+    cublasStatus_t st = jgpt_cublas_device_gemm_strided_colmajor(
             handle,
-            CUBLAS_OP_T,   // transpose B (K×N col-major → N×K)
+            CUBLAS_OP_T,
             CUBLAS_OP_N,
-            N, M, K,
-            &alpha,
-            d_B, K, strideB,    // B: N×K row-major = K×N col-major, ldb=K
-            d_A, K, strideA,    // A: M×K row-major = K×M col-major, lda=K
-            &beta,
-            d_C, N, strideC,
-            batchCount);
+            N,
+            M,
+            K,
+            d_B,
+            K,
+            strideB,
+            d_A,
+            K,
+            strideA,
+            d_C,
+            N,
+            strideC,
+            batchCount,
+            alpha,
+            beta);
     if (st != CUBLAS_STATUS_SUCCESS) {
         fprintf(stderr, "[TensorOpsGPU] extra batched sgemm (transB) failed: %d\n", (int) st);
         return false;
@@ -1749,17 +1759,25 @@ static bool batched_sgemm_row_major_transA(
     long long strideB = (long long) K * N;   // B is K×N row-major
     long long strideC = (long long) M * N;
     // cuBLAS col-major: C_col(N×M) = B_col(N×K) × A_col^T(K×M)
-    cublasStatus_t st = cublasSgemmStridedBatched(
+    cublasStatus_t st = jgpt_cublas_device_gemm_strided_colmajor(
             handle,
             CUBLAS_OP_N,
-            CUBLAS_OP_T,   // transpose A (M×K col-major → K×M)
-            N, M, K,
-            &alpha,
-            d_B, N, strideB,    // B: K×N row-major = N×K col-major, ldb=N
-            d_A, M, strideA,    // A: K×M row-major = M×K col-major, lda=M
-            &beta,
-            d_C, N, strideC,
-            batchCount);
+            CUBLAS_OP_T,
+            N,
+            M,
+            K,
+            d_B,
+            N,
+            strideB,
+            d_A,
+            M,
+            strideA,
+            d_C,
+            N,
+            strideC,
+            batchCount,
+            alpha,
+            beta);
     if (st != CUBLAS_STATUS_SUCCESS) {
         fprintf(stderr, "[TensorOpsGPU] extra batched sgemm (transA) failed: %d\n", (int) st);
         return false;
@@ -2352,18 +2370,44 @@ flash_attn_bwd_dq_kernel(
     }
 }
 
+#include "jgpt_cuda_flash_attn_fp16.inl"
+
 // ----------------------------------------------------------------
 //  Host-side launchers
 // ----------------------------------------------------------------
 static bool flash_attn_sync_stream_ok(const char* ctx) {
-    return jgpt_cuda_sync_stream_unless_capturing(ctx) != 0;
+    /* Launch errors already checked via CUDA_KERNEL_CHECK. Full stream sync here stalls the GPU
+     * between every FA kernel (×32 layers). Capture already skips this; eager now does too —
+     * the train step boundary still synchronizes. */
+    (void) ctx;
+    return true;
+}
+
+static void fa_split_batch_heads(int BH, int numHeads, int* batch, int* heads) {
+    int h = numHeads > 0 ? numHeads : 1;
+    if (BH > 0 && (BH % h) == 0) {
+        *batch = BH / h;
+        *heads = h;
+        return;
+    }
+    *batch = BH;
+    *heads = 1;
 }
 
 static bool flash_attn_fwd_run(
         const float* d_q, const float* d_k, const float* d_v,
         float* d_o, float* d_lse,
-        int BH, int S, float scale)
+        int BH, int S, float scale, int numHeads)
 {
+    int batch = BH;
+    int heads = 1;
+    fa_split_batch_heads(BH, numHeads, &batch, &heads);
+    if (jgpt_cudnn_sdpa_fwd(d_q, d_k, d_v, d_o, d_lse, batch, heads, S, kFaDh, scale)) {
+        return true;
+    }
+    if (jgpt_device_fp16_gemm_enabled()) {
+        return flash_attn_fwd_run_tc(d_q, d_k, d_v, d_o, d_lse, BH, S, scale);
+    }
     const int num_q_tiles = (S + kFaBr - 1) / kFaBr;
     const long long grid_ll = (long long) BH * (long long) num_q_tiles;
     const long long max_grid_ll = static_cast<long long>(jgpt_extra_cuda_max_grid_x());
@@ -2398,8 +2442,19 @@ static bool flash_attn_bwd_run(
         const float* d_o, const float* d_do,
         const float* d_lse,
         float* d_dq, float* d_dk, float* d_dv,
-        int BH, int S, float scale)
+        int BH, int S, float scale, int numHeads)
 {
+    int batch = BH;
+    int heads = 1;
+    fa_split_batch_heads(BH, numHeads, &batch, &heads);
+    if (jgpt_cudnn_sdpa_bwd(
+                d_q, d_k, d_v, d_o, d_do, d_lse, d_dq, d_dk, d_dv, batch, heads, S, kFaDh, scale)) {
+        return true;
+    }
+    if (jgpt_device_fp16_gemm_enabled()) {
+        return flash_attn_bwd_run_fp16(
+                d_q, d_k, d_v, d_o, d_do, d_lse, d_dq, d_dk, d_dv, BH, S, scale);
+    }
     const size_t qkv_bytes = (size_t)BH * (size_t)S * (size_t)kFaDh * sizeof(float);
     if (cudaMemsetAsync(d_dq, 0, qkv_bytes, kTensorCudaStream) != cudaSuccess) {
         return false;

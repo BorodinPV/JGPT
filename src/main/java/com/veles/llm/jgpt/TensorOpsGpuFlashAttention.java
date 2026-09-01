@@ -5,6 +5,14 @@ final class TensorOpsGpuFlashAttention {
 
     private TensorOpsGpuFlashAttention() {}
 
+    static int requireHeads(int bh, int numHeads) {
+        int heads = numHeads <= 0 ? 1 : numHeads;
+        if (bh <= 0 || bh % heads != 0) {
+            throw new IllegalArgumentException("FlashAttention BH=" + bh + " not divisible by numHeads=" + heads);
+        }
+        return heads;
+    }
+
     static void flashAttentionForwardGpuDeviceResident(
             GpuFloatBuffer dQ,
             GpuFloatBuffer dK,
@@ -14,7 +22,8 @@ final class TensorOpsGpuFlashAttention {
             int bh,
             int s,
             int dHead,
-            float scale) {
+            float scale,
+            int numHeads) {
         TensorOpsGPU.requireCuda("TensorOpsGPU.flashAttentionForwardGpuDeviceResident");
         if (dHead != TensorOpsGPU.FLASH_ATTENTION_D_HEAD) {
             throw new IllegalArgumentException(
@@ -23,6 +32,7 @@ final class TensorOpsGpuFlashAttention {
                             + ", got "
                             + dHead);
         }
+        int heads = requireHeads(bh, numHeads);
         TensorOpsGPU.flashAttentionForwardGPUDeviceResident(
                 dQ.devicePointer(),
                 dK.devicePointer(),
@@ -32,7 +42,8 @@ final class TensorOpsGpuFlashAttention {
                 bh,
                 s,
                 dHead,
-                scale);
+                scale,
+                heads);
     }
 
     static void flashAttentionBackwardGpuDeviceResident(
@@ -48,7 +59,8 @@ final class TensorOpsGpuFlashAttention {
             int bh,
             int s,
             int dHead,
-            float scale) {
+            float scale,
+            int numHeads) {
         TensorOpsGPU.requireCuda("TensorOpsGPU.flashAttentionBackwardGpuDeviceResident");
         if (dHead != TensorOpsGPU.FLASH_ATTENTION_D_HEAD) {
             throw new IllegalArgumentException(
@@ -57,6 +69,7 @@ final class TensorOpsGpuFlashAttention {
                             + ", got "
                             + dHead);
         }
+        int heads = requireHeads(bh, numHeads);
         TensorOpsGPU.flashAttentionBackwardGPUDeviceResident(
                 dQ.devicePointer(),
                 dK.devicePointer(),
@@ -70,6 +83,7 @@ final class TensorOpsGpuFlashAttention {
                 bh,
                 s,
                 dHead,
-                scale);
+                scale,
+                heads);
     }
 }

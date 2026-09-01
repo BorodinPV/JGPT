@@ -4,10 +4,18 @@
  */
 
 #include "jgpt_cuda_jni_raii.cuh"
+#include "jgpt_cuda_fp16_device_gemm.h"
+
+JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_setDeviceFp16GemmEnabled0(
+    JNIEnv* env, jclass clazz, jboolean enabled) {
+    (void) env;
+    (void) clazz;
+    jgpt_device_fp16_gemm_set(enabled == JNI_TRUE ? 1 : 0);
+}
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     (void) vm; (void) reserved;
-    printf("[TensorOpsGPU] cuBLAS will be initialized per-thread with TF32 tensor ops\n");
+    printf("[TensorOpsGPU] cuBLAS will be initialized per-thread (TF32, or FP16 GemmEx if JGPT_FP16_MATMUL=1)\n");
     return JNI_VERSION_1_8;
 }
 
@@ -580,10 +588,11 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGPUDevice(
         fprintf(stderr, "TensorOpsGPU: cuBLAS handle unavailable (matmulGPUDevice)\n");
         return;
     }
-    cublasStatus_t st = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, pdB, N, pdA, K, &beta, pdC, N);
+    cublasStatus_t st = jgpt_cublas_device_gemm_rowmajor(
+            handle, 0, 0, M, K, N, pdA, pdB, pdC, alpha, beta);
 
     if (st != CUBLAS_STATUS_SUCCESS) {
-        fprintf(stderr, "cuBLAS Sgemm (device) error: status %d\n", (int) st);
+        fprintf(stderr, "cuBLAS device GEMM error: status %d\n", (int) st);
     }
 }
 
@@ -600,30 +609,27 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGPUDeviceEx(
 
     const float alpha = 1.0f;
     const float beta = static_cast<float>(betaIn);
-    cublasOperation_t opA = transposeA ? CUBLAS_OP_T : CUBLAS_OP_N;
-    cublasOperation_t opB = transposeB ? CUBLAS_OP_T : CUBLAS_OP_N;
-    /*
-     * В row-major Java A[M×K], B[K×N] вызов ниже — это Sgemm(opB, opA) с переставленными аргументами (pdB, pdA).
-     * lda/ldb — ведущие размерности **хранения** операндов pdA/pdB в соглашении пары (opB,opA,B,A), как у рабочего
-     * matmulGPUDevice при NT,NT (там lda=K, ldb=N). Для комбинаций с T согласованы с Linear/GPT backward;
-     * менять формулы без численных тестов на всех (transposeA,transposeB) нельзя.
-     */
-    int lda = transposeA ? M : K;
-    int ldb = transposeB ? K : N;
 
     cublasHandle_t handle = get_cublas_handle();
     if (handle == nullptr) {
         fprintf(stderr, "TensorOpsGPU: cuBLAS handle unavailable (matmulGPUDeviceEx)\n");
         return;
     }
-    /*
-     * Row-major C[M×N] = op(A)*op(B) через column-major cuBLAS: первым операндом идёт B, вторым A, (m,n,k)=(N,M,K),
-     * transa/transb = (opB,opA). Вариант (opA,opB,pdA,pdb) ломает согласование с {@link #matmulGPUDevice} при NT,NT.
-     */
-    cublasStatus_t st = cublasSgemm(handle, opB, opA, N, M, K, &alpha, pdB, ldb, pdA, lda, &beta, pdC, N);
+    cublasStatus_t st = jgpt_cublas_device_gemm_rowmajor(
+            handle,
+            transposeA ? 1 : 0,
+            transposeB ? 1 : 0,
+            M,
+            K,
+            N,
+            pdA,
+            pdB,
+            pdC,
+            alpha,
+            beta);
 
     if (st != CUBLAS_STATUS_SUCCESS) {
-        fprintf(stderr, "cuBLAS SgemmEx (device flags) error: status %d\n", (int) st);
+        fprintf(stderr, "cuBLAS device GEMM Ex error: status %d\n", (int) st);
     }
 }
 
@@ -669,6 +675,11 @@ JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_ensureStridedBat
         fprintf(stderr, "ensureStridedBatchedPackScratch0: allocation failed (w=%lld c=%lld)\n", wNeed, cNeed);
         return JNI_FALSE;
     }
+    if (jgpt_device_fp16_gemm_enabled()) {
+        const size_t xElems = (size_t) rows * (size_t) dModel;
+        const size_t wElems = static_cast<size_t>(wNeed);
+        jgpt_device_fp16_gemm_prewarm(wElems > xElems ? wElems : xElems, wElems > xElems ? wElems : xElems);
+    }
     return JNI_TRUE;
 }
 
@@ -709,7 +720,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_decoderGraphPrewarmD
     jint seqLen,
     jint dModel,
     jint numHeads,
-    jint dIntermediate) {
+    jint dIntermediate,
+    jint useFlash) {
     (void) env;
     (void) clazz;
     if (batch <= 0 || seqLen <= 0 || dModel <= 0 || numHeads <= 0 || dIntermediate <= 0) {
@@ -723,7 +735,12 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_decoderGraphPrewarmD
     const int bAttn = batch * numHeads;
     jgpt_cuda_ensure_stream();
     jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo(rows, dModel, dIntermediate);
-    jgpt_cuda_graph_prewarm_sdpa_aux_and_cublas(bAttn, seqLen, dHead, dHead);
+    const bool flash = useFlash != 0 && dHead == 16;
+    if (flash) {
+        jgpt_cuda_graph_prewarm_flash_attn(batch, numHeads, seqLen);
+    } else {
+        jgpt_cuda_graph_prewarm_sdpa_aux_and_cublas(bAttn, seqLen, dHead, dHead);
+    }
 }
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGpuDeviceQkvProjections0(
@@ -791,25 +808,25 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_matmulGpuDeviceQkvPr
         fprintf(stderr, "matmulGpuDeviceQkvProjections0: cuBLAS handle unavailable\n");
         return;
     }
-    cublasStatus_t st = cublasSgemmStridedBatched(
+    cublasStatus_t st = jgpt_cublas_device_gemm_strided_colmajor(
             handle,
             CUBLAS_OP_N,
             CUBLAS_OP_N,
             N,
             M,
             K,
-            &alpha,
             wPack,
             N,
             kn,
             xNC,
             K,
             0LL,
-            &beta,
             cPack,
             N,
             mn,
-            3);
+            3,
+            alpha,
+            beta);
     if (st != CUBLAS_STATUS_SUCCESS) {
         fprintf(stderr, "cuBLAS SgemmStridedBatched (QKV device) error: status %d\n", (int) st);
         return;
@@ -889,25 +906,25 @@ extern "C" int jgpt_cuda_ffn_w1w3_strided_batched_device(
         fprintf(stderr, "jgpt_cuda_ffn_w1w3_strided_batched_device: cuBLAS handle unavailable\n");
         return 0;
     }
-    cublasStatus_t st = cublasSgemmStridedBatched(
+    cublasStatus_t st = jgpt_cublas_device_gemm_strided_colmajor(
             handle,
             CUBLAS_OP_N,
             CUBLAS_OP_N,
             N,
             M,
             K,
-            &alpha,
             wPack,
             N,
             kn,
             xnorm,
             K,
             0LL,
-            &beta,
             cPack,
             N,
             mn,
-            2);
+            2,
+            alpha,
+            beta);
     if (st != CUBLAS_STATUS_SUCCESS) {
         fprintf(stderr, "cuBLAS SgemmStridedBatched (FFN W1+W3 device) error: status %d\n", (int) st);
         return 0;

@@ -16,6 +16,8 @@
 #include "jgpt_cuda_extra_thread_resources.cuh"
 #include "jgpt_cuda_ffn_link.h"
 #include "jgpt_cuda_graph_prewarm.h"
+#include "jgpt_cudnn_sdpa.h"
+#include "jgpt_cuda_fp16_device_gemm.h"
 #include "jgpt_cuda_size_check.cuh"
 #include "jgpt_cuda_jni_helpers.cuh"
 #include "jgpt_cuda_jni_raii.cuh"

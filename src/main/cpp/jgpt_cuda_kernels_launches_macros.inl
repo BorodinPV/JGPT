@@ -4,6 +4,7 @@
  */
 
 #include <cstddef>
+#include <climits>
 #include "jgpt_cuda_error_macros.cuh"
 
 // ========== Kernels with error checking ==========
@@ -81,6 +82,16 @@ static void launch_float_to_half(const float* d_src, __half* d_dst, int n) {
     float_to_half_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_src, d_dst, n);
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) fprintf(stderr, "launch_float_to_half error: %s\n", cudaGetErrorString(err));
+}
+
+static void launch_float_to_half_n(const float* d_src, __half* d_dst, size_t n) {
+    while (n > 0U) {
+        const int chunk = n > static_cast<size_t>(INT_MAX) ? INT_MAX : static_cast<int>(n);
+        launch_float_to_half(d_src, d_dst, chunk);
+        d_src += chunk;
+        d_dst += chunk;
+        n -= static_cast<size_t>(chunk);
+    }
 }
 
 __global__ void half_to_float_kernel(const __half* __restrict__ src, float* __restrict__ dst, int n) {

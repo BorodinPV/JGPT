@@ -69,8 +69,8 @@ final class TensorOpsGpuInit {
     }
 
     /**
-     * FP16 Tensor Cores для host GEMM ({@code JGPT_FP16_MATMUL} / {@code -Djgpt.fp16.matmul=true}); эффективно только
-     * при {@code gpuAvailable}.
+     * FP16 Tensor Cores для GEMM ({@code JGPT_FP16_MATMUL} / {@code -Djgpt.fp16.matmul=true}): host {@code GemmEx}
+     * и device {@code matmulGPUDeviceEx} / strided QKV·FFN. Эффективно только при {@code gpuAvailable}.
      */
     static boolean resolveFp16Matmul(boolean gpuAvailable) {
         Boolean fp16FromEnv = null;

@@ -33,8 +33,11 @@ final class GpuAttentionResidentWorkspace {
     private GpuFloatBuffer attnOut;
     /** Квадрат маски [seqLen×seqLen] на device для resident SDPA без захвата хостового массива в graph. */
     private GpuFloatBuffer maskDev;
-
     private int maskSeqLen = -1;
+
+    /** LSE FlashAttention [BH×S] на infer (без BlockActivationCache). */
+    private GpuFloatBuffer flashLse;
+    private int flashLseCap = -1;
 
     private float[] hostOut;
 
@@ -102,6 +105,19 @@ final class GpuAttentionResidentWorkspace {
         return maskDev;
     }
 
+    /** Переиспользуемый LSE для FlashAttention на infer (не выделять 32 раза за стек). */
+    GpuFloatBuffer ensureFlashLse(int floats) {
+        if (floats <= 0) {
+            throw new IllegalArgumentException("flash LSE size must be positive");
+        }
+        if (flashLseCap >= floats && flashLse != null && !flashLse.isClosed()) {
+            return flashLse;
+        }
+        flashLse = GpuBufferUtils.ensure(flashLse, floats);
+        flashLseCap = floats;
+        return flashLse;
+    }
+
     private void closeAll() {
         xIn = GpuBufferUtils.closeAndNull(xIn);
         xNorm = GpuBufferUtils.closeAndNull(xNorm);
@@ -111,7 +127,9 @@ final class GpuAttentionResidentWorkspace {
         concatFlat = GpuBufferUtils.closeAndNull(concatFlat);
         attnOut = GpuBufferUtils.closeAndNull(attnOut);
         maskDev = GpuBufferUtils.closeAndNull(maskDev);
+        flashLse = GpuBufferUtils.closeAndNull(flashLse);
         maskSeqLen = -1;
+        flashLseCap = -1;
     }
 
     @Override

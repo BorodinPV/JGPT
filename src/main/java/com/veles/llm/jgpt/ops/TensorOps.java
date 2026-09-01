@@ -67,8 +67,9 @@ public final class TensorOps {
     }
 
     /**
-     * Выделить thread-local attention/FFN workspace, нативный SDPA aux и FP16 staging под probs до любого
+     * Выделить thread-local attention/FFN workspace и нативный graph-prewarm до любого
      * {@code cudaStreamBeginCapture}/{@code cudaGraphExecLaunch} в этом decoder-pass.
+     * При FlashAttention не выделяет S×S {@code attnProbsFloatStage} (он нужен только SDPA).
      *
      * <p><b>Обязательно вызывать один раз до цикла по слоям</b>: при частичном захвате (часть {@code exec} уже есть)
      * повторный prime только перед слоем N перевыделил бы общие TL-буферы и инвалидировал графы слоёв
@@ -96,7 +97,7 @@ public final class TensorOps {
         synchronized (fw.exclusiveUseLock()) {
             fw.ensureFfnNormResidual(rows, dModel, dIntermediate);
         }
-        if (cachesPerLayer != null) {
+        if (cachesPerLayer != null && !TensorOpsGPU.FLASH_ATTENTION) {
             int bAttn = Math.multiplyExact(batch, numHeads);
             int probFloats = Math.multiplyExact(Math.multiplyExact(bAttn, seqLen), seqLen);
             for (BlockActivationCacheDevice c : cachesPerLayer) {
@@ -1581,16 +1582,12 @@ public final class TensorOps {
             int bAttn = batch * numHeads;
             if (useFlash) {
                 // Q=[bAttn,S,Dh]=getConcatFlat, K=getAttnOut, V=getQ, O=getK (reuse)
-                GpuFloatBuffer lseDev = devCache != null ? devCache.attnLseBuffer() : null;
-                if (lseDev == null) {
-                    // Inference path: no cache → allocate temporary LSE buffer
-                    lseDev = GpuFloatBuffer.allocate((long) bAttn * seqLen);
-                }
+                GpuFloatBuffer lseDev = devCache != null ? devCache.attnLseBuffer() : ws.ensureFlashLse(bAttn * seqLen);
                 TensorOpsGPU.flashAttentionForwardGpuDeviceResident(
                         ws.getConcatFlat(), ws.getAttnOut(), ws.getQ(),
                         ws.getK(),  // O output (head-wise) → stored here temporarily
                         lseDev,
-                        bAttn, seqLen, dHead, scale);
+                        bAttn, seqLen, dHead, scale, numHeads);
                 if (devCache != null) {
                     // Save O_heads (before concatHeads overwrites ws.getK()) for backward D computation
                     devCache.copySlotFromDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_OUT_HEADS, ws.getK(), headFloats);

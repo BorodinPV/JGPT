@@ -1,5 +1,7 @@
 #pragma once
 
+#include "jgpt_cuda_stream.cuh"
+
 #include <cuda_runtime.h>
 #include <cstdio>
 
@@ -13,12 +15,30 @@ struct TlsDeviceBlob {
     void* ptr = nullptr;
     size_t bytes = 0;
 
+    static bool stream_capturing() {
+        jgpt_cuda_ensure_stream();
+        cudaStreamCaptureStatus cap = cudaStreamCaptureStatusNone;
+        cudaError_t e = cudaStreamGetCaptureInfo(kTensorCudaStream, &cap, nullptr);
+        if (e != cudaSuccess) {
+            (void) cudaGetLastError();
+            return false;
+        }
+        return cap == cudaStreamCaptureStatusActive;
+    }
+
     bool grow_to_fit(size_t need) {
         if (need == 0U) {
             return true;
         }
         if (need <= bytes && ptr != nullptr) {
             return true;
+        }
+        if (stream_capturing()) {
+            fprintf(stderr,
+                    "TlsDeviceBlob::grow_to_fit: skip malloc during capture (need=%zu have=%zu)\n",
+                    need,
+                    bytes);
+            return false;
         }
         if (ptr != nullptr) {
             cudaError_t e = cudaFree(ptr);

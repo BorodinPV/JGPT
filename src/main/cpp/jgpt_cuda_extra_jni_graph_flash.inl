@@ -49,6 +49,14 @@ extern "C" void jgpt_cuda_graph_prewarm_sdpa_aux_and_cublas(int bAttn, int seqLe
     (void) batched_sgemm_row_major_extra(g2a, g2b, g2c, bAttn, seqLen, seqLen, dV, 1.0f, 0.0f);
 }
 
+extern "C" void jgpt_cuda_graph_prewarm_flash_attn(int batch, int numHeads, int seqLen) {
+    jgpt_cuda_ensure_stream();
+    const int bAttn = batch * numHeads;
+    jgpt_cuda_flash_attn_prewarm_kernels(bAttn, seqLen);
+    const float scale = 1.0f / 4.0f; /* d_head=16 */
+    jgpt_cudnn_sdpa_prewarm(batch, numHeads, seqLen, 16, scale);
+}
+
 void jgpt_cuda_extra_cleanup(void) {
     jgpt_extra::jgpt_extra_tls().cublas.destroy();
     {
@@ -74,6 +82,7 @@ void jgpt_cuda_extra_cleanup(void) {
     attn_bwd_host_free_cached();
     attn_bwd_aux_free_cached();
     jgpt_extra::jgpt_extra_tls().flash_attn.free_cached();
+    jgpt_cudnn_sdpa_cleanup();
 }
 
 // ----------------------------------------------------------------
@@ -122,10 +131,16 @@ JNIEXPORT jlong JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_decoderGraphNativeS
     return static_cast<jlong>(static_cast<int64_t>(h));
 }
 
+JNIEXPORT jboolean JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_cudnnSdpaAvailable0(JNIEnv* env, jclass clazz) {
+    (void) env;
+    (void) clazz;
+    return jgpt_cudnn_sdpa_available() ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionForwardGPUDeviceResident(
     JNIEnv* env, jclass clazz,
     jlong dQPtr, jlong dKPtr, jlong dVPtr, jlong dOutPtr, jlong dLSEPtr,
-    jint BH, jint S, jint dHead, jfloat scale)
+    jint BH, jint S, jint dHead, jfloat scale, jint numHeads)
 {
     (void) env; (void) clazz;
     if (!dQPtr || !dKPtr || !dVPtr || !dOutPtr || !dLSEPtr || BH <= 0 || S <= 0) return;
@@ -148,7 +163,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionForwar
                 reinterpret_cast<float*>(static_cast<uintptr_t>(dLSEPtr)),
                 BH,
                 S,
-                scale)) {
+                scale,
+                numHeads)) {
         fprintf(stderr, "flashAttentionForwardGPUDeviceResident: flash_attn_fwd_run failed\n");
     }
 }
@@ -165,7 +181,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionBackwa
     jlong dQPtr, jlong dKPtr, jlong dVPtr,
     jlong dOPtr, jlong dOGradPtr, jlong dLSEPtr,
     jlong dGradQPtr, jlong dGradKPtr, jlong dGradVPtr,
-    jint BH, jint S, jint dHead, jfloat scale)
+    jint BH, jint S, jint dHead, jfloat scale, jint numHeads)
 {
     (void) env; (void) clazz;
     if (!dQPtr || !dKPtr || !dVPtr || !dOPtr || !dOGradPtr || !dLSEPtr
@@ -195,7 +211,8 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_flashAttentionBackwa
                 reinterpret_cast<float*>(static_cast<uintptr_t>(dGradVPtr)),
                 BH,
                 S,
-                scale)) {
+                scale,
+                numHeads)) {
         fprintf(stderr, "flashAttentionBackwardGPUDeviceResident: flash_attn_bwd_run failed\n");
     }
 }

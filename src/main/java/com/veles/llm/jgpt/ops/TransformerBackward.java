@@ -1106,7 +1106,8 @@ public final class TransformerBackward {
                         batchHeads,
                         seqLen,
                         dHead,
-                        attScale);
+                        attScale,
+                        numHeads);
             } else {
                 /* Classic backward: use cached softmax probs (more numerically stable). */
                 TensorOpsGPU.scaledDotProductAttentionBackwardGpuDevice(

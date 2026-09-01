@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -15,6 +18,12 @@ void jgpt_cuda_graph_prewarm_qkv_ffn_strided_and_wo(int M, int dModel, int dInt)
  * (get_extra_cublas_handle), чтобы не было cudaMalloc/ленивого workspace внутри графа.
  */
 void jgpt_cuda_graph_prewarm_sdpa_aux_and_cublas(int bAttn, int seqLen, int dK, int dV);
+
+/**
+ * FlashAttention graph prime: {@code fa_ensure_D} + cudaFuncSetAttribute для FA-ядер
+ * + cuDNN SDPA dummy execute (настоящие B×H, без S×S SDPA aux).
+ */
+void jgpt_cuda_graph_prewarm_flash_attn(int batch, int numHeads, int seqLen);
 
 /**
  * Отладка CUDA graph: текущие thread-local SDPA aux (non-graph и graph-only) и их размеры в байтах.

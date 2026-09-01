@@ -36,5 +36,9 @@ state/current.env
 /checkpoints_test_fullgpu/
 /clean_corpus/
 
+# cuDNN runtime (~1GB pip wheel) and cloned frontend headers
+/third_party/cudnn/
+/third_party/cudnn-frontend/
+
 # Stakpak session files
 .stakpak/session*

@@ -21,10 +21,10 @@ git clone <repository-url>
 cd JGPT
 
 # Native CUDA/JNI — Linux
-./scripts/build-cuda.sh
+./scripts/linux/build-cuda.sh
 
 # Native CUDA/JNI — Windows (PowerShell)
-.\scripts\build-cuda.ps1
+.\scripts\windows\build-cuda.ps1
 . .\build\jgpt-cuda-env.ps1
 
 # Build Java code / Сборка Java кода
@@ -33,6 +33,8 @@ mvn compile
 # Run tests / Запуск тестов
 mvn test
 ```
+
+Launcher map: [scripts/README.md](scripts/README.md).
 
 ### Build with custom FlashAttention tile size / Сборка с кастомным размером плитки FlashAttention
 ```bash

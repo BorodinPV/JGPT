@@ -3,10 +3,10 @@ set -euo pipefail
 
 # Download Russian text files from https://artefact.lib.ru/library/
 # Usage:
-#   ./scripts/download-lib-ru-library.sh
-#   ./scripts/download-lib-ru-library.sh --out data/books/libru --delay 0.4
+#   ./scripts/linux/download-lib-ru-library.sh
+#   ./scripts/linux/download-lib-ru-library.sh --out data/books/libru --delay 0.4
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 BASE_URL="https://artefact.lib.ru/library/"

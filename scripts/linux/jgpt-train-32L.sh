@@ -6,17 +6,17 @@
 # JGPT_PRESET_NUM_LAYERS обратно на 12 из env/*.env цепочки.
 #
 # Использование:
-#   ./scripts/jgpt-train-32L.sh
-#   ./scripts/jgpt-train-32L.sh --data-dir data/books/libru_txt_clean
-#   ./scripts/jgpt-train-32L.sh --fresh          # убрать старые чекпоинты
-#   JGPT_EPOCHS=40 ./scripts/jgpt-train-32L.sh
+#   ./scripts/linux/jgpt-train-32L.sh
+#   ./scripts/linux/jgpt-train-32L.sh --data-dir data/books/libru_txt_clean
+#   ./scripts/linux/jgpt-train-32L.sh --fresh          # убрать старые чекпоинты
+#   JGPT_EPOCHS=40 ./scripts/linux/jgpt-train-32L.sh
 #
 # Остановка: Ctrl+C (checkpoint сохранится через shutdown hook)
-# Resume:    ./scripts/jgpt-train-32L.sh
+# Resume:    ./scripts/linux/jgpt-train-32L.sh
 # =============================================================
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 LOG_FILE="$ROOT/training_allbooks.log"
@@ -48,9 +48,9 @@ Env (поверх пресета):
   JGPT_PRESET_NUM_LAYERS  только если меняете геометрию в env/32L-83M.env
 
 Примеры:
-  ./scripts/jgpt-train-32L.sh --fresh
-  ./scripts/jgpt-train-32L.sh --fresh --data-dir data/books/libru_txt_clean
-  JGPT_EPOCHS=80 ./scripts/jgpt-train-32L.sh
+  ./scripts/linux/jgpt-train-32L.sh --fresh
+  ./scripts/linux/jgpt-train-32L.sh --fresh --data-dir data/books/libru_txt_clean
+  JGPT_EPOCHS=80 ./scripts/linux/jgpt-train-32L.sh
 EOF
 }
 
@@ -150,7 +150,7 @@ echo "════════════════════════�
 echo ""
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
-    bash "$ROOT/scripts/build-cuda.sh"
+    bash "$ROOT/scripts/linux/build-cuda.sh"
 else
     if [[ -f "$ROOT/build/libjgpt_cuda.so" ]]; then
         export JGPT_CUDA_LIB="$ROOT/build/libjgpt_cuda.so"

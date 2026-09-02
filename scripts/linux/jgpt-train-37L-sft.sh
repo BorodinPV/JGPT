@@ -6,20 +6,21 @@
 # checkpoints/sft_37L_16k_2048/. Не jgpt-smart.sh.
 #
 # Использование:
-#   ./scripts/jgpt-train-37L-sft.sh
-#   ./scripts/jgpt-train-37L-sft.sh --fresh
-#   JGPT_BATCH_SIZE=2 JGPT_ACCUMULATION_STEPS=64 ./scripts/jgpt-train-37L-sft.sh --no-build
+#   ./scripts/linux/jgpt-train-37L-sft.sh
+#   ./scripts/linux/jgpt-train-37L-sft.sh --fresh
+#   JGPT_BATCH_SIZE=2 JGPT_ACCUMULATION_STEPS=64 ./scripts/linux/jgpt-train-37L-sft.sh --no-build
+# Windows: .\scripts\windows\jgpt-train-37L-sft.ps1   (same flags / resume)
 #
 # Остановка: Ctrl+C
-# Resume:    ./scripts/jgpt-train-37L-sft.sh
+# Resume:    ./scripts/linux/jgpt-train-37L-sft.sh
 # Чат:       set -a; source env/37L-sft-100M.env; set +a
-#            ./scripts/jgpt-chat.sh --boo . --layers 37 --seq-len 2048 \
+#            ./scripts/linux/jgpt-chat.sh --boo . --layers 37 --seq-len 2048 \
 #              --model checkpoints/sft_37L_16k_2048/model_best.bin \
 #              --tokenizer checkpoints/tokenizer_sft_16k.bin
 # =============================================================
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 LOG_FILE="$ROOT/training_sft_37L.log"
@@ -56,8 +57,8 @@ Env (поверх пресета):
   JGPT_MAX_SEQ_LEN        если OOM — 1536
 
 Примеры:
-  ./scripts/jgpt-train-37L-sft.sh
-  JGPT_BATCH_SIZE=2 JGPT_ACCUMULATION_STEPS=64 ./scripts/jgpt-train-37L-sft.sh --no-build
+  ./scripts/linux/jgpt-train-37L-sft.sh
+  JGPT_BATCH_SIZE=2 JGPT_ACCUMULATION_STEPS=64 ./scripts/linux/jgpt-train-37L-sft.sh --no-build
 EOF
 }
 
@@ -170,7 +171,7 @@ echo "════════════════════════�
 echo ""
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
-    bash "$ROOT/scripts/build-cuda.sh"
+    bash "$ROOT/scripts/linux/build-cuda.sh"
 else
     if [[ -f "$ROOT/build/libjgpt_cuda.so" ]]; then
         export JGPT_CUDA_LIB="$ROOT/build/libjgpt_cuda.so"

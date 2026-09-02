@@ -529,7 +529,7 @@ public final class LLMTrainer {
     }
 
     /**
-     * Сводка env и эффективных флагов для сверки с {@code scripts/jgpt-smart.sh}; ключи зондов
+     * Сводка env и эффективных флагов для сверки с {@code scripts/linux/jgpt-smart.sh}; ключи зондов
      * (JGPT_BATCH_PROBE*, JGPT_PROBE_*) в {@link #train()} не читаются.
      */
     private void logTensorTrainingEnvSnapshot() {

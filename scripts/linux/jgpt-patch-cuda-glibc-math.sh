@@ -4,7 +4,7 @@
 # См. https://forums.developer.nvidia.com/t/error-exception-specification-is-incompatible-for-cospi-sinpi-cospif-sinpif-with-glibc-2-41/323591
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 NVCC="${CUDACXX:-}"
@@ -49,5 +49,5 @@ fi
 
 echo "[jgpt-patch-cuda-glibc-math] Не удалось записать $MATH_H (нужен sudo) или шаблоны не совпали." >&2
 echo "[jgpt-patch-cuda-glibc-math] Выполните один раз:" >&2
-echo "  sudo env CUDACXX='$NVCC_REAL' \"$ROOT/scripts/jgpt-patch-cuda-glibc-math.sh\"" >&2
+echo "  sudo env CUDACXX='$NVCC_REAL' \"$ROOT/scripts/linux/jgpt-patch-cuda-glibc-math.sh\"" >&2
 exit 1

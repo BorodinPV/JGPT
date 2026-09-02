@@ -41,17 +41,54 @@ set(JGPT_CUDNN_INCLUDE_DIR "")
 set(JGPT_CUDNN_LIBRARY "")
 set(JGPT_CUDNN_LIB_DIR "")
 set(_JGPT_CUDNN_WHEEL "${PROJECT_ROOT}/third_party/cudnn/nvidia/cudnn")
-if(EXISTS "${_JGPT_CUDNN_WHEEL}/include/cudnn.h" AND EXISTS "${_JGPT_CUDNN_WHEEL}/lib/libcudnn.so.9")
+if(EXISTS "${_JGPT_CUDNN_WHEEL}/include/cudnn.h")
     set(JGPT_CUDNN_INCLUDE_DIR "${_JGPT_CUDNN_WHEEL}/include")
-    set(JGPT_CUDNN_LIBRARY "${_JGPT_CUDNN_WHEEL}/lib/libcudnn.so.9")
-    set(JGPT_CUDNN_LIB_DIR "${_JGPT_CUDNN_WHEEL}/lib")
-else()
-    set(_JGPT_CUDNN_HINTS "$ENV{CUDNN_ROOT}" "$ENV{CUDNN_HOME}" /usr)
-    find_path(JGPT_CUDNN_INCLUDE_DIR cudnn.h HINTS ${_JGPT_CUDNN_HINTS} PATH_SUFFIXES include)
-    find_library(JGPT_CUDNN_LIBRARY NAMES cudnn HINTS ${_JGPT_CUDNN_HINTS} PATH_SUFFIXES lib lib64)
-    if(JGPT_CUDNN_LIBRARY)
-        get_filename_component(JGPT_CUDNN_LIB_DIR "${JGPT_CUDNN_LIBRARY}" DIRECTORY)
+endif()
+# Linux pip wheel ships ELF libcudnn.so.9. MSVC link of that file is LNK1107.
+if(WIN32)
+    foreach(_cand
+            "${_JGPT_CUDNN_WHEEL}/lib/x64/cudnn.lib"
+            "${_JGPT_CUDNN_WHEEL}/lib/cudnn.lib"
+            "${_JGPT_CUDNN_WHEEL}/lib/x64/cudnn64_9.lib")
+        if(EXISTS "${_cand}")
+            set(JGPT_CUDNN_LIBRARY "${_cand}")
+            break()
+        endif()
+    endforeach()
+    if(NOT JGPT_CUDNN_LIBRARY)
+        file(GLOB _JGPT_CUDNN_SYS_LIBS
+            "$ENV{ProgramFiles}/NVIDIA/CUDNN/*/lib/x64/cudnn.lib"
+            "$ENV{ProgramFiles}/NVIDIA/CUDNN/*/lib/x64/*/cudnn.lib"
+            "$ENV{ProgramFiles}/NVIDIA/CUDNN/*/lib/cudnn.lib")
+        if(_JGPT_CUDNN_SYS_LIBS)
+            list(SORT _JGPT_CUDNN_SYS_LIBS)
+            list(REVERSE _JGPT_CUDNN_SYS_LIBS)
+            list(GET _JGPT_CUDNN_SYS_LIBS 0 JGPT_CUDNN_LIBRARY)
+        endif()
     endif()
+    if(NOT JGPT_CUDNN_LIBRARY)
+        find_library(JGPT_CUDNN_LIBRARY NAMES cudnn cudnn64_9
+            HINTS "${_JGPT_CUDNN_WHEEL}" "$ENV{CUDNN_ROOT}" "$ENV{CUDNN_HOME}"
+            PATH_SUFFIXES lib lib/x64 lib64)
+    endif()
+    if(NOT JGPT_CUDNN_LIBRARY AND EXISTS "${_JGPT_CUDNN_WHEEL}/lib/libcudnn.so.9")
+        message(STATUS "JGPT: ignoring Linux libcudnn.so.9 on Windows (need cudnn.lib). scripts/windows/fetch-cudnn.ps1")
+    endif()
+else()
+    if(EXISTS "${_JGPT_CUDNN_WHEEL}/lib/libcudnn.so.9")
+        set(JGPT_CUDNN_LIBRARY "${_JGPT_CUDNN_WHEEL}/lib/libcudnn.so.9")
+    endif()
+    if(NOT JGPT_CUDNN_LIBRARY)
+        set(_JGPT_CUDNN_HINTS "$ENV{CUDNN_ROOT}" "$ENV{CUDNN_HOME}" /usr)
+        find_library(JGPT_CUDNN_LIBRARY NAMES cudnn HINTS ${_JGPT_CUDNN_HINTS} PATH_SUFFIXES lib lib64)
+    endif()
+endif()
+if(NOT JGPT_CUDNN_INCLUDE_DIR)
+    set(_JGPT_CUDNN_HINTS "$ENV{CUDNN_ROOT}" "$ENV{CUDNN_HOME}" /usr "$ENV{ProgramFiles}/NVIDIA/CUDNN")
+    find_path(JGPT_CUDNN_INCLUDE_DIR cudnn.h HINTS ${_JGPT_CUDNN_HINTS} PATH_SUFFIXES include)
+endif()
+if(JGPT_CUDNN_LIBRARY)
+    get_filename_component(JGPT_CUDNN_LIB_DIR "${JGPT_CUDNN_LIBRARY}" DIRECTORY)
 endif()
 set(JGPT_CUDNN_FRONTEND_INCLUDE "")
 if(EXISTS "${PROJECT_ROOT}/third_party/cudnn-frontend/include/cudnn_frontend.h")
@@ -62,7 +99,11 @@ if(JGPT_CUDNN_INCLUDE_DIR AND JGPT_CUDNN_LIBRARY AND JGPT_CUDNN_FRONTEND_INCLUDE
     set(JGPT_HAS_CUDNN 1)
     message(STATUS "JGPT cuDNN SDPA: ${JGPT_CUDNN_LIBRARY}")
 else()
-    message(STATUS "JGPT cuDNN SDPA: not found (need include=${JGPT_CUDNN_INCLUDE_DIR} lib=${JGPT_CUDNN_LIBRARY} fe=${JGPT_CUDNN_FRONTEND_INCLUDE}). scripts/fetch-cudnn.sh")
+    if(WIN32)
+        message(STATUS "JGPT cuDNN SDPA: not found (need include=${JGPT_CUDNN_INCLUDE_DIR} lib=${JGPT_CUDNN_LIBRARY} fe=${JGPT_CUDNN_FRONTEND_INCLUDE}). scripts/windows/fetch-cudnn.ps1")
+    else()
+        message(STATUS "JGPT cuDNN SDPA: not found (need include=${JGPT_CUDNN_INCLUDE_DIR} lib=${JGPT_CUDNN_LIBRARY} fe=${JGPT_CUDNN_FRONTEND_INCLUDE}). scripts/linux/fetch-cudnn.sh")
+    endif()
 endif()
 
 set(JGPT_EXTRA_SRCS jgpt_cuda_extra.cu jgpt_cudnn_convert.cu jgpt_cudnn_sdpa.cpp)
@@ -163,6 +204,27 @@ if(WIN32 AND CUDAToolkit_BIN_DIR)
                 ${_JGPT_CUDA_RUNTIME_DLLS}
                 "${PROJECT_ROOT}/build"
             COMMENT "Copy CUDA runtime DLLs into ${PROJECT_ROOT}/build"
+        )
+    endif()
+endif()
+
+if(WIN32 AND JGPT_HAS_CUDNN)
+    set(_JGPT_CUDNN_DLL_ROOT "")
+    if(JGPT_CUDNN_INCLUDE_DIR)
+        get_filename_component(_JGPT_CUDNN_DLL_ROOT "${JGPT_CUDNN_INCLUDE_DIR}" DIRECTORY)
+    endif()
+    file(GLOB _JGPT_CUDNN_RUNTIME_DLLS
+        "${_JGPT_CUDNN_DLL_ROOT}/bin/cudnn*.dll"
+        "${_JGPT_CUDNN_DLL_ROOT}/bin/*/cudnn*.dll"
+        "${JGPT_CUDNN_LIB_DIR}/../bin/cudnn*.dll"
+        "${JGPT_CUDNN_LIB_DIR}/cudnn*.dll"
+    )
+    if(_JGPT_CUDNN_RUNTIME_DLLS)
+        add_custom_command(TARGET jgpt_cuda POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${_JGPT_CUDNN_RUNTIME_DLLS}
+                "${PROJECT_ROOT}/build"
+            COMMENT "Copy cuDNN DLLs into ${PROJECT_ROOT}/build"
         )
     endif()
 endif()

@@ -9,7 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Changed / Изменено
-- Native CUDA build is cross-platform: CMake uses `native` GPU arch, Windows builds one `jgpt_cuda.dll`, Linux still two `.so`. Scripts: `scripts/build-cuda.sh`, `scripts/build-cuda.ps1`.
+- Launch scripts are split by OS: `scripts/linux/*.sh`, `scripts/windows/*.ps1` (shared Python stays in `scripts/`). See `scripts/README.md`.
+  - Скрипты запуска разделены: Linux `scripts/linux/`, Windows `scripts/windows/`.
+- Native CUDA build is cross-platform: CMake uses `native` GPU arch, Windows builds one `jgpt_cuda.dll`, Linux still two `.so`. Scripts: `scripts/linux/build-cuda.sh`, `scripts/windows/build-cuda.ps1`.
   - Сборка CUDA и на Windows, и на Linux: arch `native`, на Windows одна DLL.
 - Canonical model geometry (~34.9M): 12 layers, seq 1024, d_model 384, 24 heads, SwiGLU 1536. `LLMConfig.canonical()`; `smart50M()` is an alias. Preset `02-stable` no longer uses 20 layers.
   - Каноническая геометрия ~34.9M (12 слоёв, seq 1024, FFN 1536); пресет 02 больше не ставит 20 слоёв.

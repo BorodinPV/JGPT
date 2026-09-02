@@ -4,7 +4,8 @@
 /build/
 /build-cmake/
 /src/build/
-/src/main/cpp/build/
+# CMake trees accidentally created next to CUDA sources (official output is /build/)
+/src/main/cpp/build*/
 
 # Logs
 *.log

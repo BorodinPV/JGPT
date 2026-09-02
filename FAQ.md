@@ -29,7 +29,7 @@ winget install Kitware.CMake
 winget install Apache.Maven
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 # new PowerShell:
-.\scripts\build-cuda.ps1
+.\scripts\windows\build-cuda.ps1
 . .\build\jgpt-cuda-env.ps1
 ```
 
@@ -39,13 +39,13 @@ If `mvn` is still unknown, IntelliJ already has Maven:
 Or run tests from the Maven tool window. Open a **new** PowerShell after winget so PATH updates.
 
 ### Q: `No CUDA toolset found` (Visual Studio / CMake)
-**A:** The Visual Studio generator needs CUDA MSBuild integration (`.props` in Build Tools). That is often missing if CUDA was installed before Build Tools. `scripts/build-cuda.ps1` uses **Ninja + nvcc + cl.exe** and does not need that integration. Re-run it; do not call `.\build\jgpt-cuda-env.ps1` until the script prints `OK: ...\jgpt_cuda.dll`.  
+**A:** The Visual Studio generator needs CUDA MSBuild integration (`.props` in Build Tools). That is often missing if CUDA was installed before Build Tools. `scripts/windows/build-cuda.ps1` uses **Ninja + nvcc + cl.exe** and does not need that integration. Re-run it; do not call `.\build\jgpt-cuda-env.ps1` until the script prints `OK: ...\jgpt_cuda.dll`.  
 **Ответ:** Генератор Visual Studio ищет CUDA-тулсет в MSBuild, а не `nvcc`. Скрипт собирает через Ninja. `jgpt-cuda-env.ps1` появляется только после успешной сборки DLL.
 
 Linux:
 ```bash
 sudo apt install cmake build-essential
-./scripts/build-cuda.sh
+./scripts/linux/build-cuda.sh
 ```
 
 ### Q: GCC 15 is not supported by CUDA / GCC 15 не поддерживается CUDA
@@ -82,8 +82,9 @@ JGPT_FA_TILE_SIZE=128 cmake ..
 - Increase `JGPT_FP16_DYNAMIC_GROWTH_INTERVAL` / Увеличить `JGPT_FP16_DYNAMIC_GROWTH_INTERVAL`
 
 ### Q: How to resume training? / Как возобновить обучение?
-**A:** Just run `./scripts/jgpt-smart.sh` again. It will auto-resume from `checkpoint_final.bin`.  
-**Ответ:** Просто запустите `./scripts/jgpt-smart.sh` снова. Оно автоматически возобновится из `checkpoint_final.bin`.
+**A:** Run the same launcher again (no `--fresh`). It picks up `checkpoint_final.bin`.  
+37L SFT: `.\scripts\windows\jgpt-train-37L-sft.ps1` / `./scripts/linux/jgpt-train-37L-sft.sh`. Books (Linux): `./scripts/linux/jgpt-smart.sh`.  
+**Ответ:** Тот же скрипт без `--fresh` подхватит `checkpoint_final.bin`. SFT: Windows/Linux 37L; книги: `./scripts/linux/jgpt-smart.sh`.
 
 ---
 

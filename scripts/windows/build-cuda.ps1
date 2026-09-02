@@ -3,7 +3,7 @@
 # which breaks quoted strings that contain "(6 GB)" and Cyrillic.
 $ErrorActionPreference = "Stop"
 
-$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $Src = Join-Path $Root "src\main\cpp"
 $BuildDir = Join-Path $Root "build"
 
@@ -158,7 +158,7 @@ if (-not $vsPath) {
 CUDA on Windows needs cl.exe. Install Build Tools 2022:
   winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 Then open a NEW PowerShell and run:
-  .\scripts\build-cuda.ps1
+  .\scripts\windows\build-cuda.ps1
 "@
 }
 
@@ -174,7 +174,7 @@ Set JAVA_HOME to JDK 25 or 26, for example:
 if ($missing) {
     Write-Host ""
     Write-Host "Native JNI lib is not built until cmake + MSVC + nvcc are available." -ForegroundColor Yellow
-    Write-Host "Linux: ./scripts/build-cuda.sh   or   ./scripts/jgpt-smart.sh" -ForegroundColor Yellow
+    Write-Host "Linux: ./scripts/linux/build-cuda.sh   or   ./scripts/linux/jgpt-smart.sh" -ForegroundColor Yellow
     exit 1
 }
 
@@ -199,9 +199,24 @@ if (-not $ninja) {
 $env:PATH = "$(Split-Path $ninja -Parent);$cudaRuntimeDir;$cudaBin;$env:PATH"
 
 $cap = $null
+$gpuName = $null
+$gpuMemMib = $null
+$prevSmi = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 try {
-    $cap = (nvidia-smi --query-gpu=compute_cap --format=csv,noheader).Trim().Split("`n")[0].Trim()
+    $smi = nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader,nounits 2>$null
+    if ($smi) {
+        $row = ($smi -split "[\r\n]+" | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
+        $parts = @($row -split "," | ForEach-Object { $_.Trim() })
+        if ($parts.Count -ge 3) {
+            $gpuName = $parts[0]
+            $memNum = 0
+            if ([int]::TryParse($parts[1], [ref]$memNum)) { $gpuMemMib = $memNum }
+            $cap = $parts[2]
+        }
+    }
 } catch { }
+$ErrorActionPreference = $prevSmi
 
 # Turing sm_75: FA tile 128 needs ~90 KiB smem; limit is 64 KiB.
 if (-not $env:JGPT_FA_TILE_SIZE -and $cap -eq "7.5") {
@@ -215,7 +230,20 @@ Write-Host "nvcc:   $nvcc"
 Write-Host "cl:     $((Get-Command cl).Source)"
 Write-Host "VS:     $vsPath"
 Write-Host "arch:   native"
+if ($gpuName) {
+    $memLabel = if ($gpuMemMib) { "$gpuMemMib MiB" } else { "?" }
+    $capLabel = if ($cap) { $cap } else { "?" }
+    Write-Host "GPU:    $gpuName, $memLabel, compute $capLabel"
+}
 if ($env:JGPT_FA_TILE_SIZE) { Write-Host "FA tile: $($env:JGPT_FA_TILE_SIZE)" }
+
+$fetchCudnn = Join-Path $Root "scripts\windows\fetch-cudnn.ps1"
+if (Test-Path $fetchCudnn) {
+    $prevFetch = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $fetchCudnn
+    $ErrorActionPreference = $prevFetch
+}
 
 Clear-CMakeCache $BuildDir
 
@@ -278,4 +306,10 @@ if ($mvn) {
 }
 
 Write-Host ""
-Write-Host "This PC is RTX 2060 6GB VRAM: start with preset 04-minimal or 03-recovery, not 00."
+if ($gpuMemMib -and $gpuMemMib -le 6144) {
+    Write-Host "VRAM ${gpuMemMib} MiB: start with preset 04-minimal or 03-recovery, not 00-max-throughput."
+} elseif ($gpuMemMib -and $gpuMemMib -le 8192) {
+    Write-Host "VRAM ${gpuMemMib} MiB: 03-recovery / 02-stable are safer than 00-max-throughput; 37L seq=2048 may OOM."
+} elseif ($gpuName) {
+    Write-Host "Detected $gpuName. Native arch build; pick a preset that fits this VRAM (37L-sft needs ~10 GB)."
+}

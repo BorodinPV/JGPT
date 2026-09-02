@@ -37,8 +37,8 @@ public class GPUTest {
     private static void printBuildHint() {
         System.err.println();
         System.err.println("Соберите нативную библиотеку (нужны CUDA, nvcc, JNI):");
-        System.err.println("  Linux:   ./scripts/build-cuda.sh");
-        System.err.println("  Windows: .\\scripts\\build-cuda.ps1");
+        System.err.println("  Linux:   ./scripts/linux/build-cuda.sh");
+        System.err.println("  Windows: .\\scripts\\windows\\build-cuda.ps1");
         System.err.println("Ожидается: JGPT/build/libjgpt_cuda.so или JGPT/build/jgpt_cuda.dll");
         System.err.println("Или укажите путь: -Djgpt.cuda.lib=... / JGPT_CUDA_LIB");
         System.err.println();

@@ -2,19 +2,35 @@
 
 ---
 
-## TL;DR — Одна команда для запуска всего
+## TL;DR — какой скрипт запускать
 
-```bash
-./scripts/jgpt-smart.sh
+Скрипты лежат в `scripts/linux/` и `scripts/windows/` ([карта](../scripts/README.md)).
+
+**37L SFT ~100M** (JSONL, `env/37L-sft-100M.env`, чекпоинты `checkpoints/sft_37L_16k_2048/`):
+
+```powershell
+.\scripts\windows\jgpt-train-37L-sft.ps1
 ```
 
-Всё остальное делается автоматически.
+```bash
+./scripts/linux/jgpt-train-37L-sft.sh
+```
+
+Лог: `training_sft_37L.log`. Resume: тот же скрипт без `--fresh`.
+
+**Книги + авто-пресеты** (только Linux, ~35M canonical, `data/books/`):
+
+```bash
+./scripts/linux/jgpt-smart.sh
+```
+
+Лог: `training_allbooks.log`. Это не единственный launcher — smart только для книг и OOM-монитора.
 
 ---
 
-## Как работает авто-адаптация
+## Как работает авто-адаптация (`jgpt-smart.sh`, Linux)
 
-`jgpt-smart.sh` — единственный launcher в `scripts/`. Он:
+`scripts/linux/jgpt-smart.sh` — launcher для корпуса книг. Он:
 1. Собирает нативную библиотеку (`cmake` + `cmake --build`)
 2. Выставляет базовые `JGPT_*` и подмешивает пресет из `env/<имя>.env`
 3. Запускает **`AllBooksTrain`** через Maven, лог в `training_allbooks.log`
@@ -39,20 +55,20 @@
 ### Авто-адаптивный (рекомендуется)
 ```bash
 # Стандарт — с текущего/сохранённого пресета, авто-resume
-./scripts/jgpt-smart.sh
+./scripts/linux/jgpt-smart.sh
 
 # Начать с конкретного пресета
-./scripts/jgpt-smart.sh 01-aggressive
-./scripts/jgpt-smart.sh 02-stable
+./scripts/linux/jgpt-smart.sh 01-aggressive
+./scripts/linux/jgpt-smart.sh 02-stable
 ```
 
 ### Ручной пресет / finetune
 ```bash
 # Явный пресет (тот же smart-скрипт, без смены argv — возьмёт state/current_preset_idx)
-./scripts/jgpt-smart.sh 02-stable
+./scripts/linux/jgpt-smart.sh 02-stable
 
 # Новый цикл эпох (веса и Adam из чекпоинта, globalStep сбрасывается)
-JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh
+JGPT_FINETUNE=1 ./scripts/linux/jgpt-smart.sh
 
 ```
 
@@ -68,7 +84,7 @@ Ctrl+C
 
 **Продолжить:**
 ```bash
-./scripts/jgpt-smart.sh   # подхватит checkpoint_final.bin автоматически
+./scripts/linux/jgpt-smart.sh   # подхватит checkpoint_final.bin автоматически
 ```
 
 ---
@@ -81,16 +97,16 @@ Ctrl+C
 
 ```bash
 # Продолжить с того же шага (LR-расписание не сбрасывается):
-./scripts/jgpt-smart.sh
+./scripts/linux/jgpt-smart.sh
 
 # Начать новый цикл эпох с расширенным корпусом:
-JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh
+JGPT_FINETUNE=1 ./scripts/linux/jgpt-smart.sh
 ```
 
 > **Если добавлено много новых книг** с незнакомой лексикой — пересоздать токенизатор:
 > ```bash
 > rm checkpoints/tokenizer_global.bin
-> ./scripts/jgpt-smart.sh  # пересоздаст словарь (~2 мин)
+> ./scripts/linux/jgpt-smart.sh  # пересоздаст словарь (~2 мин)
 > ```
 
 ---
@@ -102,7 +118,7 @@ JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh
 tail -f training_allbooks.log
 
 # Веб-дашборд с графиками (открыть в браузере)
-xdg-open dashboard.html
+xdg-open docs/dashboard.html
 # Автообновление каждые 30 с из state/stats.json
 
 # Хвост лога
@@ -128,13 +144,14 @@ cat state/current_preset_idx
 
 ---
 
-## Производительность (RTX 3080, пресет 02-stable)
+## Производительность (RTX 3080)
 
-| Метрика | Значение |
-|---------|----------|
-| Throughput | ~26 000 tokens/sec |
-| Время шага | ~1250 мс (forward 600 + CE 9 + backward 620 + optimizer 35) |
-| VRAM | ~5.2 GB / 10 GB |
+| Режим | Throughput |
+|-------|------------|
+| 12L, пресет `02-stable`, книги | ~26 000 tokens/sec |
+| 37L SFT, seq 2048 | ~9 000–10 000 tokens/sec |
+
+12L шаг ~1250 мс, VRAM ~5.2 / 10 GB. 37L шаг ~27–28 с на эффективный батч 262144 токена.
 
 ### Ключевые оптимизации
 
@@ -195,8 +212,15 @@ JGPT/
 │   ├── current_preset_idx      ← индекс пресета (0–3)
 │   ├── last_step.txt           ← последний сохранённый шаг
 │   └── stats.json              ← метрики для dashboard.html
-├── data/books/                 ← .txt файлы для обучения
-├── checkpoints/all_books/      ← веса, чекпоинты, токенизатор
-├── dashboard.html              ← веб-дашборд (открыть в браузере)
-└── training_allbooks.log       ← лог (append, не перезаписывается)
+├── scripts/
+│   ├── linux/                  ← bash: smart, 24/32/37L, build-cuda.sh
+│   ├── windows/                ← ps1: 37L-sft, build-cuda.ps1
+│   └── README.md
+├── data/books/                 ← .txt для jgpt-smart / 24L / 32L
+├── data/sft/raw/               ← .jsonl для 37L-sft
+├── checkpoints/all_books/      ← книги
+├── checkpoints/sft_37L_16k_2048/
+├── docs/dashboard.html         ← веб-дашборд (state/stats.json)
+├── training_allbooks.log       ← smart
+└── training_sft_37L.log        ← 37L SFT
 ```

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Скачивает libcudnn (pip wheel) и headers cudnn-frontend в third_party/.
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 CUDNN_DIR="$ROOT/third_party/cudnn"

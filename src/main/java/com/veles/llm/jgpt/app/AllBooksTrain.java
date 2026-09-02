@@ -55,7 +55,7 @@ import org.slf4j.LoggerFactory;
  *   <li><b>JGPT_IF_STEP_BEYOND_PLAN</b> — если из чекпоинта {@code globalStep} не меньше нового
  *       {@code totalTrainingSteps} (типично после смены пресета/батча): {@code skip} (по умолчанию вне smart),
  *       {@code restart_schedule} (сброс шага и LR-цикла, веса/Adam/best eval сохраняются;
- *       задаётся по умолчанию в {@code scripts/jgpt-smart.sh}), {@code fail} — выход с кодом 2.</li>
+ *       задаётся по умолчанию в {@code scripts/linux/jgpt-smart.sh}), {@code fail} — выход с кодом 2.</li>
  *   <li><b>JGPT_LEARNING_RATE</b> или <b>JGPT_LR</b> — базовый learning rate пресета (дообучение на плато).</li>
  *   <li><b>JGPT_SFT=1</b> — JSONL instruction/chat: лосс только на токенах ассистента,
  *       упаковка нескольких диалогов в окно {@code seq}. Ищутся файлы {@code .jsonl}.</li>
@@ -74,7 +74,7 @@ import org.slf4j.LoggerFactory;
  *   JGPT_TRAIN_LOSS_MODE=sampled JGPT_SAMPLED_CE_CANDIDATES=512 \
  *   JGPT_MAX_SEQ_LEN=1024 JGPT_CE_ASYNC=0 JGPT_INTERACTIVE_EVERY=0 \
  *   JGPT_FINETUNE=1 JGPT_EPOCHS=40 \
- *   ./scripts/jgpt-smart.sh
+ *   ./scripts/linux/jgpt-smart.sh
  * </pre>
  */
 public final class AllBooksTrain {
@@ -302,7 +302,11 @@ public final class AllBooksTrain {
             try {
                 if (trainer.getGlobalStep() > trainer.getShutdownProgressBaselineStep()) {
                     trainer.saveCheckpoint("final");
-                    log.info("[SHUTDOWN] checkpoint сохранён. Возобновление: ./scripts/jgpt-smart.sh");
+                    log.info(
+                            "[SHUTDOWN] checkpoint сохранён. Возобновление: "
+                                    + "./scripts/linux/jgpt-train-37L-sft.sh или "
+                                    + ".\\scripts\\windows\\jgpt-train-37L-sft.ps1 (SFT); "
+                                    + "книги Linux: ./scripts/linux/jgpt-smart.sh");
                 } else {
                     trainer.saveCheckpoint("emergency");
                     log.warn(

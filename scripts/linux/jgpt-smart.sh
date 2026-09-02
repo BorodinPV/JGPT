@@ -13,15 +13,15 @@
 #   00 → 01 → 02 → 03 → 04 → 00 → …
 #
 # Использование:
-#   ./scripts/jgpt-smart.sh                    # с текущего пресета
-#   ./scripts/jgpt-smart.sh 01-aggressive      # явный стартовый пресет
+#   ./scripts/linux/jgpt-smart.sh                    # с текущего пресета
+#   ./scripts/linux/jgpt-smart.sh 01-aggressive      # явный стартовый пресет
 #   Ctrl+C — остановить (checkpoint сохраняется через shutdown hook)
 #
 # Сборка CUDA + env + Maven: функции jgpt__* / jgpt_* ниже в этом файле.
 # =============================================================
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 # ─── Maven / CUDA / env (раньше jgpt-gpu-train-lib.sh) ───────
@@ -531,7 +531,7 @@ on_smart_interrupt() {
     echo ""
     echo "  [SMART] Прерывание — останавливаем обучение..."
     stop_training
-    echo "  [SMART] Готово. Resume: ./scripts/jgpt-smart.sh"
+    echo "  [SMART] Готово. Resume: ./scripts/linux/jgpt-smart.sh"
     exit 0
 }
 

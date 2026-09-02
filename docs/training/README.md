@@ -6,11 +6,15 @@
 
 | Способ | Команда |
 |--------|---------|
-| **Рекомендуемый** (авто-адаптация, один JVM) | `./scripts/jgpt-smart.sh` |
-| С явного пресета | `./scripts/jgpt-smart.sh 01-aggressive` |
-| Напрямую через Maven | `mvn -q compile exec:java -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain -Dexec.args='--boo .'` (после `cmake` и экспорта `JGPT_*`) |
+| **37L SFT ~100M** (Windows) | `.\scripts\windows\jgpt-train-37L-sft.ps1` |
+| **37L SFT ~100M** (Linux) | `./scripts/linux/jgpt-train-37L-sft.sh` |
+| Книги + авто-адаптация (Linux) | `./scripts/linux/jgpt-smart.sh` |
+| С явного smart-пресета | `./scripts/linux/jgpt-smart.sh 01-aggressive` |
+| Напрямую Maven | `mvn -q compile exec:java -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain -Dexec.args='--boo .'` (после CUDA-сборки и `JGPT_*`) |
 
-**Производительность:** ~26k tokens/sec на RTX 3080 (10 GB) с пресетом 02-stable.
+Карта скриптов: [scripts/README.md](../../scripts/README.md).
+
+**Производительность (RTX 3080 10 GB):** 12L `02-stable` ~26k tok/s; **37L SFT seq 2048 ~9–10k tok/s**.
 
 ### Геометрия модели
 
@@ -29,7 +33,7 @@
 
 ### Как работает `jgpt-smart.sh`
 
-Один скрипт в `scripts/`:
+Один скрипт в `scripts/linux/`:
 1. Собирает `libjgpt_cuda_extra.so` и `libjgpt_cuda.so` (`cmake` + `cmake --build`)
 2. Выставляет базовые `JGPT_*` env-переменные и подмешивает активный пресет из `env/<имя>.env`
 3. Запускает **`AllBooksTrain`** с `tee -a training_allbooks.log`
@@ -40,9 +44,9 @@
 ### Finetune (сброс `globalStep`, веса и Adam из чекпоинта)
 
 ```bash
-JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh
+JGPT_FINETUNE=1 ./scripts/linux/jgpt-smart.sh
 # или явный пресет:
-JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh 01-aggressive
+JGPT_FINETUNE=1 ./scripts/linux/jgpt-smart.sh 01-aggressive
 ```
 
 ## Цепочка пресетов
@@ -84,7 +88,7 @@ JGPT_FINETUNE=1 ./scripts/jgpt-smart.sh 01-aggressive
 - Чекпоинты: **`checkpoints/all_books/`** (`checkpoint_final.bin` приоритетнее `checkpoint_epoch_N.bin`)
 - Checkpoint сохраняется через **shutdown hook** в `LLMTrainer` (Ctrl+C, SIGTERM, supervisedStop)
 - Веса содержат размер позиционных эмбеддингов → **`JGPT_MAX_SEQ_LEN` должен совпадать** с тем, на котором сохранялся чекпоинт
-- `JGPT_FINETUNE=1`: сбрасывается только `globalStep`; веса и Adam остаются. Задайте вместе с `./scripts/jgpt-smart.sh` (см. выше).
+- `JGPT_FINETUNE=1`: сбрасывается только `globalStep`; веса и Adam остаются. Задайте вместе с `./scripts/linux/jgpt-smart.sh` (см. выше).
 
 ## Dropout регуляризация
 
@@ -106,7 +110,7 @@ Dropout включён по умолчанию (10%) для предотвращ
 ## Книги и токенизатор
 
 - Тексты: **`data/books/**/*.txt`**
-- Добавили книги → Ctrl+C → положили файлы → снова `./scripts/jgpt-smart.sh`
+- Добавили книги → Ctrl+C → положили файлы → снова `./scripts/linux/jgpt-smart.sh`
 - Токенизатор: **`checkpoints/tokenizer_global.bin`**. Удалить для пересоздания при следующем старте
 
 ## Состояние и мониторинг
@@ -124,7 +128,7 @@ Dropout включён по умолчанию (10%) для предотвращ
 tail -f training_allbooks.log
 
 # Веб-дашборд с графиками (Chart.js, автообновление 30 с)
-xdg-open dashboard.html
+xdg-open docs/dashboard.html
 ```
 
 ## Ручной запуск без обёрток
@@ -132,7 +136,7 @@ xdg-open dashboard.html
 ```bash
 # Загрузить пресет вручную и запустить тот же цикл, что в smart (cmake + mvn allbooks):
 set -a; source env/01-aggressive.env; set +a
-./scripts/jgpt-smart.sh 01-aggressive
+./scripts/linux/jgpt-smart.sh 01-aggressive
 ```
 
 **Важно**: `JGPT_*` должны быть экспортированы в **той же** shell-сессии, что запускает Maven.

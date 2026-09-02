@@ -143,7 +143,7 @@ public final class LLMConfig {
      * Переопределение {@link #learningRate}: {@code JGPT_LEARNING_RATE} или краткий псевдоним {@code JGPT_LR}
      * (положительное конечное число; десятичный разделитель «.» или «,»). Удобно для дообучения на плато.
      *
-     * <p>Пример: {@code JGPT_LEARNING_RATE=1e-4 ./scripts/jgpt-smart.sh}
+     * <p>Пример: {@code JGPT_LEARNING_RATE=1e-4 ./scripts/linux/jgpt-smart.sh}
      */
     public static LLMConfig applyLearningRateOverrideFromEnv(LLMConfig base) {
         float lr = readLearningRateFromEnvOrDefault(base.learningRate);
@@ -208,7 +208,7 @@ public final class LLMConfig {
      * Позволяет уменьшить контекст без перекомпиляции. Актуально при OOM:
      * attention backward ~ {@code heads × seq² × 2 bytes × layers}.
      * При seq=1024 и 12 слоях это около 0.6 ГиБ; при seq=512 — вчетверо меньше.
-     * <p>Пример: {@code JGPT_MAX_SEQ_LEN=1024 ./scripts/jgpt-smart.sh}
+     * <p>Пример: {@code JGPT_MAX_SEQ_LEN=1024 ./scripts/linux/jgpt-smart.sh}
      */
     public static LLMConfig applySeqLenOverrideFromEnv(LLMConfig base) {
         int overridden = readPositiveEnvInt("JGPT_MAX_SEQ_LEN", base.maxSeqLen);
@@ -233,7 +233,7 @@ public final class LLMConfig {
      * Переопределяет {@link #vocabSize} через {@code JGPT_VOCAB_SIZE} (целевой размер BPE при обучении
      * токенизатора). Уже существующий файл токенизатора задаёт фактический vocab модели.
      *
-     * <p>Пример: {@code JGPT_VOCAB_SIZE=16000 ./scripts/jgpt-train-32L-sft.sh}
+     * <p>Пример: {@code JGPT_VOCAB_SIZE=16000 ./scripts/linux/jgpt-train-37L-sft.sh}
      */
     public static LLMConfig applyVocabSizeOverrideFromEnv(LLMConfig base) {
         int overridden = readPositiveEnvInt("JGPT_VOCAB_SIZE", base.vocabSize);
@@ -257,7 +257,7 @@ public final class LLMConfig {
     /**
      * Переопределяет число эпох через переменную окружения {@code JGPT_EPOCHS}.
      *
-     * <p>Пример: {@code JGPT_EPOCHS=40 ./scripts/jgpt-smart.sh}
+     * <p>Пример: {@code JGPT_EPOCHS=40 ./scripts/linux/jgpt-smart.sh}
      */
     public static LLMConfig applyEpochsOverrideFromEnv(LLMConfig base) {
         int overridden = readPositiveEnvInt("JGPT_EPOCHS", base.epochs);
@@ -282,7 +282,7 @@ public final class LLMConfig {
      * Переопределяет {@link #accumulationSteps} через переменную окружения {@code JGPT_ACCUMULATION_STEPS}.
      *
      * <p>Микробатчей градиента на один шаг оптимизатора (см. {@link TrainingConfig#accumulationSteps}): CE и backward
-     * масштабируются как {@code 1/N}. Пример: {@code JGPT_ACCUMULATION_STEPS=4 ./scripts/jgpt-smart.sh}
+     * масштабируются как {@code 1/N}. Пример: {@code JGPT_ACCUMULATION_STEPS=4 ./scripts/linux/jgpt-smart.sh}
      */
     public static LLMConfig applyAccumulationStepsOverrideFromEnv(LLMConfig base) {
         int overridden = readPositiveEnvInt("JGPT_ACCUMULATION_STEPS", base.accumulationSteps);

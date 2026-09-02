@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Собирает libjgpt_cuda.so + libjgpt_cuda_extra.so в <repo>/build (Linux).
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 if ! command -v cmake >/dev/null 2>&1; then
@@ -138,8 +138,8 @@ case ":${PATH}:" in
   *) export PATH="${cuda_bin}:${PATH}" ;;
 esac
 
-if [[ -x "$ROOT/scripts/fetch-cudnn.sh" ]]; then
-  bash "$ROOT/scripts/fetch-cudnn.sh" || echo "[build-cuda] cuDNN optional: ${ROOT}/scripts/fetch-cudnn.sh не удался"
+if [[ -x "$ROOT/scripts/linux/fetch-cudnn.sh" ]]; then
+  bash "$ROOT/scripts/linux/fetch-cudnn.sh" || echo "[build-cuda] cuDNN optional: ${ROOT}/scripts/linux/fetch-cudnn.sh не удался"
 fi
 
 cmake_args=(

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Запуск интерактивного чата с весами после AllBooksTrain (см. InferChat).
-# Пример: ./scripts/jgpt-chat.sh --boo . --layers 12 --seq-len 1024
-# Промпт с пробелами: ./scripts/jgpt-chat.sh --prompt 'один два три'
+# Пример: ./scripts/linux/jgpt-chat.sh --boo . --layers 12 --seq-len 1024
+# Промпт с пробелами: ./scripts/linux/jgpt-chat.sh --prompt 'один два три'
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 if [[ "${MAVEN_OPTS:-}" != *enable-native-access* ]]; then

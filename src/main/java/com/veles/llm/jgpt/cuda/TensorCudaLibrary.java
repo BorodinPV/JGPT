@@ -140,7 +140,7 @@ public final class TensorCudaLibrary {
         if (!windows()) {
             return;
         }
-        String[] prefixes = {"cudart64_", "nvJitLink", "cublasLt64_", "cublas64_"};
+        String[] prefixes = {"cudart64_", "nvJitLink", "cublasLt64_", "cublas64_", "cudnn"};
         for (Path search : windowsCudaRuntimeSearchDirs(dir)) {
             for (String prefix : prefixes) {
                 try (var stream = Files.list(search)) {
@@ -253,6 +253,6 @@ public final class TensorCudaLibrary {
                 + "  4. java.library.path: "
                 + System.getProperty("java.library.path", "<пусто>")
                 + "\n"
-                + "Сборка: из корня репозитория Linux ./scripts/build-cuda.sh ; Windows .\\scripts\\build-cuda.ps1";
+                + "Сборка: из корня репозитория Linux ./scripts/linux/build-cuda.sh ; Windows .\\scripts\\windows\\build-cuda.ps1";
     }
 }

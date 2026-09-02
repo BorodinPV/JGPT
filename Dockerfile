@@ -38,4 +38,4 @@ ENV JGPT_FULL_GPU_TRAIN=1
 ENV JGPT_FLASH_ATTENTION=1
 
 # Default command
-CMD ["./scripts/jgpt-smart.sh"]
+CMD ["./scripts/linux/jgpt-smart.sh"]

@@ -41,11 +41,11 @@ clean:
 
 # Run training
 run: build
-	./scripts/jgpt-smart.sh
+	./scripts/linux/jgpt-smart.sh
 
 # Run with specific preset
 smart:
-	./scripts/jgpt-smart.sh
+	./scripts/linux/jgpt-smart.sh
 
 # Development mode (faster compilation, no optimizations)
 dev:

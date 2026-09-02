@@ -118,8 +118,9 @@ final class EffectiveBatchProbeTest {
         return LLMConfig.applyLearningRateOverrideFromEnv(
                 LLMConfig.applyAccumulationStepsOverrideFromEnv(
                         LLMConfig.applyPresetNumLayersOverrideFromEnv(
-                                LLMConfig.applySeqLenOverrideFromEnv(
-                                        LLMConfig.applyBatchSizeOverrideFromEnv(base)))));
+                                LLMConfig.applyVocabSizeOverrideFromEnv(
+                                        LLMConfig.applySeqLenOverrideFromEnv(
+                                                LLMConfig.applyBatchSizeOverrideFromEnv(base))))));
     }
 
     /** Строка для сводки: эталонные batch/accum/LR/регуляризация как у полного обучения. */

@@ -3,6 +3,7 @@ package com.veles.llm.jgpt.app;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.data.BPETokenizer;
 import com.veles.llm.jgpt.data.DataLoader;
+import com.veles.llm.jgpt.data.SftCorpus;
 import com.veles.llm.jgpt.model.GPTModel;
 import com.veles.llm.jgpt.training.CheckpointPruner;
 import com.veles.llm.jgpt.training.LLMConfig;
@@ -33,7 +34,8 @@ import org.slf4j.LoggerFactory;
  * Обучение на ВСЕХ книгах одновременно (единый датасет, один прогон).
  *
  * <p>Все {@code .txt} из {@code data/books/} (или {@code --data-dir}) объединяются в один
- * {@link DataLoader}. Чекпоинты — в {@code checkpoints/all_books/}.
+ * {@link DataLoader}. Чекпоинты — в {@code checkpoints/all_books/} или
+ * {@code checkpoints/$JGPT_CHECKPOINT_SUBDIR/}.
  *
  * <h3>Режимы запуска:</h3>
  * <ul>
@@ -55,6 +57,12 @@ import org.slf4j.LoggerFactory;
  *       {@code restart_schedule} (сброс шага и LR-цикла, веса/Adam/best eval сохраняются;
  *       задаётся по умолчанию в {@code scripts/jgpt-smart.sh}), {@code fail} — выход с кодом 2.</li>
  *   <li><b>JGPT_LEARNING_RATE</b> или <b>JGPT_LR</b> — базовый learning rate пресета (дообучение на плато).</li>
+ *   <li><b>JGPT_SFT=1</b> — JSONL instruction/chat: лосс только на токенах ассистента,
+ *       упаковка нескольких диалогов в окно {@code seq}. Ищутся файлы {@code .jsonl}.</li>
+ *   <li><b>JGPT_VOCAB_SIZE</b> — целевой размер BPE, если токенизатор ещё не сохранён.</li>
+ *   <li><b>JGPT_TOKENIZER_PATH</b> — файл BPE (относительно {@code --boo} или абсолютный);
+ *       иначе {@code checkpoints/tokenizer_global.bin}.</li>
+ *   <li><b>JGPT_CHECKPOINT_SUBDIR</b> — подкаталог в {@code checkpoints/} (по умолчанию {@code all_books}).</li>
  *   <li><b>JGPT_CKPT_PRUNE</b> — автоматическое удаление старых {@code checkpoint_step_*}/{@code model_step_*}
  *       и эпоховых снимков (см. {@link CheckpointPruner}); {@code 0} — выключить.
  *       {@code JGPT_CKPT_KEEP_STEP_SNAPSHOTS} (по умолчанию 2), {@code JGPT_CKPT_KEEP_EPOCH_SNAPSHOTS}
@@ -95,30 +103,37 @@ public final class AllBooksTrain {
         log.info("=".repeat(60));
         log.info("[ALL-BOOKS] обучение на всём корпусе (единый датасет)");
         log.info("[DATA] каталог с текстами: {}", dataDir);
-        log.info("[CKPT] чекпоинты: {}", root.resolve(CHECKPOINTS_DIR).resolve("all_books"));
+        log.info("[CKPT] чекпоинты: {}", resolveCheckpointsDir(root));
         log.info("=".repeat(60));
 
-        List<Path> books = listTxtFilesSorted(dataDir);
+        boolean sft = isSftMode();
+        List<Path> books = sft ? listJsonlFilesSorted(dataDir) : listTxtFilesSorted(dataDir);
         if (books.isEmpty()) {
-            log.error("В каталоге нет .txt файлов: {}", dataDir);
+            log.error(
+                    sft ? "В каталоге нет .jsonl файлов: {}" : "В каталоге нет .txt файлов: {}",
+                    dataDir);
             System.exit(1);
         }
-        log.info("[DATA] книг найдено: {}", books.size());
+        log.info("[DATA] {} найдено: {}", sft ? "jsonl" : "книг", books.size());
+        if (sft) {
+            log.info("[SFT] лосс только на ответах ассистента, шаблон Пользователь:/Ассистент:");
+        }
 
         LLMConfig llm = LLMConfig.applyLearningRateOverrideFromEnv(
                 LLMConfig.applyAccumulationStepsOverrideFromEnv(
                         LLMConfig.applyEpochsOverrideFromEnv(
                                 LLMConfig.applyPresetNumLayersOverrideFromEnv(
-                                        LLMConfig.applySeqLenOverrideFromEnv(
-                                                LLMConfig.applyBatchSizeOverrideFromEnv(
-                                                        LLMConfig.canonical()))))));
+                                        LLMConfig.applyVocabSizeOverrideFromEnv(
+                                                LLMConfig.applySeqLenOverrideFromEnv(
+                                                        LLMConfig.applyBatchSizeOverrideFromEnv(
+                                                                LLMConfig.canonical())))))));
         runCore(root, books, llm);
     }
 
     private static void runCore(Path root, List<Path> books, LLMConfig llm)
             throws Exception {
-        Path checkpointsDir = root.resolve(CHECKPOINTS_DIR).resolve("all_books");
-        Path tokenizerPath = root.resolve(CHECKPOINTS_DIR).resolve("tokenizer_global.bin");
+        Path checkpointsDir = resolveCheckpointsDir(root);
+        Path tokenizerPath = resolveTokenizerPath(root);
 
         log.info(
                 "[CFG] seq={}, d_model={}, d_ff={}, layers={}, heads={}, vocab={}, lr={}, ~{} params",
@@ -134,13 +149,22 @@ public final class AllBooksTrain {
         // --- токенизатор ---
         BPETokenizer tokenizer;
         if (Files.isRegularFile(tokenizerPath)) {
-            log.info("[DATA] загрузка токенизатора: {}", tokenizerPath.getFileName());
+            log.info("[DATA] загрузка токенизатора: {}", tokenizerPath);
             tokenizer = BPETokenizer.load(tokenizerPath.toString());
+            if (tokenizer.getVocabSize() != llm.vocabSize) {
+                log.warn(
+                        "[DATA] vocab токенизатора {} ≠ JGPT_VOCAB_SIZE/canonical {} — модель берёт размер из файла",
+                        tokenizer.getVocabSize(),
+                        llm.vocabSize);
+            }
         } else {
             log.info("[DATA] обучение BPE-токенизатора на всём корпусе...");
-            List<String> allTexts = new ArrayList<>();
-            for (Path p : books) {
-                allTexts.add(readUtf8(p));
+            List<String> allTexts =
+                    isSftMode() ? SftCorpus.collectPlainTexts(books) : new ArrayList<>();
+            if (!isSftMode()) {
+                for (Path p : books) {
+                    allTexts.add(readUtf8(p));
+                }
             }
             tokenizer = BPETokenizer.train(allTexts, llm.vocabSize);
             allTexts.clear();
@@ -156,53 +180,59 @@ public final class AllBooksTrain {
         Files.createDirectories(checkpointsDir);
         DataLoader dataLoader = new DataLoader(tokenizer, llm.maxSeqLen, llm.batchSize);
 
-        int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
-        log.info("[DATA] кодирование: {} потоков (последовательно для экономии памяти)", threads);
-
-        // Обрабатываем файлы последовательно чтобы не держать все токены в памяти
-        long totalChars = 0;
-        int skipped = 0;
-        int minTokens = llm.maxSeqLen + 1;
-
-        try (ExecutorService pool = Executors.newFixedThreadPool(threads)) {
-            for (Path p : books) {
-                int[] tokens;
-                try {
-                    // Кодируем один файл, ждём результат, освобождаем текст
-                    Future<int[]> future = pool.submit((Callable<int[]>) () -> {
-                        String text = readUtf8(p);
-                        return tokenizer.encode(text, true);
-                    });
-                    tokens = future.get();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw e;
-                } catch (Exception e) {
-                    log.warn("[DATA] ошибка кодирования {}: {}", p.getFileName(), e.getMessage());
-                    skipped++;
-                    continue;
-                }
-                totalChars += p.toFile().length();
-                log.info("[DATA]   {} → {} токенов", p.getFileName(), tokens.length);
-                if (tokens.length < minTokens) {
-                    log.warn("[DATA] пропущена (слишком короткая): {} ({} токенов < {})",
-                            p.getFileName(), tokens.length, minTokens);
-                    skipped++;
-                    continue;
-                }
-                dataLoader.loadTokens(tokens);
-                log.info("[DATA]   {} → +{} окон (итого {})",
-                        p.getFileName(), tokens.length / llm.maxSeqLen, dataLoader.numSequences());
+        if (isSftMode()) {
+            int windows = SftCorpus.loadInto(dataLoader, tokenizer, books);
+            log.info("[SFT] окон обучения: {} (~{} батчей/эпоха)", windows, dataLoader.numBatches());
+            if (windows == 0) {
+                throw new IllegalStateException("Нет SFT-окон — проверьте JSONL и шаблон реплик");
             }
-        }
-        log.info("[DATA] итого: {} символов, {} книг загружено, {} пропущено",
-                String.format("%,d", totalChars), books.size() - skipped, skipped);
-        int nSeq = dataLoader.numSequences();
-        log.info("[DATA] всего последовательностей: {} (~{} батчей/эпоха)",
-                nSeq, dataLoader.numBatches());
-        if (nSeq == 0) {
-            throw new IllegalStateException(
-                    "Нет последовательностей — все тексты слишком короткие (нужно >" + llm.maxSeqLen + ")");
+        } else {
+            int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
+            log.info("[DATA] кодирование: {} потоков (последовательно для экономии памяти)", threads);
+
+            long totalChars = 0;
+            int skipped = 0;
+            int minTokens = llm.maxSeqLen + 1;
+
+            try (ExecutorService pool = Executors.newFixedThreadPool(threads)) {
+                for (Path p : books) {
+                    int[] tokens;
+                    try {
+                        Future<int[]> future = pool.submit((Callable<int[]>) () -> {
+                            String text = readUtf8(p);
+                            return tokenizer.encode(text, true);
+                        });
+                        tokens = future.get();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw e;
+                    } catch (Exception e) {
+                        log.warn("[DATA] ошибка кодирования {}: {}", p.getFileName(), e.getMessage());
+                        skipped++;
+                        continue;
+                    }
+                    totalChars += p.toFile().length();
+                    log.info("[DATA]   {} → {} токенов", p.getFileName(), tokens.length);
+                    if (tokens.length < minTokens) {
+                        log.warn("[DATA] пропущена (слишком короткая): {} ({} токенов < {})",
+                                p.getFileName(), tokens.length, minTokens);
+                        skipped++;
+                        continue;
+                    }
+                    dataLoader.loadTokens(tokens);
+                    log.info("[DATA]   {} → +{} окон (итого {})",
+                            p.getFileName(), tokens.length / llm.maxSeqLen, dataLoader.numSequences());
+                }
+            }
+            log.info("[DATA] итого: {} символов, {} книг загружено, {} пропущено",
+                    String.format("%,d", totalChars), books.size() - skipped, skipped);
+            int nSeq = dataLoader.numSequences();
+            log.info("[DATA] всего последовательностей: {} (~{} батчей/эпоха)",
+                    nSeq, dataLoader.numBatches());
+            if (nSeq == 0) {
+                throw new IllegalStateException(
+                        "Нет последовательностей — все тексты слишком короткие (нужно >" + llm.maxSeqLen + ")");
+            }
         }
 
         double valFrac = readValFraction();
@@ -354,6 +384,40 @@ public final class AllBooksTrain {
         }
     }
 
+    static Path resolveCheckpointsDir(Path root) {
+        String sub = System.getenv("JGPT_CHECKPOINT_SUBDIR");
+        if (sub == null || sub.isBlank()) {
+            sub = "all_books";
+        }
+        sub = sub.trim();
+        if (sub.isEmpty() || sub.contains("/") || sub.contains("\\") || sub.contains("..")) {
+            throw new IllegalArgumentException(
+                    "JGPT_CHECKPOINT_SUBDIR must be a single directory name under checkpoints/");
+        }
+        return root.resolve(CHECKPOINTS_DIR).resolve(sub);
+    }
+
+    static Path resolveTokenizerPath(Path root) {
+        String e = System.getenv("JGPT_TOKENIZER_PATH");
+        if (e == null || e.isBlank()) {
+            return root.resolve(CHECKPOINTS_DIR).resolve("tokenizer_global.bin");
+        }
+        Path p = Path.of(e.trim());
+        if (!p.isAbsolute()) {
+            p = root.resolve(p);
+        }
+        return p.toAbsolutePath().normalize();
+    }
+
+    static boolean isSftMode() {
+        String e = System.getenv("JGPT_SFT");
+        if (e == null || e.isBlank()) {
+            return false;
+        }
+        String t = e.trim();
+        return "1".equals(t) || "true".equalsIgnoreCase(t);
+    }
+
     /** {@code JGPT_FINETUNE=1} / {@code true} — сброс globalStep для дообучения. */
     static boolean isFinetuneMode() {
         String e = System.getenv("JGPT_FINETUNE");
@@ -367,10 +431,18 @@ public final class AllBooksTrain {
     }
 
     private static List<Path> listTxtFilesSorted(Path dir) throws IOException {
+        return listFilesSorted(dir, ".txt");
+    }
+
+    private static List<Path> listJsonlFilesSorted(Path dir) throws IOException {
+        return listFilesSorted(dir, ".jsonl");
+    }
+
+    private static List<Path> listFilesSorted(Path dir, String suffix) throws IOException {
         if (!Files.isDirectory(dir)) return List.of();
         try (Stream<Path> s = Files.walk(dir)) {
             return s.filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().endsWith(".txt"))
+                    .filter(p -> p.getFileName().toString().endsWith(suffix))
                     .sorted(Comparator.comparing(Path::toString))
                     .collect(Collectors.toCollection(ArrayList::new));
         }

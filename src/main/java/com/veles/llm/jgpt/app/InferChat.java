@@ -2,6 +2,7 @@ package com.veles.llm.jgpt.app;
 
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.data.BPETokenizer;
+import com.veles.llm.jgpt.data.SftExampleEncoder;
 import com.veles.llm.jgpt.model.GPTModel;
 import com.veles.llm.jgpt.training.LLMConfig;
 
@@ -127,7 +128,12 @@ public final class InferChat {
             if (singlePrompt != null) {
                 String out =
                         LlmTextGeneration.generateText(
-                                model, tokenizer, singlePrompt, maxNewTokens, temperature, topK);
+                                model,
+                                tokenizer,
+                                applySftChatTemplate(singlePrompt),
+                                maxNewTokens,
+                                temperature,
+                                topK);
                 log.info("{}", out);
                 return;
             }
@@ -163,7 +169,12 @@ public final class InferChat {
                     try {
                         String out =
                                 LlmTextGeneration.generateText(
-                                        model, tokenizer, trimmed, maxNewTokens, temperature, topK);
+                                        model,
+                                        tokenizer,
+                                        applySftChatTemplate(trimmed),
+                                        maxNewTokens,
+                                        temperature,
+                                        topK);
                         log.info("{}", out);
                     } catch (Exception e) {
                         log.warn("Генерация: {}", e.getMessage());
@@ -180,10 +191,38 @@ public final class InferChat {
         }
     }
 
+    static boolean sftChatTemplateFromEnv() {
+        String e = System.getenv("JGPT_SFT_CHAT_TEMPLATE");
+        if (e == null || e.isBlank()) {
+            e = System.getenv("JGPT_SFT");
+        }
+        if (e == null || e.isBlank()) {
+            return false;
+        }
+        String t = e.trim();
+        return "1".equals(t) || "true".equalsIgnoreCase(t);
+    }
+
+    static String applySftChatTemplate(String prompt) {
+        if (prompt == null || !sftChatTemplateFromEnv()) {
+            return prompt;
+        }
+        String p = prompt.trim();
+        if (p.regionMatches(true, 0, "Пользователь:", 0, "Пользователь:".length())
+                || p.regionMatches(true, 0, "пользователь:", 0, "пользователь:".length())) {
+            if (!p.contains("Ассистент:") && !p.toLowerCase().contains("ассистент:")) {
+                return p + "\n" + SftExampleEncoder.ASSISTANT_PREFIX;
+            }
+            return p;
+        }
+        return SftExampleEncoder.USER_PREFIX + p + "\n" + SftExampleEncoder.ASSISTANT_PREFIX;
+    }
+
     private static LLMConfig geometryFromEnvAndOverrides(int seqLenOverride, int layersOverride) {
         LLMConfig base =
                 LLMConfig.applyPresetNumLayersOverrideFromEnv(
-                        LLMConfig.applySeqLenOverrideFromEnv(LLMConfig.canonical()));
+                        LLMConfig.applyVocabSizeOverrideFromEnv(
+                                LLMConfig.applySeqLenOverrideFromEnv(LLMConfig.canonical())));
         int seq = seqLenOverride > 0 ? seqLenOverride : base.maxSeqLen;
         int layers = layersOverride > 0 ? layersOverride : base.numLayers;
         if (seq == base.maxSeqLen && layers == base.numLayers) {
@@ -246,7 +285,8 @@ public final class InferChat {
                   {}TEXT          то же одним аргументом (удобно для mvn -Dexec.args без кавычек к пробелам)
                   -h, --help             эта справка
 
-                Окружение: JGPT_CUDA_LIB, JGPT_MAX_SEQ_LEN, JGPT_PRESET_NUM_LAYERS, JGPT_GENERATE_GPU_KV, … как при train.
+                Окружение: JGPT_CUDA_LIB, JGPT_MAX_SEQ_LEN, JGPT_PRESET_NUM_LAYERS, JGPT_VOCAB_SIZE,
+                JGPT_SFT / JGPT_SFT_CHAT_TEMPLATE (обёртка Пользователь:/Ассистент:), JGPT_GENERATE_GPU_KV, …
                 """,
                 PROMPT_EQ);
     }

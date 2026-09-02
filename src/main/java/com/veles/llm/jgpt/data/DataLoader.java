@@ -36,6 +36,11 @@ public final class DataLoader {
     private final int maxSeqLen;
     private final int batchSize;
     private final List<int[]> sequences;
+    /**
+     * Параллельно {@link #sequences}: цели длины {@code maxSeqLen}, {@code -1} = не считать CE (SFT-маска).
+     * {@code null} — обычный LM ({@code target[i] = seq[i+1]}).
+     */
+    private List<int[]> sftTargets;
     private final Random random;
     private int currentIndex;
     /** {@code 0} — без ограничения; иначе не больше столько последовательностей (защита от OOM на огромных книгах). */
@@ -195,6 +200,9 @@ public final class DataLoader {
      * Используется при параллельном кодировании в {@code AllBooksTrain}.
      */
     public void loadTokens(int[] tokens) {
+        if (sftTargets != null) {
+            throw new IllegalStateException("cannot mix LM tokens with SFT windows in one DataLoader");
+        }
         if (tokens.length < maxSeqLen + 1) {
             log.warn(
                     "Текст слишком короткий: {} токенов (нужно минимум {})",
@@ -213,6 +221,27 @@ public final class DataLoader {
             sequences.add(Arrays.copyOfRange(tokens, i, i + maxSeqLen + 1));
             count++;
         }
+    }
+
+    /**
+     * Одно SFT-окно: {@code tokens.length == maxSeqLen+1}, {@code targets.length == maxSeqLen},
+     * {@code targets[i] == -1} — позиция не входит в CE.
+     */
+    public void loadSftWindow(int[] tokens, int[] targets) {
+        if (tokens == null || tokens.length != maxSeqLen + 1) {
+            throw new IllegalArgumentException("SFT tokens must have length maxSeqLen+1");
+        }
+        if (targets == null || targets.length != maxSeqLen) {
+            throw new IllegalArgumentException("SFT targets must have length maxSeqLen");
+        }
+        if (sftTargets == null) {
+            if (!sequences.isEmpty()) {
+                throw new IllegalStateException("cannot mix SFT windows with LM sequences in one DataLoader");
+            }
+            sftTargets = new ArrayList<>();
+        }
+        sequences.add(tokens);
+        sftTargets.add(targets);
     }
 
     public void loadText(String text) {
@@ -262,7 +291,7 @@ public final class DataLoader {
      * @param logInfo если {@code false} — без INFO (для серии shuffle при resume чекпоинта, см. {@code LLMTrainer}).
      */
     public void shuffle(boolean logInfo) {
-        Collections.shuffle(sequences, random);
+        shufflePaired(sequences, sftTargets, random);
         currentIndex = 0;
         if (logInfo) {
             log.info("Данные перемешаны (новый порядок батчей на эпоху).");
@@ -296,9 +325,10 @@ public final class DataLoader {
             if (seq.length < maxSeqLen + 1) {
                 throw new IllegalStateException("sequence length < maxSeqLen+1");
             }
+            int[] sftTgt = sftTargets != null ? sftTargets.get(currentIndex + b) : null;
             for (int i = 0; i < maxSeqLen; i++) {
                 scratchInputIds[b * maxSeqLen + i] = seq[i];
-                scratchTargetIds[b * maxSeqLen + i] = seq[i + 1];
+                scratchTargetIds[b * maxSeqLen + i] = sftTgt != null ? sftTgt[i] : seq[i + 1];
             }
         }
 
@@ -377,6 +407,10 @@ public final class DataLoader {
     /** Очистить последовательности (например перед загрузкой другой книги в тот же loader). */
     public void clear() {
         sequences.clear();
+        if (sftTargets != null) {
+            sftTargets.clear();
+            sftTargets = null;
+        }
         currentIndex = 0;
         batchWriteSlot = 0;
         batchInput0 = null;
@@ -420,6 +454,39 @@ public final class DataLoader {
         return new ArrayList<>(sequences);
     }
 
+    public boolean hasSftTargets() {
+        return sftTargets != null;
+    }
+
+    List<int[]> copySftTargetsOrNull() {
+        return sftTargets == null ? null : new ArrayList<>(sftTargets);
+    }
+
+    private static void shufflePaired(List<int[]> seqs, List<int[]> tgts, Random random) {
+        if (tgts == null) {
+            Collections.shuffle(seqs, random);
+            return;
+        }
+        if (tgts.size() != seqs.size()) {
+            throw new IllegalStateException("SFT targets size != sequences");
+        }
+        List<Integer> order = new ArrayList<>(seqs.size());
+        for (int i = 0; i < seqs.size(); i++) {
+            order.add(i);
+        }
+        Collections.shuffle(order, random);
+        List<int[]> ns = new ArrayList<>(seqs.size());
+        List<int[]> nt = new ArrayList<>(tgts.size());
+        for (int i : order) {
+            ns.add(seqs.get(i));
+            nt.add(tgts.get(i));
+        }
+        seqs.clear();
+        seqs.addAll(ns);
+        tgts.clear();
+        tgts.addAll(nt);
+    }
+
     /**
      * Детерминированное разбиение на train и validation: перемешивание по {@code seed}, доля val —
      * {@code valFraction} от числа окон. Исходный loader очищается (освобождает ссылки на окна).
@@ -435,6 +502,7 @@ public final class DataLoader {
             return new TrainValSplit(source, null);
         }
         List<int[]> all = source.copySequences();
+        List<int[]> allTgt = source.copySftTargetsOrNull();
         source.clear();
         int n = all.size();
         int bs = source.batchSize;
@@ -443,10 +511,22 @@ public final class DataLoader {
                     "splitTrainValidation: окон {} < 2×batch ({}), hold-out отключён — всё в train",
                     n,
                     bs);
-            DataLoader train = fromSequencesTemplate(source, all);
+            DataLoader train = fromSequencesTemplate(source, all, allTgt);
             return new TrainValSplit(train, null);
         }
-        Collections.shuffle(all, new Random(seed));
+        List<Integer> order = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            order.add(i);
+        }
+        Collections.shuffle(order, new Random(seed));
+        List<int[]> shuffled = new ArrayList<>(n);
+        List<int[]> shuffledTgt = allTgt == null ? null : new ArrayList<>(n);
+        for (int i : order) {
+            shuffled.add(all.get(i));
+            if (shuffledTgt != null) {
+                shuffledTgt.add(allTgt.get(i));
+            }
+        }
         int nVal = (int) Math.round(n * valFraction);
         nVal = Math.min(nVal, n - bs);
         if (nVal < bs) {
@@ -455,17 +535,22 @@ public final class DataLoader {
                     String.format(Locale.ROOT, "%.4f", valFraction),
                     nVal,
                     bs);
-            DataLoader train = fromSequencesTemplate(source, all);
+            DataLoader train = fromSequencesTemplate(source, shuffled, shuffledTgt);
             return new TrainValSplit(train, null);
         }
-        List<int[]> valSeq = new ArrayList<>(all.subList(0, nVal));
-        List<int[]> trainSeq = new ArrayList<>(all.subList(nVal, n));
-        DataLoader train = fromSequencesTemplate(source, trainSeq);
-        DataLoader val = fromSequencesTemplate(source, valSeq);
+        List<int[]> valSeq = new ArrayList<>(shuffled.subList(0, nVal));
+        List<int[]> trainSeq = new ArrayList<>(shuffled.subList(nVal, n));
+        List<int[]> valTgt =
+                shuffledTgt == null ? null : new ArrayList<>(shuffledTgt.subList(0, nVal));
+        List<int[]> trainTgt =
+                shuffledTgt == null ? null : new ArrayList<>(shuffledTgt.subList(nVal, n));
+        DataLoader train = fromSequencesTemplate(source, trainSeq, trainTgt);
+        DataLoader val = fromSequencesTemplate(source, valSeq, valTgt);
         return new TrainValSplit(train, val);
     }
 
-    private static DataLoader fromSequencesTemplate(DataLoader template, List<int[]> seqs) {
+    private static DataLoader fromSequencesTemplate(
+            DataLoader template, List<int[]> seqs, List<int[]> sftTgts) {
         DataLoader d =
                 new DataLoader(
                         template.getTokenizer(),
@@ -474,6 +559,9 @@ public final class DataLoader {
                         template.usesDirectBatchBuffers(),
                         template.usesPinnedHostBatchBuffers());
         d.sequences.addAll(seqs);
+        if (sftTgts != null) {
+            d.sftTargets = new ArrayList<>(sftTgts);
+        }
         return d;
     }
 

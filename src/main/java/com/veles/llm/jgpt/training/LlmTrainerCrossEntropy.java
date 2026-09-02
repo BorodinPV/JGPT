@@ -40,7 +40,8 @@ final class LlmTrainerCrossEntropy {
         if (!TensorOpsGPU.shouldUseGpuCrossEntropy(logits.size())) {
             return 0f;
         }
-        float gradScaleOverTotal = ceFusedGradScaleOverTotal(t, totalTokens, gradScale);
+        fillCeTargetsHostSanitized(t, target, totalTokens, vocabSize);
+        float gradScaleOverTotal = ceFusedGradScaleOverTotal(t, ceValidDenom(t, totalTokens), gradScale);
         if (logits.isDirectStorage() && target.isDirectStorage()) {
             return TensorOpsGPU.crossEntropySoftmaxGradLossGpuDirectEx(
                     logits.directByteBuffer(),
@@ -61,7 +62,27 @@ final class LlmTrainerCrossEntropy {
     }
 
     static float ceFusedGradScaleOverTotal(LLMTrainer t, int totalTokens, float microbatchGradScale) {
-        return microbatchGradScale * t.lossScaleForForward() / (float) totalTokens;
+        int denom = totalTokens > 0 ? totalTokens : 1;
+        return microbatchGradScale * t.lossScaleForForward() / (float) denom;
+    }
+
+    static int countValidCeTargets(int[] ids, int n) {
+        if (ids == null || n <= 0) {
+            return 0;
+        }
+        int v = 0;
+        int lim = Math.min(n, ids.length);
+        for (int i = 0; i < lim; i++) {
+            if (ids[i] >= 0) {
+                v++;
+            }
+        }
+        return v;
+    }
+
+    static int ceValidDenom(LLMTrainer t, int nrows) {
+        int v = countValidCeTargets(t.ceHostTargetScratch, nrows);
+        return v > 0 ? v : nrows;
     }
 
     static int ceTokenIdOrInvalid(float v, int vocabSize) {
@@ -139,7 +160,6 @@ final class LlmTrainerCrossEntropy {
         int seqLen = logitShape[1];
         int vocabSize = logitShape[2];
         int totalTokens = batch * seqLen;
-        float gradScaleOverTotal = ceFusedGradScaleOverTotal(t, totalTokens, gradScale);
         GpuFloatBuffer logitsGpu = t.model.deviceLogitsBuffer();
         GpuFloatBuffer gradGpu = t.model.ensureDeviceLogitsGradBuffer(batch * seqLen * vocabSize);
         gradGpu.clear();
@@ -152,6 +172,7 @@ final class LlmTrainerCrossEntropy {
             t.ceTargetsCapRows = nrows;
         }
         fillCeTargetsDeviceSanitized(t, target, nrows, vocabSize);
+        float gradScaleOverTotal = ceFusedGradScaleOverTotal(t, ceValidDenom(t, nrows), gradScale);
         return TensorOpsGPU.crossEntropySoftmaxGradLossGpuDeviceTargetsDevice(
                 logitsGpu,
                 t.ceTargetsDevice,
@@ -170,7 +191,6 @@ final class LlmTrainerCrossEntropy {
         int seqLen = logitShape[1];
         int vocabSize = logitShape[2];
         int totalTokens = batch * seqLen;
-        float gradScaleOverTotal = ceFusedGradScaleOverTotal(t, totalTokens, gradScale);
         GpuFloatBuffer logitsGpu = t.model.deviceLogitsBuffer();
         GpuFloatBuffer gradGpu = t.model.ensureDeviceLogitsGradBuffer(batch * seqLen * vocabSize);
         gradGpu.clear();
@@ -183,6 +203,7 @@ final class LlmTrainerCrossEntropy {
             t.ceTargetsCapRows = nrows;
         }
         fillCeTargetsDeviceSanitized(t, target, nrows, vocabSize);
+        float gradScaleOverTotal = ceFusedGradScaleOverTotal(t, ceValidDenom(t, nrows), gradScale);
         TensorOpsGPU.crossEntropySoftmaxGradLossGpuDeviceTargetsDeviceAsync(
                 logitsGpu,
                 t.ceTargetsDevice,
@@ -355,7 +376,7 @@ final class LlmTrainerCrossEntropy {
                         t.sampledCandidateGradDevice,
                         rows,
                         candidates,
-                        ceFusedGradScaleOverTotal(t, rows, gradScale));
+                        ceFusedGradScaleOverTotal(t, ceValidDenom(t, rows), gradScale));
         t.model.setSampledTrainLossGrad(t.sampledCandidateIdsDevice, t.sampledCandidateGradDevice, candidates);
         return loss;
     }

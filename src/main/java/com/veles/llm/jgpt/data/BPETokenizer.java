@@ -372,6 +372,18 @@ public final class BPETokenizer {
         return tokenToIdMap.size();
     }
 
+    public int padId() {
+        return tokenToIdMap.get(PAD_TOKEN);
+    }
+
+    public int bosId() {
+        return tokenToIdMap.get(BOS_TOKEN);
+    }
+
+    public int eosId() {
+        return tokenToIdMap.get(EOS_TOKEN);
+    }
+
     public int getTargetVocabSize() {
         return targetVocabSize;
     }

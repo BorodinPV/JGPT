@@ -230,6 +230,31 @@ public final class LLMConfig {
     }
 
     /**
+     * Переопределяет {@link #vocabSize} через {@code JGPT_VOCAB_SIZE} (целевой размер BPE при обучении
+     * токенизатора). Уже существующий файл токенизатора задаёт фактический vocab модели.
+     *
+     * <p>Пример: {@code JGPT_VOCAB_SIZE=16000 ./scripts/jgpt-train-32L-sft.sh}
+     */
+    public static LLMConfig applyVocabSizeOverrideFromEnv(LLMConfig base) {
+        int overridden = readPositiveEnvInt("JGPT_VOCAB_SIZE", base.vocabSize);
+        if (overridden == base.vocabSize) {
+            return base;
+        }
+        return new LLMConfig(
+                base.name,
+                overridden,
+                base.maxSeqLen,
+                base.dModel,
+                base.numHeads,
+                base.numLayers,
+                base.dIntermediate,
+                base.batchSize,
+                base.accumulationSteps,
+                base.learningRate,
+                base.epochs);
+    }
+
+    /**
      * Переопределяет число эпох через переменную окружения {@code JGPT_EPOCHS}.
      *
      * <p>Пример: {@code JGPT_EPOCHS=40 ./scripts/jgpt-smart.sh}

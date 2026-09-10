@@ -80,6 +80,7 @@ GPT-модель (decoder-only transformer) с **полным обучением
 
 - [Архитектура и обучение](docs/training/README.md) — полное описание модели, пресетов, мониторинга
 - [Тренировочный рунбук](docs/TRAIN_RUNBOOK.md) — практическое руководство по обучению
+- [Поток данных 37L SFT](docs/data-flow-37L-sft.puml) — PlantUML (JSONL → GPU → чекпоинты)
 - [FAQ](FAQ.md) — частые вопросы и решения проблем
 - [Contributing](CONTRIBUTING.md) — как внести вклад в проект
 - [Changelog](CHANGELOG.md) — история изменений
@@ -184,6 +185,7 @@ The 26k figure is the old 12-layer run, not 37L SFT.
 
 - [Architecture and Training](docs/training/README.md) — full description of the model, presets, monitoring
 - [Training Runbook](docs/TRAIN_RUNBOOK.md) — practical guide to training
+- [37L SFT data flow](docs/data-flow-37L-sft.puml) — PlantUML (JSONL → GPU → checkpoints)
 - [FAQ](FAQ.md) — frequent questions and solutions
 - [Contributing](CONTRIBUTING.md) — how to contribute to the project
 - [Changelog](CHANGELOG.md) — changelog

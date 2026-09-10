@@ -198,6 +198,12 @@ public final class GPTModel {
     /** Маска «входит в top-k» при сэмплинге; совпадает с порогом стабильной сортировки по (logit↓, индекс↑). */
     boolean[] sampleTopKMember;
 
+    /** Какие id уже встречались в контексте (repetition penalty). */
+    boolean[] sampleSeenScratch;
+
+    /** Индексы для nucleus (top-p). */
+    int[] sampleIndexScratch;
+
     /** Переиспользование {@code [1,1]} в {@link #generate} (декодирование одного токена). */
     Tensor reusableDecodeOneToken;
 
@@ -1870,7 +1876,11 @@ public final class GPTModel {
      * rolling KV / paged attention вместо полного пересчёта.
      */
     public Tensor generate(Tensor inputTokens, int maxNewTokens, float temperature, int topK) {
-        return GptAutoregressiveGenerator.generateHost(this, inputTokens, maxNewTokens, temperature, topK);
+        return generate(inputTokens, maxNewTokens, DecodeSampling.of(temperature, topK));
+    }
+
+    public Tensor generate(Tensor inputTokens, int maxNewTokens, DecodeSampling sampling) {
+        return GptAutoregressiveGenerator.generateHost(this, inputTokens, maxNewTokens, sampling);
     }
 
     /**
@@ -1884,7 +1894,11 @@ public final class GPTModel {
      * Требует {@link #isGpuResident()} и доступной CUDA ({@link TensorOpsGPU#isGpuAvailable()}).
      */
     public Tensor generateGpuKv(Tensor inputTokens, int maxNewTokens, float temperature, int topK) {
-        return GptAutoregressiveGenerator.generateGpuKv(this, inputTokens, maxNewTokens, temperature, topK);
+        return generateGpuKv(inputTokens, maxNewTokens, DecodeSampling.of(temperature, topK));
+    }
+
+    public Tensor generateGpuKv(Tensor inputTokens, int maxNewTokens, DecodeSampling sampling) {
+        return GptAutoregressiveGenerator.generateGpuKv(this, inputTokens, maxNewTokens, sampling);
     }
 
     public long countParameters() {

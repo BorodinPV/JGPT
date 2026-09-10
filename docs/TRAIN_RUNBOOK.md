@@ -4,7 +4,7 @@
 
 ## TL;DR — какой скрипт запускать
 
-Скрипты лежат в `scripts/linux/` и `scripts/windows/` ([карта](../scripts/README.md)).
+Скрипты лежат в `scripts/linux/` и `scripts/windows/` ([карта](../scripts/README.md)). Поток 37L SFT: [data-flow-37L-sft.puml](data-flow-37L-sft.puml).
 
 **37L SFT ~100M** (JSONL, `env/37L-sft-100M.env`, чекпоинты `checkpoints/sft_37L_16k_2048/`):
 
@@ -17,6 +17,18 @@
 ```
 
 Лог: `training_sft_37L.log`. Resume: тот же скрипт без `--fresh`.
+
+**Короткий SFT finetune** (фильтр `data/sft/short`, `env/37L-sft-short-ft.env`, чекпоинты `checkpoints/sft_37L_short_ft/` — исходный 37L не трогает; веса с `model_best.bin`, свежий Adam, LR=1e-4):
+
+```powershell
+.\scripts\windows\jgpt-train-37L-sft-short.ps1 --no-build
+```
+
+**Экзамен-SFT** (столицы / 2+2 / да-нет, `data/sft/exam`, `env/37L-sft-exam.env`, чекпоинты `checkpoints/sft_37L_exam/`, старт с `sft_37L_short_ft/model_best.bin`):
+
+```powershell
+.\scripts\windows\jgpt-train-37L-sft-exam.cmd --no-build
+```
 
 **Книги + авто-пресеты** (только Linux, ~35M canonical, `data/books/`):
 
@@ -221,6 +233,7 @@ JGPT/
 ├── checkpoints/all_books/      ← книги
 ├── checkpoints/sft_37L_16k_2048/
 ├── docs/dashboard.html         ← веб-дашборд (state/stats.json)
+├── docs/data-flow-37L-sft.puml ← поток данных 37L SFT
 ├── training_allbooks.log       ← smart
 └── training_sft_37L.log        ← 37L SFT
 ```

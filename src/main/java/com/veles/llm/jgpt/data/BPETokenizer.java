@@ -242,7 +242,20 @@ public final class BPETokenizer {
         return sb.toString();
     }
 
+    /**
+     * Для обучения/хранения целых документов: {@code addSpecialTokens=true} даёт {@code <bos> … <eos>}.
+     * Для авторегрессии используйте {@link #encodePrompt}: {@code <eos>} в конце промпта значит «текст кончился».
+     */
     public int[] encode(String text, boolean addSpecialTokens) {
+        return encode(text, addSpecialTokens, addSpecialTokens);
+    }
+
+    /** {@code <bos>} + текст, без {@code <eos>} — продолжение ещё не закончено. */
+    public int[] encodePrompt(String text) {
+        return encode(text, true, false);
+    }
+
+    public int[] encode(String text, boolean addBos, boolean addEos) {
         String normalized = text.toLowerCase();
         String[] words =
                 wordPattern.matcher(normalized).results()
@@ -251,7 +264,7 @@ public final class BPETokenizer {
 
         List<Integer> tokens = new ArrayList<>();
 
-        if (addSpecialTokens) {
+        if (addBos) {
             tokens.add(tokenToIdMap.get(BOS_TOKEN));
         }
 
@@ -277,7 +290,7 @@ public final class BPETokenizer {
             }
         }
 
-        if (addSpecialTokens) {
+        if (addEos) {
             tokens.add(tokenToIdMap.get(EOS_TOKEN));
         }
 

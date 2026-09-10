@@ -18,6 +18,10 @@ final class GptAutoregressiveGenerator {
     private GptAutoregressiveGenerator() {}
 
     static Tensor generateHost(GPTModel m, Tensor inputTokens, int maxNewTokens, float temperature, int topK) {
+        return generateHost(m, inputTokens, maxNewTokens, DecodeSampling.of(temperature, topK));
+    }
+
+    static Tensor generateHost(GPTModel m, Tensor inputTokens, int maxNewTokens, DecodeSampling sampling) {
         int[] inputShape = inputTokens.getShape();
         int batch = inputShape[0];
         int seqLen = inputShape[1];
@@ -39,9 +43,10 @@ final class GptAutoregressiveGenerator {
         float[] lastLogitData = lastPlane.internalBuffer();
         int lastRowOffset = (seqLen - 1) * m.vocabSize;
 
-        int nextToken = sampleNextToken(m, lastLogitData, lastRowOffset, m.vocabSize, temperature, topK);
+        int nextToken =
+                sampleNextToken(m, lastLogitData, lastRowOffset, m.vocabSize, sampling, outData, seqLen);
         outData[seqLen] = nextToken;
-        if (nextToken == 0) {
+        if (isGenerationStopToken(nextToken)) {
             return output;
         }
 
@@ -79,9 +84,11 @@ final class GptAutoregressiveGenerator {
                 lastPlane = GptTensorBatchPlanes.sliceBatch3D(logitsPrefill, 0);
                 lastLogitData = lastPlane.internalBuffer();
                 lastRowOffset = (sliceLen - 1) * m.vocabSize;
-                nextToken = sampleNextToken(m, lastLogitData, lastRowOffset, m.vocabSize, temperature, topK);
+                nextToken =
+                        sampleNextToken(
+                                m, lastLogitData, lastRowOffset, m.vocabSize, sampling, outData, currentLen);
                 outData[currentLen] = nextToken;
-                if (nextToken == 0) {
+                if (isGenerationStopToken(nextToken)) {
                     break;
                 }
                 continue;
@@ -95,9 +102,9 @@ final class GptAutoregressiveGenerator {
                     GptKvForward.forwardDecodeHost(m, m.reusableDecodeOneToken, cache, cache.length(), seqLen + j - 1);
             lastPlane = GptTensorBatchPlanes.sliceBatch3D(logitsDec, 0);
             lastLogitData = lastPlane.internalBuffer();
-            nextToken = sampleNextToken(m, lastLogitData, 0, m.vocabSize, temperature, topK);
+            nextToken = sampleNextToken(m, lastLogitData, 0, m.vocabSize, sampling, outData, currentLen);
             outData[currentLen] = nextToken;
-            if (nextToken == 0) {
+            if (isGenerationStopToken(nextToken)) {
                 break;
             }
         }
@@ -106,6 +113,10 @@ final class GptAutoregressiveGenerator {
     }
 
     static Tensor generateGpuKv(GPTModel m, Tensor inputTokens, int maxNewTokens, float temperature, int topK) {
+        return generateGpuKv(m, inputTokens, maxNewTokens, DecodeSampling.of(temperature, topK));
+    }
+
+    static Tensor generateGpuKv(GPTModel m, Tensor inputTokens, int maxNewTokens, DecodeSampling sampling) {
         if (!m.isGpuResident()) {
             throw new IllegalStateException("generateGpuKv requires GPU-resident weights");
         }
@@ -133,9 +144,10 @@ final class GptAutoregressiveGenerator {
                 float[] lastLogitData = lastPlane.internalBuffer();
                 int lastRowOffset = (seqLen - 1) * m.vocabSize;
 
-                int nextToken = sampleNextToken(m, lastLogitData, lastRowOffset, m.vocabSize, temperature, topK);
+                int nextToken =
+                        sampleNextToken(m, lastLogitData, lastRowOffset, m.vocabSize, sampling, outData, seqLen);
                 outData[seqLen] = nextToken;
-                if (nextToken == 0) {
+                if (isGenerationStopToken(nextToken)) {
                     return output;
                 }
 
@@ -174,9 +186,10 @@ final class GptAutoregressiveGenerator {
                         lastLogitData = lastPlane.internalBuffer();
                         lastRowOffset = (sliceLen - 1) * m.vocabSize;
                         nextToken =
-                                sampleNextToken(m, lastLogitData, lastRowOffset, m.vocabSize, temperature, topK);
+                                sampleNextToken(
+                                        m, lastLogitData, lastRowOffset, m.vocabSize, sampling, outData, currentLen);
                         outData[currentLen] = nextToken;
-                        if (nextToken == 0) {
+                        if (isGenerationStopToken(nextToken)) {
                             break;
                         }
                         continue;
@@ -191,9 +204,9 @@ final class GptAutoregressiveGenerator {
                                     m, m.reusableDecodeOneToken, cache, cache.length(), seqLen + j - 1);
                     lastPlane = GptTensorBatchPlanes.sliceBatch3D(logitsDec, 0);
                     lastLogitData = lastPlane.internalBuffer();
-                    nextToken = sampleNextToken(m, lastLogitData, 0, m.vocabSize, temperature, topK);
+                    nextToken = sampleNextToken(m, lastLogitData, 0, m.vocabSize, sampling, outData, currentLen);
                     outData[currentLen] = nextToken;
-                    if (nextToken == 0) {
+                    if (isGenerationStopToken(nextToken)) {
                         break;
                     }
                 }
@@ -207,11 +220,28 @@ final class GptAutoregressiveGenerator {
 
     static int sampleNextToken(
             GPTModel m, float[] logits, int offset, int vocabSize, float temperature, int topK) {
+        return sampleNextToken(
+                m, logits, offset, vocabSize, DecodeSampling.of(temperature, topK), null, 0);
+    }
+
+    static int sampleNextToken(
+            GPTModel m,
+            float[] logits,
+            int offset,
+            int vocabSize,
+            DecodeSampling sampling,
+            float[] tokens,
+            int tokenLen) {
         if (m.sampleLogitsScratch == null || m.sampleLogitsScratch.length < vocabSize) {
             m.sampleLogitsScratch = new float[vocabSize];
         }
         System.arraycopy(logits, offset, m.sampleLogitsScratch, 0, vocabSize);
 
+        applyRepetitionPenalty(m, vocabSize, sampling.repetitionPenalty, tokens, tokenLen);
+        banRepeatingNgrams(m.sampleLogitsScratch, vocabSize, sampling.noRepeatNgramSize, tokens, tokenLen);
+
+        float temperature = sampling.temperature;
+        int topK = sampling.topK;
         if (temperature != 1.0f && temperature > 0) {
             for (int i = 0; i < vocabSize; i++) {
                 m.sampleLogitsScratch[i] /= temperature;
@@ -254,6 +284,8 @@ final class GptAutoregressiveGenerator {
             }
         }
 
+        applyNucleus(m, vocabSize, sampling.topP);
+
         if (temperature <= 0f) {
             return argmaxLogitsGreedy(m.sampleLogitsScratch, vocabSize);
         }
@@ -288,6 +320,141 @@ final class GptAutoregressiveGenerator {
         return vocabSize - 1;
     }
 
+    private static void applyRepetitionPenalty(
+            GPTModel m, int vocabSize, float penalty, float[] tokens, int tokenLen) {
+        if (penalty == 1f || tokens == null || tokenLen <= 0) {
+            return;
+        }
+        if (m.sampleSeenScratch == null || m.sampleSeenScratch.length < vocabSize) {
+            m.sampleSeenScratch = new boolean[vocabSize];
+        }
+        Arrays.fill(m.sampleSeenScratch, 0, vocabSize, false);
+        for (int t = 0; t < tokenLen; t++) {
+            int id = (int) tokens[t];
+            if (id >= 0 && id < vocabSize) {
+                m.sampleSeenScratch[id] = true;
+            }
+        }
+        float[] scores = m.sampleLogitsScratch;
+        for (int i = 0; i < vocabSize; i++) {
+            if (!m.sampleSeenScratch[i]) {
+                continue;
+            }
+            float s = scores[i];
+            scores[i] = s < 0f ? s * penalty : s / penalty;
+        }
+    }
+
+    private static void banRepeatingNgrams(
+            float[] logits, int vocabSize, int ngram, float[] tokens, int tokenLen) {
+        if (ngram < 2 || tokens == null || tokenLen < ngram - 1) {
+            return;
+        }
+        int prefix = ngram - 1;
+        for (int i = 0; i + ngram <= tokenLen; i++) {
+            boolean match = true;
+            for (int k = 0; k < prefix; k++) {
+                if ((int) tokens[i + k] != (int) tokens[tokenLen - prefix + k]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                int ban = (int) tokens[i + prefix];
+                if (ban >= 0 && ban < vocabSize) {
+                    logits[ban] = Float.NEGATIVE_INFINITY;
+                }
+            }
+        }
+    }
+
+    private static void applyNucleus(GPTModel m, int vocabSize, float topP) {
+        if (!(topP > 0f && topP < 1f)) {
+            return;
+        }
+        if (m.sampleIndexScratch == null || m.sampleIndexScratch.length < vocabSize) {
+            m.sampleIndexScratch = new int[vocabSize];
+        }
+        float[] logits = m.sampleLogitsScratch;
+        int n = 0;
+        float max = Float.NEGATIVE_INFINITY;
+        for (int i = 0; i < vocabSize; i++) {
+            float v = logits[i];
+            if (!Float.isFinite(v)) {
+                continue;
+            }
+            m.sampleIndexScratch[n++] = i;
+            max = Math.max(max, v);
+        }
+        if (n <= 1) {
+            return;
+        }
+        float sum = 0f;
+        for (int k = 0; k < n; k++) {
+            int i = m.sampleIndexScratch[k];
+            float e = (float) Math.exp(logits[i] - max);
+            logits[i] = e;
+            sum += e;
+        }
+        if (sum <= 0f || !Float.isFinite(sum)) {
+            return;
+        }
+        for (int k = 0; k < n; k++) {
+            int i = m.sampleIndexScratch[k];
+            logits[i] /= sum;
+        }
+        quicksortIdxDesc(m.sampleIndexScratch, logits, 0, n - 1);
+        float cum = 0f;
+        int keep = 0;
+        while (keep < n) {
+            cum += logits[m.sampleIndexScratch[keep]];
+            keep++;
+            if (cum >= topP) {
+                break;
+            }
+        }
+        for (int k = keep; k < n; k++) {
+            logits[m.sampleIndexScratch[k]] = Float.NEGATIVE_INFINITY;
+        }
+        for (int k = 0; k < keep; k++) {
+            int i = m.sampleIndexScratch[k];
+            logits[i] = (float) Math.log(Math.max(logits[i], 1e-20f));
+        }
+    }
+
+    private static void quicksortIdxDesc(int[] idx, float[] vals, int lo, int hi) {
+        while (lo < hi) {
+            int p = partitionIdxDesc(idx, vals, lo, hi);
+            if (p - lo < hi - p) {
+                quicksortIdxDesc(idx, vals, lo, p - 1);
+                lo = p + 1;
+            } else {
+                quicksortIdxDesc(idx, vals, p + 1, hi);
+                hi = p - 1;
+            }
+        }
+    }
+
+    private static int partitionIdxDesc(int[] idx, float[] vals, int lo, int hi) {
+        int pivotId = idx[hi];
+        float pivot = vals[pivotId];
+        int i = lo;
+        for (int j = lo; j < hi; j++) {
+            int a = idx[j];
+            int c = Float.compare(vals[a], pivot);
+            if (c > 0 || (c == 0 && a < pivotId)) {
+                int tmp = idx[i];
+                idx[i] = idx[j];
+                idx[j] = tmp;
+                i++;
+            }
+        }
+        int tmp = idx[i];
+        idx[i] = idx[hi];
+        idx[hi] = tmp;
+        return i;
+    }
+
     private static int argmaxLogitsGreedy(float[] logits, int vocabSize) {
         int best = 0;
         float bestVal = logits[0];
@@ -299,6 +466,11 @@ final class GptAutoregressiveGenerator {
             }
         }
         return best;
+    }
+
+    /** {@code <pad>=0} (хвост буфера) и {@code <eos>=3} — конец реплики, как при SFT. */
+    private static boolean isGenerationStopToken(int token) {
+        return token == 0 || token == 3;
     }
 
     private static boolean isBetterLogit(float[] vals, int i, int j) {

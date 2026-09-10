@@ -3,6 +3,7 @@ package com.veles.llm.jgpt.data;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -132,5 +133,42 @@ class SftPackerTest {
         assertTrue(supervised > 0);
         assertTrue(ignored > 0);
         assertEquals(-1f, tgt[0], 0f);
+    }
+
+    @Test
+    void wrapUserChatPromptAddsPrefixes() {
+        String wrapped = SftExampleEncoder.wrapUserChatPrompt("привет");
+        assertEquals(
+                SftExampleEncoder.USER_PREFIX + "привет\n" + SftExampleEncoder.ASSISTANT_PREFIX,
+                wrapped);
+        String already = SftExampleEncoder.wrapUserChatPrompt("Пользователь: a");
+        assertTrue(already.contains(SftExampleEncoder.ASSISTANT_PREFIX));
+        String both = SftExampleEncoder.wrapUserChatPrompt("Пользователь: a\nАссистент: ");
+        assertEquals("Пользователь: a\nАссистент:", both.trim());
+    }
+
+    @Test
+    void dialogSplitIsDisjointAndDeterministic() {
+        List<Integer> items = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            items.add(i);
+        }
+        List<Integer> trainA = new ArrayList<>();
+        List<Integer> valA = new ArrayList<>();
+        SftCorpus.splitShuffled(items, 0.05, 42L, trainA, valA);
+        assertEquals(5, valA.size());
+        assertEquals(95, trainA.size());
+        for (Integer v : valA) {
+            assertTrue(!trainA.contains(v));
+        }
+        List<Integer> trainB = new ArrayList<>();
+        List<Integer> valB = new ArrayList<>();
+        SftCorpus.splitShuffled(items, 0.05, 42L, trainB, valB);
+        assertEquals(valA, valB);
+        assertEquals(trainA, trainB);
+        List<Integer> trainC = new ArrayList<>();
+        List<Integer> valC = new ArrayList<>();
+        SftCorpus.splitShuffled(items, 0.05, 7L, trainC, valC);
+        assertTrue(!valA.equals(valC));
     }
 }

@@ -3,12 +3,10 @@ package com.veles.llm.jgpt.app;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.data.BPETokenizer;
 import com.veles.llm.jgpt.data.SftExampleEncoder;
+import com.veles.llm.jgpt.model.DecodeSampling;
 import com.veles.llm.jgpt.model.GPTModel;
 import com.veles.llm.jgpt.training.LLMConfig;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -51,6 +49,9 @@ public final class InferChat {
         int maxNewTokens = 128;
         float temperature = 0.8f;
         int topK = 50;
+        float topP = 1f;
+        float repetitionPenalty = 1f;
+        int noRepeatNgramSize = 0;
         int seqLenOverride = -1;
         int layersOverride = -1;
         String singlePrompt = null;
@@ -68,7 +69,11 @@ public final class InferChat {
                 case "--tokenizer" -> tokenizerRel = requireArg(argv, a);
                 case "--max-new-tokens" -> maxNewTokens = Math.max(1, Integer.parseInt(requireArg(argv, a)));
                 case "--temperature" -> temperature = Float.parseFloat(requireArg(argv, a));
-                case "--top-k" -> topK = Math.max(1, Integer.parseInt(requireArg(argv, a)));
+                case "--top-k" -> topK = Math.max(0, Integer.parseInt(requireArg(argv, a)));
+                case "--top-p" -> topP = Float.parseFloat(requireArg(argv, a));
+                case "--repetition-penalty" -> repetitionPenalty = Float.parseFloat(requireArg(argv, a));
+                case "--no-repeat-ngram-size" ->
+                        noRepeatNgramSize = Math.max(0, Integer.parseInt(requireArg(argv, a)));
                 case "--seq-len" -> seqLenOverride = Math.max(1, Integer.parseInt(requireArg(argv, a)));
                 case "--layers" -> layersOverride = Math.max(1, Integer.parseInt(requireArg(argv, a)));
                 case "--prompt" -> singlePrompt = requireArg(argv, a);
@@ -122,6 +127,8 @@ public final class InferChat {
                         cfg.numLayers,
                         cfg.dIntermediate,
                         gpuResident);
+        DecodeSampling sampling =
+                new DecodeSampling(temperature, topK, topP, repetitionPenalty, noRepeatNgramSize);
         model.loadWeights(modelPath.toString());
 
         try {
@@ -132,8 +139,7 @@ public final class InferChat {
                                 tokenizer,
                                 applySftChatTemplate(singlePrompt),
                                 maxNewTokens,
-                                temperature,
-                                topK);
+                                sampling);
                 log.info("{}", out);
                 return;
             }
@@ -145,43 +151,44 @@ public final class InferChat {
             }
 
             console.printf(
-                    "JGPT InferChat — max_new_tokens=%d temperature=%.2f top_k=%d%n"
+                    "JGPT InferChat — max_new_tokens=%d temperature=%.2f top_k=%d top_p=%.2f"
+                            + " repetition_penalty=%.2f no_repeat_ngram=%d%n"
                             + "Пустая строка — выход. Команды: quit | exit%n",
                     maxNewTokens,
-                    temperature,
-                    topK);
-            try (BufferedReader stdin =
-                    new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
-                while (true) {
-                    console.printf("> ");
-                    console.flush();
-                    String line = stdin.readLine();
-                    if (line == null) {
-                        break;
-                    }
-                    String trimmed = line.trim();
-                    if (trimmed.isEmpty()) {
-                        break;
-                    }
-                    if ("quit".equalsIgnoreCase(trimmed) || "exit".equalsIgnoreCase(trimmed)) {
-                        break;
-                    }
-                    try {
-                        String out =
-                                LlmTextGeneration.generateText(
-                                        model,
-                                        tokenizer,
-                                        applySftChatTemplate(trimmed),
-                                        maxNewTokens,
-                                        temperature,
-                                        topK);
-                        log.info("{}", out);
-                    } catch (Exception e) {
-                        log.warn("Генерация: {}", e.getMessage());
-                    }
+                    sampling.temperature,
+                    sampling.topK,
+                    sampling.topP,
+                    sampling.repetitionPenalty,
+                    sampling.noRepeatNgramSize);
+            while (true) {
+                console.printf("> ");
+                console.flush();
+                String line = console.readLine();
+                if (line == null) {
+                    break;
                 }
-                log.info("Выход.");
+                String trimmed = line.trim();
+                if (trimmed.isEmpty()) {
+                    break;
+                }
+                if ("quit".equalsIgnoreCase(trimmed) || "exit".equalsIgnoreCase(trimmed)) {
+                    break;
+                }
+                try {
+                    String out =
+                            LlmTextGeneration.generateText(
+                                    model,
+                                    tokenizer,
+                                    applySftChatTemplate(trimmed),
+                                    maxNewTokens,
+                                    sampling);
+                    console.printf("%s%n", out);
+                    console.flush();
+                } catch (Exception e) {
+                    log.warn("Генерация: {}", e.getMessage());
+                }
             }
+            console.printf("Выход.%n");
         } finally {
             if (TensorOpsGPU.isGpuAvailable()) {
                 TensorOpsGPU.synchronizeStream();
@@ -192,30 +199,11 @@ public final class InferChat {
     }
 
     static boolean sftChatTemplateFromEnv() {
-        String e = System.getenv("JGPT_SFT_CHAT_TEMPLATE");
-        if (e == null || e.isBlank()) {
-            e = System.getenv("JGPT_SFT");
-        }
-        if (e == null || e.isBlank()) {
-            return false;
-        }
-        String t = e.trim();
-        return "1".equals(t) || "true".equalsIgnoreCase(t);
+        return SftExampleEncoder.chatTemplateFromEnv();
     }
 
     static String applySftChatTemplate(String prompt) {
-        if (prompt == null || !sftChatTemplateFromEnv()) {
-            return prompt;
-        }
-        String p = prompt.trim();
-        if (p.regionMatches(true, 0, "Пользователь:", 0, "Пользователь:".length())
-                || p.regionMatches(true, 0, "пользователь:", 0, "пользователь:".length())) {
-            if (!p.contains("Ассистент:") && !p.toLowerCase().contains("ассистент:")) {
-                return p + "\n" + SftExampleEncoder.ASSISTANT_PREFIX;
-            }
-            return p;
-        }
-        return SftExampleEncoder.USER_PREFIX + p + "\n" + SftExampleEncoder.ASSISTANT_PREFIX;
+        return SftExampleEncoder.applyChatTemplateIfEnabled(prompt);
     }
 
     private static LLMConfig geometryFromEnvAndOverrides(int seqLenOverride, int layersOverride) {
@@ -280,7 +268,10 @@ public final class InferChat {
                   --layers N             число слоёв (иначе env JGPT_PRESET_NUM_LAYERS / canonical 12)
                   --max-new-tokens N     длина продолжения (по умолчанию 128)
                   --temperature F        (по умолчанию 0.8)
-                  --top-k N              (по умолчанию 50)
+                  --top-k N              (по умолчанию 50; 0 — выкл.)
+                  --top-p F              nucleus, 1 = выкл. (по умолчанию 1)
+                  --repetition-penalty F HF-штраф, 1 = выкл. (по умолчанию 1)
+                  --no-repeat-ngram-size N  запрет повторных n-грамм, 0 = выкл.
                   --prompt TEXT          один промпт и выход (без интерактива)
                   {}TEXT          то же одним аргументом (удобно для mvn -Dexec.args без кавычек к пробелам)
                   -h, --help             эта справка

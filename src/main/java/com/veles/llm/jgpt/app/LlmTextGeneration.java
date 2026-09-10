@@ -3,6 +3,7 @@ package com.veles.llm.jgpt.app;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
 import com.veles.llm.jgpt.data.BPETokenizer;
+import com.veles.llm.jgpt.model.DecodeSampling;
 import com.veles.llm.jgpt.model.GPTModel;
 
 /**
@@ -37,8 +38,17 @@ public final class LlmTextGeneration {
             int maxNewTokens,
             float temperature,
             int topK) {
+        return generateText(model, tokenizer, prompt, maxNewTokens, DecodeSampling.of(temperature, topK));
+    }
+
+    public static String generateText(
+            GPTModel model,
+            BPETokenizer tokenizer,
+            String prompt,
+            int maxNewTokens,
+            DecodeSampling sampling) {
         TensorOpsGPU.requireCuda("LlmTextGeneration.generateText");
-        int[] inputTokens = tokenizer.encode(prompt, true);
+        int[] inputTokens = tokenizer.encodePrompt(prompt);
         Tensor input = new Tensor(new int[]{1, inputTokens.length});
         float[] inputData = input.internalBuffer();
         for (int i = 0; i < inputTokens.length; i++) {
@@ -51,8 +61,8 @@ public final class LlmTextGeneration {
                         && TensorOpsGPU.isGpuAvailable();
         Tensor generated =
                 gpuKv
-                        ? model.generateGpuKv(input, maxNewTokens, temperature, topK)
-                        : model.generate(input, maxNewTokens, temperature, topK);
+                        ? model.generateGpuKv(input, maxNewTokens, sampling)
+                        : model.generate(input, maxNewTokens, sampling);
         if (TensorOpsGPU.isGpuAvailable()) {
             TensorOpsGPU.synchronizeStream();
             TensorOpsGPU.drainDeferredGpuBuffers();

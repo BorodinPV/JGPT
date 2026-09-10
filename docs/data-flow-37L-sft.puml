@@ -1,0 +1,125 @@
+@startuml jgpt_37l_sft_dataflow
+' JGPT 37L SFT (~100.4M): JSONL → GPU train → checkpoints
+' PowerShell (из корня репо):
+'   $java = "$env:USERPROFILE\.jdks\liberica-full-26.0.1\bin\java.exe"
+'   $jar  = "$env:USERPROFILE\.plantuml\plantuml.jar"
+'   & $java -jar $jar -tpng docs\data-flow-37L-sft.puml
+
+title JGPT 37L SFT — поток данных\n37 слоёв · vocab 16k · seq 2048 · JSONL
+!pragma layout smetana
+
+skinparam shadowing false
+skinparam linetype ortho
+skinparam defaultFontName Segoe UI
+skinparam ArrowFontSize 11
+skinparam RectangleFontSize 12
+skinparam PackageFontSize 13
+left to right direction
+
+package "Вход" as IN {
+  rectangle "data/sft/raw/**/*.jsonl\nдиалоги instruction/chat" as JSONL
+  rectangle "env/37L-sft-100M.env\nJGPT_SFT=1  layers=37\nbatch=4 × accum=32" as ENV
+  rectangle "scripts/windows/jgpt-train-37L-sft.ps1\n(или linux/.../jgpt-train-37L-sft.sh)" as LAUNCH
+}
+
+package "Сборка native" as NAT {
+  rectangle "build-cuda.ps1 / .sh" as BUILD
+  rectangle "build/jgpt_cuda.dll\n(Linux: libjgpt_cuda.so)" as LIB
+}
+
+package "Java: AllBooksTrain" as JAVA {
+  rectangle "BPETokenizer\nvocab 16000\ntokenizer_sft_16k.bin" as BPE
+  rectangle "SftCorpus\nSftJsonlParser → Encoder\n→ WindowPacker" as SFT
+  rectangle "DataLoader\nокна seq 2048\nval 5% hold-out" as DL
+  rectangle "GPTModel 37L\n~100.4M, GPU-resident" as GPT
+  rectangle "LLMTrainer.train()" as TR
+}
+
+package "GPU / JNI" as GPU {
+  rectangle "cuBLAS FP16 GEMM" as CUBLAS
+  rectangle "FlashAttention\n(или cuDNN SDPA)" as ATTN
+  rectangle "device CE\nтолько токены ассистента\n(target = -1 skip)" as CE
+  rectangle "decoder backward\n+ Adam (clip)" as BWD
+}
+
+package "Выход" as OUT {
+  folder "checkpoints/sft_37L_16k_2048/" as CKDIR {
+    rectangle "checkpoint_final.bin\nшаг, Adam, позиция loader" as CKPT
+    rectangle "model_best.bin\nвеса для чата" as BEST
+    rectangle "model_final.bin" as FINAL
+  }
+  rectangle "training_sft_37L.log" as LOG
+  rectangle "state/stats.json" as STATS
+  rectangle "docs/dashboard.html" as DASH
+  rectangle "InferChat\n--layers 37 --seq-len 2048" as CHAT
+}
+
+JSONL --> LAUNCH
+ENV --> LAUNCH
+LAUNCH --> BUILD : cmake
+BUILD --> LIB
+LAUNCH --> JAVA : mvn AllBooksTrain
+LIB --> TR : System.load JNI
+
+JSONL --> SFT : строки JSONL
+JSONL --> BPE : plain text для train BPE\nесли файла ещё нет
+SFT --> DL : Window{tokens, targets}
+BPE --> DL : encode
+DL --> TR : batch [B,S] input/target
+GPT --> TR
+TR --> CUBLAS
+TR --> ATTN
+TR --> CE
+CE --> BWD
+BWD --> TR : globalStep++
+
+TR --> CKPT : saveCheckpoint(final/best/epoch)
+TR --> BEST
+TR --> FINAL
+TR --> LOG : [STEP]
+TR --> STATS : TrainingStatsWriter
+STATS --> DASH : poll
+BEST --> CHAT
+BPE --> CHAT : tokenizer_sft_16k.bin
+LIB --> CHAT
+
+CKPT -[#blue,dashed]-> TR : resume без --fresh
+
+legend right
+  сплошная — данные вперёд
+  пунктир — resume (checkpoint_final.bin)
+  лосс SFT: CE только на токенах ассистента
+endlegend
+
+@enduml
+
+@startuml jgpt_37l_sft_gpu_step
+title LLMTrainer — один optimizer step (37L SFT)
+!pragma layout smetana
+
+skinparam shadowing false
+skinparam defaultFontName Segoe UI
+skinparam ActivityBorderColor #333
+skinparam ArrowColor #333
+
+start
+:DataLoader.nextBatch()\ninput/target [B=4, S=2048], pinned H2D;
+:GPTModel.forward (training)\nembed → 37×(RMSNorm + Attn + FFN) → LM head;
+:Cross-entropy (sampled, 384 cand.)\nмаскируются target=-1 (не assistant)\nscale = 1/accumulationSteps (32);
+if (микробатч кратен accum=32?) then (нет)
+  :накопить градиенты на GPU;
+  stop
+else (да)
+  :backward по слоям\nFlashAttention / cuDNN SDPA + cuBLAS;
+  :clip grad-norm → Adam update;
+  :globalStep++ · лог [STEP] · stats.json;
+  if (eval улучшился?) then (да)
+    :saveCheckpoint("best")\nmodel_best.bin + checkpoint_best.bin;
+  endif
+  if (конец эпохи / shutdown?) then (да)
+    :saveCheckpoint("epoch_N" / "final");
+  endif
+  stop
+endif
+
+@enduml

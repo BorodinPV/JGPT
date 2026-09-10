@@ -2,6 +2,7 @@ package com.veles.llm.jgpt.data;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Токенизация диалога: лосс только на токенах реплик ассистента (и {@code <eos>} после него).
@@ -12,6 +13,49 @@ public final class SftExampleEncoder {
     public static final String ASSISTANT_PREFIX = "Ассистент: ";
 
     private SftExampleEncoder() {}
+
+    /**
+     * {@code JGPT_SFT_CHAT_TEMPLATE} или, если не задан, {@code JGPT_SFT}: оборачивать промпт
+     * префиксами {@link #USER_PREFIX}/{@link #ASSISTANT_PREFIX}.
+     */
+    public static boolean chatTemplateFromEnv() {
+        String e = System.getenv("JGPT_SFT_CHAT_TEMPLATE");
+        if (e == null || e.isBlank()) {
+            e = System.getenv("JGPT_SFT");
+        }
+        if (e == null || e.isBlank()) {
+            return false;
+        }
+        String t = e.trim();
+        return "1".equals(t) || "true".equalsIgnoreCase(t);
+    }
+
+    /**
+     * Пользовательский текст → шаблон чата. Если строка уже начинается с {@code Пользователь:},
+     * при необходимости только дописывается {@link #ASSISTANT_PREFIX}.
+     */
+    public static String wrapUserChatPrompt(String prompt) {
+        if (prompt == null) {
+            return null;
+        }
+        String p = prompt.trim();
+        if (p.regionMatches(true, 0, "Пользователь:", 0, "Пользователь:".length())
+                || p.regionMatches(true, 0, "пользователь:", 0, "пользователь:".length())) {
+            String lower = p.toLowerCase(Locale.ROOT);
+            if (!p.contains("Ассистент:") && !lower.contains("ассистент:")) {
+                return p + "\n" + ASSISTANT_PREFIX;
+            }
+            return p;
+        }
+        return USER_PREFIX + p + "\n" + ASSISTANT_PREFIX;
+    }
+
+    public static String applyChatTemplateIfEnabled(String prompt) {
+        if (prompt == null || !chatTemplateFromEnv()) {
+            return prompt;
+        }
+        return wrapUserChatPrompt(prompt);
+    }
 
     public static Encoded encode(BPETokenizer tokenizer, List<SftTurn> turns) {
         if (turns == null || turns.size() < 2) {

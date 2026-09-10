@@ -5,6 +5,7 @@ import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.app.LlmTextGeneration;
 import com.veles.llm.jgpt.core.Tensor;
 import com.veles.llm.jgpt.data.DataLoader;
+import com.veles.llm.jgpt.data.SftExampleEncoder;
 import com.veles.llm.jgpt.util.LogFmt;
 
 import org.slf4j.Logger;
@@ -31,6 +32,12 @@ final class LlmTrainerEvalAndSample {
         "дети бежали навстречу лету радостно"
     };
 
+    private static final String[] AUTO_PROMPTS_SFT = {
+        "столица Франции",
+        "сколько будет 2+2",
+        "ответь да или нет: небо голубое"
+    };
+
     private LlmTrainerEvalAndSample() {}
 
     static String pickSamplePrompt(LLMTrainer t, int epochOneBased) {
@@ -39,7 +46,9 @@ final class LlmTrainerEvalAndSample {
             String[] parts = env.split("\\|");
             return parts[(t.globalStep + epochOneBased) % parts.length].trim();
         }
-        return AUTO_PROMPTS_RU[(t.globalStep + epochOneBased) % AUTO_PROMPTS_RU.length];
+        String[] bank =
+                SftExampleEncoder.chatTemplateFromEnv() ? AUTO_PROMPTS_SFT : AUTO_PROMPTS_RU;
+        return bank[(t.globalStep + epochOneBased) % bank.length];
     }
 
     static void maybeAutoSample(LLMTrainer t, int epochOneBased) {
@@ -49,7 +58,7 @@ final class LlmTrainerEvalAndSample {
         if (t.globalStep % t.config.interactiveSampleEverySteps != 0) {
             return;
         }
-        String prompt = pickSamplePrompt(t, epochOneBased);
+        String prompt = SftExampleEncoder.applyChatTemplateIfEnabled(pickSamplePrompt(t, epochOneBased));
         log.info(
                 "{} промежуточная генерация: эпоха {}/{}, шаг {}",
                 LogFmt.badge(SAMPLE_BADGE),

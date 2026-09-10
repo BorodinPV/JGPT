@@ -48,8 +48,10 @@ import org.slf4j.LoggerFactory;
  *   <li><b>JGPT_FINETUNE=1</b> — сбросить {@code globalStep} в 0; веса и Adam-состояние
  *       при этом сохраняются. Используйте, если добавили новые книги и хотите
  *       переобучить полный цикл эпох заново.</li>
- *   <li><b>JGPT_VAL_FRACTION</b> — доля окон под hold-out validation (например {@code 0.05}); {@code JGPT_VAL_SEED}
- *       — seed перемешивания при split (по умолчанию 42). Без env eval считается на train-потоке, как раньше.</li>
+ *   <li><b>JGPT_VAL_FRACTION</b> — доля под hold-out validation (например {@code 0.05}); {@code JGPT_VAL_SEED}
+ *       — seed перемешивания при split (по умолчанию 42). Без env eval считается на train-потоке, как раньше.
+ *       При {@code JGPT_SFT=1} по умолчанию режутся уже упакованные окна; {@code JGPT_SFT_SPLIT=dialog} —
+ *       сначала откладываются диалоги, затем train/val упаковываются отдельно.</li>
  *   <li><b>JGPT_TRAIN_SHUFFLE_SEED</b> — seed {@link com.veles.llm.jgpt.data.DataLoader#shuffle()} на каждой эпохе
  *       (по умолчанию 42); другой seed — другой порядок батчей при том же корпусе.</li>
  *   <li><b>JGPT_IF_STEP_BEYOND_PLAN</b> — если из чекпоинта {@code globalStep} не меньше нового
@@ -179,12 +181,41 @@ public final class AllBooksTrain {
         // --- датасет: все книги в один DataLoader ---
         Files.createDirectories(checkpointsDir);
         DataLoader dataLoader = new DataLoader(tokenizer, llm.maxSeqLen, llm.batchSize);
+        DataLoader trainLoader = dataLoader;
+        DataLoader evalLoader = null;
+        boolean sftDialogHoldout = false;
 
         if (isSftMode()) {
-            int windows = SftCorpus.loadInto(dataLoader, tokenizer, books);
-            log.info("[SFT] окон обучения: {} (~{} батчей/эпоха)", windows, dataLoader.numBatches());
-            if (windows == 0) {
-                throw new IllegalStateException("Нет SFT-окон — проверьте JSONL и шаблон реплик");
+            double valFracEarly = readValFraction();
+            long valSeedEarly = readValSeed();
+            if (SftCorpus.dialogSplitFromEnv() && valFracEarly > 0d) {
+                evalLoader = new DataLoader(tokenizer, llm.maxSeqLen, llm.batchSize);
+                int windows =
+                        SftCorpus.loadDialogHoldout(
+                                dataLoader, evalLoader, tokenizer, books, valFracEarly, valSeedEarly);
+                log.info("[SFT] окон обучения: {} (~{} батчей/эпоха)", windows, dataLoader.numBatches());
+                if (windows == 0) {
+                    throw new IllegalStateException("Нет SFT-окон — проверьте JSONL и шаблон реплик");
+                }
+                sftDialogHoldout = true;
+                trainLoader = dataLoader;
+                if (evalLoader.numSequences() == 0) {
+                    evalLoader = null;
+                    log.info("[DATA] hold-out по диалогам не создан — полный корпус в train");
+                } else {
+                    log.info(
+                            "[DATA] hold-out validation (диалоги): fraction={}, seed={}, train_windows={}, val_windows={}",
+                            String.format(Locale.ROOT, "%.4f", valFracEarly),
+                            valSeedEarly,
+                            trainLoader.numSequences(),
+                            evalLoader.numSequences());
+                }
+            } else {
+                int windows = SftCorpus.loadInto(dataLoader, tokenizer, books);
+                log.info("[SFT] окон обучения: {} (~{} батчей/эпоха)", windows, dataLoader.numBatches());
+                if (windows == 0) {
+                    throw new IllegalStateException("Нет SFT-окон — проверьте JSONL и шаблон реплик");
+                }
             }
         } else {
             int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
@@ -237,9 +268,9 @@ public final class AllBooksTrain {
 
         double valFrac = readValFraction();
         long valSeed = readValSeed();
-        DataLoader trainLoader = dataLoader;
-        DataLoader evalLoader = null;
-        if (valFrac > 0d) {
+        if (sftDialogHoldout) {
+            // train/eval уже заполнены в loadDialogHoldout
+        } else if (valFrac > 0d) {
             DataLoader.TrainValSplit split = DataLoader.splitTrainValidation(dataLoader, valFrac, valSeed);
             trainLoader = split.train;
             evalLoader = split.validation;

@@ -104,7 +104,7 @@ public final class LLMConfig {
     /**
      * Каноническая геометрия AllBooks / InferChat (~34.9M по {@link #estimateParameters()}):
      * vocab 8000, seq 1024, d_model 384, 24 головы (d_head=16), 12 слоёв, SwiGLU d_intermediate=1536.
-     * Пресеты {@code env/*.env} могут сменить только batch/seq/layers через {@code JGPT_*}; без override это и есть train.
+     * Пресеты {@code env/*.env} могут сменить batch/seq/layers/width ({@code JGPT_D_MODEL}/{@code JGPT_NUM_HEADS}/{@code JGPT_D_INTERMEDIATE}) через {@code JGPT_*}; без override это и есть train.
      */
     public static LLMConfig canonical() {
         return new LLMConfig(
@@ -248,6 +248,31 @@ public final class LLMConfig {
                 base.numHeads,
                 base.numLayers,
                 base.dIntermediate,
+                base.batchSize,
+                base.accumulationSteps,
+                base.learningRate,
+                base.epochs);
+    }
+
+    public static LLMConfig applyWidthOverrideFromEnv(LLMConfig base) {
+        int d = readPositiveEnvInt("JGPT_D_MODEL", base.dModel);
+        int h = readPositiveEnvInt("JGPT_NUM_HEADS", base.numHeads);
+        int ff = readPositiveEnvInt("JGPT_D_INTERMEDIATE", base.dIntermediate);
+        if (d == base.dModel && h == base.numHeads && ff == base.dIntermediate) {
+            return base;
+        }
+        if (h < 1 || d % h != 0) {
+            throw new IllegalArgumentException(
+                    "JGPT_D_MODEL=" + d + " must be divisible by JGPT_NUM_HEADS=" + h);
+        }
+        return new LLMConfig(
+                base.name,
+                base.vocabSize,
+                base.maxSeqLen,
+                d,
+                h,
+                base.numLayers,
+                ff,
                 base.batchSize,
                 base.accumulationSteps,
                 base.learningRate,

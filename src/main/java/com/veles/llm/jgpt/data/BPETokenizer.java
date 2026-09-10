@@ -1,5 +1,6 @@
 package com.veles.llm.jgpt.data;
 
+import java.io.EOFException;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -9,6 +10,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,17 +31,21 @@ public final class BPETokenizer {
     public static final String UNK_TOKEN = "<unk>";
     public static final String BOS_TOKEN = "<bos>";
     public static final String EOS_TOKEN = "<eos>";
+    public static final String USER_TOKEN = "<user>";
+    public static final String ASSISTANT_TOKEN = "<assistant>";
+
+    private static final String[] SPECIAL_TOKENS = {
+        PAD_TOKEN, UNK_TOKEN, BOS_TOKEN, EOS_TOKEN, USER_TOKEN, ASSISTANT_TOKEN
+    };
 
     private static final String WORD_END = "</w>";
     /** Разделитель символов в ключе слова (не может совпасть с обычным символом текста). */
     private static final String SYM_SEP = "\u001F";
     /**
-     * Unicode-aware token pattern:
-     * - слова (буквы/цифры/подчёркивание) как цельный токен
-     * - знаки пунктуации отдельно
-     * - пробелы отдельно
+     * Буквы целым куском, цифры отдельно от букв, пунктуация и пробелы отдельно.
+     * {@code 2+2} → {@code 2}, {@code +}, {@code 2}.
      */
-    private static final Pattern WORD_PATTERN = Pattern.compile("(?U)\\w+|[^\\w\\s]|\\s+");
+    private static final Pattern WORD_PATTERN = Pattern.compile("(?U)\\p{L}+|\\d+|[^\\p{L}\\d\\s]|\\s+");
 
     /** С этого числа уникальных словоформ считаем пары и применяем merge параллельно по корпусу. */
     private static final int PARALLEL_CORPUS_MIN = 256;
@@ -60,6 +66,8 @@ public final class BPETokenizer {
     private final List<String[]> merges;
     private final Pattern wordPattern;
     private final int targetVocabSize;
+    /** {@code true} — как старые 37L BPE (весь текст в нижний регистр). */
+    private final boolean lowercase;
 
     /**
      * Индекс слияния по паре «left\u0000right» → rank (0 = наивысший приоритет).
@@ -69,30 +77,66 @@ public final class BPETokenizer {
     private Map<String, Integer> mergeRanks;
 
     public BPETokenizer(int vocabSize) {
+        this(vocabSize, lowercaseFromEnv());
+    }
+
+    BPETokenizer(int vocabSize, boolean lowercase) {
         this.targetVocabSize = vocabSize;
         this.tokenToIdMap = new HashMap<>();
         this.idToTokenMap = new HashMap<>();
         this.merges = new ArrayList<>();
         this.wordPattern = WORD_PATTERN;
         this.mergeRanks = new HashMap<>();
+        this.lowercase = lowercase;
 
         addSpecialToken(PAD_TOKEN, 0);
         addSpecialToken(UNK_TOKEN, 1);
         addSpecialToken(BOS_TOKEN, 2);
         addSpecialToken(EOS_TOKEN, 3);
+        addSpecialToken(USER_TOKEN, 4);
+        addSpecialToken(ASSISTANT_TOKEN, 5);
     }
 
     private BPETokenizer(
             int targetVocabSize,
             Map<String, Integer> stoi,
             Map<Integer, String> itos,
-            List<String[]> merges) {
+            List<String[]> merges,
+            boolean lowercase) {
         this.targetVocabSize = targetVocabSize;
         this.tokenToIdMap = new HashMap<>(stoi);
         this.idToTokenMap = new HashMap<>(itos);
         this.merges = new ArrayList<>(merges);
         this.wordPattern = WORD_PATTERN;
         this.mergeRanks = buildMergeRanks(this.merges);
+        this.lowercase = lowercase;
+    }
+
+    static boolean lowercaseFromEnv() {
+        String e = System.getenv("JGPT_BPE_LOWERCASE");
+        if (e == null || e.isBlank()) {
+            return true;
+        }
+        String t = e.trim();
+        return "1".equals(t) || "true".equalsIgnoreCase(t);
+    }
+
+    public boolean lowercase() {
+        return lowercase;
+    }
+
+    public boolean hasChatRoleTokens() {
+        return tokenToIdMap.containsKey(USER_TOKEN) && tokenToIdMap.containsKey(ASSISTANT_TOKEN);
+    }
+
+    public int userId() {
+        Integer id = tokenToIdMap.get(USER_TOKEN);
+        return id != null ? id : tokenToIdMap.get(UNK_TOKEN);
+    }
+
+    public int assistantId() {
+        Integer id = tokenToIdMap.get(ASSISTANT_TOKEN);
+        return id != null ? id : tokenToIdMap.get(UNK_TOKEN);
     }
 
     private static Map<String, Integer> buildMergeRanks(List<String[]> merges) {
@@ -118,22 +162,31 @@ public final class BPETokenizer {
     }
 
     public static BPETokenizer train(List<String> texts, int vocabSize) {
-        BPETokenizer tokenizer = new BPETokenizer(vocabSize);
+        return train(texts, vocabSize, lowercaseFromEnv());
+    }
+
+    public static BPETokenizer train(List<String> texts, int vocabSize, boolean lowercase) {
+        BPETokenizer tokenizer = new BPETokenizer(vocabSize, lowercase);
 
         Map<String, Integer> wordFreqs = new HashMap<>();
         for (String text : texts) {
-            String normalized = text.toLowerCase();
-            String[] words =
-                    tokenizer.wordPattern.matcher(normalized).results()
-                            .map(MatchResult::group)
-                            .toArray(String[]::new);
-
-            for (String word : words) {
-                if (word.isEmpty() || word.isBlank()) {
+            String normalized = tokenizer.lowercase ? text.toLowerCase(Locale.ROOT) : text;
+            for (String piece : tokenizer.splitSpecialAndText(normalized)) {
+                if (isSpecialToken(piece)) {
                     continue;
                 }
-                String wordKey = charsToWordKey(word);
-                wordFreqs.merge(wordKey, 1, Integer::sum);
+                String[] words =
+                        tokenizer.wordPattern.matcher(piece).results()
+                                .map(MatchResult::group)
+                                .toArray(String[]::new);
+
+                for (String word : words) {
+                    if (word.isEmpty() || word.isBlank()) {
+                        continue;
+                    }
+                    String wordKey = charsToWordKey(word);
+                    wordFreqs.merge(wordKey, 1, Integer::sum);
+                }
             }
         }
 
@@ -256,49 +309,99 @@ public final class BPETokenizer {
     }
 
     public int[] encode(String text, boolean addBos, boolean addEos) {
-        String normalized = text.toLowerCase();
-        String[] words =
-                wordPattern.matcher(normalized).results()
-                        .map(m -> m.group())
-                        .toArray(String[]::new);
-
         List<Integer> tokens = new ArrayList<>();
-
         if (addBos) {
             tokens.add(tokenToIdMap.get(BOS_TOKEN));
         }
-
-        for (String word : words) {
-            if (word.isEmpty()) {
-                continue;
-            }
-            List<String> wordTokens = new ArrayList<>();
-            for (int i = 0; i < word.length(); i++) {
-                wordTokens.add(String.valueOf(word.charAt(i)));
-            }
-            wordTokens.add(WORD_END);
-
-            applyMerges(wordTokens);
-
-            for (String token : wordTokens) {
-                Integer id = tokenToIdMap.get(token);
-                if (id == null) {
-                    tokens.add(tokenToIdMap.get(UNK_TOKEN));
-                } else {
-                    tokens.add(id);
+        if (text != null && !text.isEmpty()) {
+            for (String piece : splitSpecialAndText(text)) {
+                if (isSpecialToken(piece) && tokenToIdMap.containsKey(piece)) {
+                    tokens.add(tokenToIdMap.get(piece));
+                    continue;
+                }
+                String normalized = lowercase ? piece.toLowerCase(Locale.ROOT) : piece;
+                String[] words =
+                        wordPattern.matcher(normalized).results()
+                                .map(m -> m.group())
+                                .toArray(String[]::new);
+                for (String word : words) {
+                    if (word.isEmpty()) {
+                        continue;
+                    }
+                    List<String> wordTokens = new ArrayList<>();
+                    for (int i = 0; i < word.length(); i++) {
+                        wordTokens.add(String.valueOf(word.charAt(i)));
+                    }
+                    wordTokens.add(WORD_END);
+                    applyMerges(wordTokens);
+                    for (String token : wordTokens) {
+                        Integer id = tokenToIdMap.get(token);
+                        tokens.add(id != null ? id : tokenToIdMap.get(UNK_TOKEN));
+                    }
                 }
             }
         }
-
         if (addEos) {
             tokens.add(tokenToIdMap.get(EOS_TOKEN));
         }
-
         int[] result = new int[tokens.size()];
         for (int i = 0; i < tokens.size(); i++) {
             result[i] = tokens.get(i);
         }
         return result;
+    }
+
+    private List<String> splitSpecialAndText(String text) {
+        List<String> out = new ArrayList<>();
+        int i = 0;
+        while (i < text.length()) {
+            String spec = specialAt(text, i);
+            if (spec != null) {
+                out.add(spec);
+                i += spec.length();
+                continue;
+            }
+            int next = nextSpecialIndex(text, i);
+            out.add(text.substring(i, next));
+            i = next;
+        }
+        return out;
+    }
+
+    private String specialAt(String text, int i) {
+        String best = null;
+        for (String spec : SPECIAL_TOKENS) {
+            if (!tokenToIdMap.containsKey(spec)) {
+                continue;
+            }
+            if (text.startsWith(spec, i) && (best == null || spec.length() > best.length())) {
+                best = spec;
+            }
+        }
+        return best;
+    }
+
+    private int nextSpecialIndex(String text, int from) {
+        int best = text.length();
+        for (String spec : SPECIAL_TOKENS) {
+            if (!tokenToIdMap.containsKey(spec)) {
+                continue;
+            }
+            int at = text.indexOf(spec, from);
+            if (at >= 0 && at < best) {
+                best = at;
+            }
+        }
+        return best;
+    }
+
+    private static boolean isSpecialToken(String piece) {
+        for (String spec : SPECIAL_TOKENS) {
+            if (spec.equals(piece)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Применяет merge в том же порядке, что при обучении. */
@@ -332,7 +435,11 @@ public final class BPETokenizer {
                 continue;
             }
 
-            if (token.equals(PAD_TOKEN) || token.equals(BOS_TOKEN) || token.equals(EOS_TOKEN)) {
+            if (token.equals(PAD_TOKEN)
+                    || token.equals(BOS_TOKEN)
+                    || token.equals(EOS_TOKEN)
+                    || token.equals(USER_TOKEN)
+                    || token.equals(ASSISTANT_TOKEN)) {
                 continue;
             }
             if (token.equals(UNK_TOKEN)) {
@@ -365,6 +472,7 @@ public final class BPETokenizer {
             out.writeObject(idToTokenMap);
             out.writeObject(merges);
             out.writeInt(targetVocabSize);
+            out.writeBoolean(lowercase);
         }
     }
 
@@ -377,7 +485,13 @@ public final class BPETokenizer {
             @SuppressWarnings("unchecked")
             List<String[]> mergeList = (List<String[]>) in.readObject();
             int savedTarget = in.readInt();
-            return new BPETokenizer(savedTarget, stoi, itos, mergeList);
+            boolean savedLower = true;
+            try {
+                savedLower = in.readBoolean();
+            } catch (EOFException _) {
+                savedLower = true;
+            }
+            return new BPETokenizer(savedTarget, stoi, itos, mergeList, savedLower);
         }
     }
 

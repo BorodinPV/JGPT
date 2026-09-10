@@ -137,7 +137,7 @@ public final class InferChat {
                         LlmTextGeneration.generateText(
                                 model,
                                 tokenizer,
-                                applySftChatTemplate(singlePrompt),
+                                applySftChatTemplate(tokenizer, singlePrompt),
                                 maxNewTokens,
                                 sampling);
                 log.info("{}", out);
@@ -179,7 +179,7 @@ public final class InferChat {
                             LlmTextGeneration.generateText(
                                     model,
                                     tokenizer,
-                                    applySftChatTemplate(trimmed),
+                                    applySftChatTemplate(tokenizer, trimmed),
                                     maxNewTokens,
                                     sampling);
                     console.printf("%s%n", out);
@@ -202,15 +202,16 @@ public final class InferChat {
         return SftExampleEncoder.chatTemplateFromEnv();
     }
 
-    static String applySftChatTemplate(String prompt) {
-        return SftExampleEncoder.applyChatTemplateIfEnabled(prompt);
+    static String applySftChatTemplate(BPETokenizer tokenizer, String prompt) {
+        return SftExampleEncoder.applyChatTemplateIfEnabled(tokenizer, prompt);
     }
 
     private static LLMConfig geometryFromEnvAndOverrides(int seqLenOverride, int layersOverride) {
         LLMConfig base =
-                LLMConfig.applyPresetNumLayersOverrideFromEnv(
-                        LLMConfig.applyVocabSizeOverrideFromEnv(
-                                LLMConfig.applySeqLenOverrideFromEnv(LLMConfig.canonical())));
+                LLMConfig.applyWidthOverrideFromEnv(
+                        LLMConfig.applyPresetNumLayersOverrideFromEnv(
+                                LLMConfig.applyVocabSizeOverrideFromEnv(
+                                        LLMConfig.applySeqLenOverrideFromEnv(LLMConfig.canonical()))));
         int seq = seqLenOverride > 0 ? seqLenOverride : base.maxSeqLen;
         int layers = layersOverride > 0 ? layersOverride : base.numLayers;
         if (seq == base.maxSeqLen && layers == base.numLayers) {

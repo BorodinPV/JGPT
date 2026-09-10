@@ -7,9 +7,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Random;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,8 +24,8 @@ public final class SftCorpus {
     private SftCorpus() {}
 
     /**
-     * {@code JGPT_SFT_SPLIT=dialog} — hold-out по диалогам (сначала split, потом pack). Иначе —
-     * текущий split по уже упакованным окнам.
+     * {@code JGPT_SFT_SPLIT=dialog} — hold-out по уникальному user-тексту (сначала split, потом pack).
+     * Иначе — split по уже упакованным окнам.
      */
     public static boolean dialogSplitFromEnv() {
         String e = System.getenv("JGPT_SFT_SPLIT");
@@ -59,9 +61,10 @@ public final class SftCorpus {
             EncodeFileResult file = encodeFile(tokenizer, p);
             parsed += file.ok;
             skipped += file.skipped;
+            List<SftExampleEncoder.Encoded> encoded = encodedOf(file.labeled);
+            file.labeled.clear();
             List<SftWindowPacker.Window> windows =
-                    SftWindowPacker.pack(file.encoded, loader.getMaxSeqLen(), tokenizer.padId());
-            file.encoded.clear();
+                    SftWindowPacker.pack(encoded, loader.getMaxSeqLen(), tokenizer.padId());
             int fileWindows = addWindows(loader, windows);
             skipped += windows.size() - fileWindows;
             withLoss += fileWindows;
@@ -76,8 +79,9 @@ public final class SftCorpus {
     }
 
     /**
-     * Кодирует все диалоги, детерминированно откладывает долю в val, упаковывает train и val
-     * отдельно (диалоги из val не попадают в train-окна).
+     * Кодирует все диалоги, детерминированно откладывает долю <em>уникальных</em> user-текстов в val
+     * (копии {@code --repeat} и одинаковые формулировки остаются в одном сплите), упаковывает train и
+     * val отдельно.
      *
      * @return число train-окон с лоссом
      */
@@ -89,19 +93,20 @@ public final class SftCorpus {
             double valFrac,
             long seed)
             throws IOException {
-        List<SftExampleEncoder.Encoded> all = new ArrayList<>();
+        List<LabeledExample> all = new ArrayList<>();
         int parsed = 0;
         int skipped = 0;
         for (Path p : jsonlFiles) {
             EncodeFileResult file = encodeFile(tokenizer, p);
             parsed += file.ok;
             skipped += file.skipped;
-            all.addAll(file.encoded);
+            all.addAll(file.labeled);
             log.info("[SFT]   {} → {} диалогов", p.getFileName(), file.ok);
         }
         List<SftExampleEncoder.Encoded> trainEx = new ArrayList<>();
         List<SftExampleEncoder.Encoded> valEx = new ArrayList<>();
-        splitShuffled(all, valFrac, seed, trainEx, valEx);
+        int unique = countUniqueUserKeys(all);
+        int uniqueVal = splitByUniqueUserKey(all, valFrac, seed, trainEx, valEx);
         all.clear();
         int pad = tokenizer.padId();
         int maxSeq = train.getMaxSeqLen();
@@ -118,9 +123,10 @@ public final class SftCorpus {
                     bs);
             int withLoss = addWindows(train, trainWindows) + addWindows(train, valWindows);
             log.info(
-                    "[SFT] split=dialog seed={} диалогов={} train_окон={} val_окон=0 (отключён) skipped={}",
+                    "[SFT] split=dialog (по уникальному user) seed={} диалогов={} unique={} train_окон={} val_окон=0 (отключён) skipped={}",
                     seed,
                     parsed,
+                    unique,
                     withLoss,
                     skipped);
             return withLoss;
@@ -129,10 +135,12 @@ public final class SftCorpus {
         int valWindowsN = addWindows(eval, valWindows);
         skipped += (trainWindows.size() - trainWindowsN) + (valWindows.size() - valWindowsN);
         log.info(
-                "[SFT] split=dialog fraction={} seed={} диалогов={} train_окон={} val_окон={} skipped={}",
-                String.format(Locale.ROOT, "%.4f", valFrac),
+                "[SFT] split=dialog (по уникальному user) fraction={} seed={} диалогов={} unique={}/val_unique={} train_окон={} val_окон={} skipped={}",
+                String.format(java.util.Locale.ROOT, "%.4f", valFrac),
                 seed,
                 parsed,
+                unique,
+                uniqueVal,
                 trainWindowsN,
                 valWindowsN,
                 skipped);
@@ -176,6 +184,96 @@ public final class SftCorpus {
         }
     }
 
+    /**
+     * Hold-out по уникальному тексту первой реплики user: все копии одного вопроса в одном сплите.
+     *
+     * @return число уникальных user-ключей, ушедших в val (0 если hold-out выключен)
+     */
+    static int splitByUniqueUserKey(
+            List<LabeledExample> all,
+            double valFrac,
+            long seed,
+            List<SftExampleEncoder.Encoded> trainOut,
+            List<SftExampleEncoder.Encoded> valOut) {
+        trainOut.clear();
+        valOut.clear();
+        if (all == null || all.isEmpty()) {
+            return 0;
+        }
+        if (all.size() == 1 || valFrac <= 0d) {
+            for (LabeledExample e : all) {
+                trainOut.add(e.encoded);
+            }
+            return 0;
+        }
+        List<String> unique = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (LabeledExample e : all) {
+            if (seen.add(userKeyOf(e))) {
+                unique.add(userKeyOf(e));
+            }
+        }
+        if (unique.size() <= 1) {
+            for (LabeledExample e : all) {
+                trainOut.add(e.encoded);
+            }
+            return 0;
+        }
+        Collections.shuffle(unique, new Random(seed));
+        int nVal = (int) Math.round(unique.size() * valFrac);
+        nVal = Math.min(nVal, unique.size() - 1);
+        if (nVal < 1) {
+            for (LabeledExample e : all) {
+                trainOut.add(e.encoded);
+            }
+            return 0;
+        }
+        Set<String> valKeys = new HashSet<>(unique.subList(0, nVal));
+        for (LabeledExample e : all) {
+            if (valKeys.contains(userKeyOf(e))) {
+                valOut.add(e.encoded);
+            } else {
+                trainOut.add(e.encoded);
+            }
+        }
+        return nVal;
+    }
+
+    static String firstUserKey(List<SftTurn> turns) {
+        if (turns == null) {
+            return "";
+        }
+        for (SftTurn t : turns) {
+            if (t != null && t.role == SftTurn.Role.USER && t.content != null) {
+                return t.content.trim();
+            }
+        }
+        return "";
+    }
+
+    static int countUniqueUserKeys(List<LabeledExample> all) {
+        Set<String> seen = new HashSet<>();
+        if (all == null) {
+            return 0;
+        }
+        for (LabeledExample e : all) {
+            seen.add(userKeyOf(e));
+        }
+        return seen.size();
+    }
+
+    private static String userKeyOf(LabeledExample e) {
+        return e == null || e.userKey == null ? "" : e.userKey;
+    }
+
+    private static List<SftExampleEncoder.Encoded> encodedOf(List<LabeledExample> labeled) {
+        List<SftExampleEncoder.Encoded> out = new ArrayList<>(labeled.size());
+        for (LabeledExample e : labeled) {
+            out.add(e.encoded);
+        }
+        return out;
+    }
+
     private static EncodeFileResult encodeFile(BPETokenizer tokenizer, Path p) throws IOException {
         EncodeFileResult r = new EncodeFileResult();
         try (BufferedReader br = Files.newBufferedReader(p, StandardCharsets.UTF_8)) {
@@ -193,7 +291,7 @@ public final class SftCorpus {
                     r.skipped++;
                     continue;
                 }
-                r.encoded.add(ex);
+                r.labeled.add(new LabeledExample(firstUserKey(turns), ex));
                 r.ok++;
             }
         }
@@ -231,8 +329,18 @@ public final class SftCorpus {
         return false;
     }
 
+    static final class LabeledExample {
+        final String userKey;
+        final SftExampleEncoder.Encoded encoded;
+
+        LabeledExample(String userKey, SftExampleEncoder.Encoded encoded) {
+            this.userKey = userKey;
+            this.encoded = encoded;
+        }
+    }
+
     private static final class EncodeFileResult {
-        final List<SftExampleEncoder.Encoded> encoded = new ArrayList<>();
+        final List<LabeledExample> labeled = new ArrayList<>();
         int ok;
         int skipped;
     }

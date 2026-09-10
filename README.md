@@ -22,6 +22,13 @@ GPT-модель (decoder-only transformer) с **полным обучением
 
 Данные: `.jsonl` в `data/sft/raw`. Resume: тот же скрипт (подхватит `checkpoint_final.bin`).
 
+**С нуля, широкая 28L (~134M):** pretrain на `.txt`, потом SFT. Новый токенизатор (без lowercasing). Не трогает `checkpoints/sft_37L_*`.
+
+```powershell
+.\scripts\windows\jgpt-train-28L-wide.cmd --no-build
+.\scripts\windows\jgpt-train-28L-wide-sft.cmd --no-build
+```
+
 **Книги + авто-пресеты** (Linux, `LLMConfig.canonical()` ~35M):
 
 ```bash

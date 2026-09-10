@@ -6,6 +6,16 @@
 
 Скрипты лежат в `scripts/linux/` и `scripts/windows/` ([карта](../scripts/README.md)). Поток 37L SFT: [data-flow-37L-sft.puml](data-flow-37L-sft.puml).
 
+**28L-wide (дорогой путь, ~134M):** pretrain на `.txt` → SFT. Геометрия `d_model=512`, 32 головы (`d_head=16`), 28 слоёв, seq 1024, BPE без lowercasing и с `<user>`/`<assistant>`. Чекпоинты **не** пересекаются с 37L и с 20L.
+
+```powershell
+.\scripts\windows\jgpt-train-28L-wide.cmd --no-build
+.\scripts\windows\jgpt-train-28L-wide-sft.cmd --no-build
+.\scripts\windows\jgpt-chat-28L-wide.cmd
+```
+
+Стартовый корпус: `python scripts/fetch-ru-pretrain.py` → `data/books/pretrain_txt` (дамп ruwiki). Классика: `--source books`. Полный lib.ru: `scripts/linux/download-lib-ru-library.sh`.
+
 **37L SFT ~100M** (JSONL, `env/37L-sft-100M.env`, чекпоинты `checkpoints/sft_37L_16k_2048/`):
 
 ```powershell
@@ -229,8 +239,11 @@ JGPT/
 │   ├── windows/                ← ps1: 37L-sft, build-cuda.ps1
 │   └── README.md
 ├── data/books/                 ← .txt для jgpt-smart / 24L / 32L
+├── data/books/pretrain_txt/    ← стартовый корпус 20L-wide
 ├── data/sft/raw/               ← .jsonl для 37L-sft
 ├── checkpoints/all_books/      ← книги
+├── checkpoints/wide_20L_16k_1024/ ← 20L-wide pretrain
+├── checkpoints/wide_20L_sft/   ← 20L-wide SFT
 ├── checkpoints/sft_37L_16k_2048/
 ├── docs/dashboard.html         ← веб-дашборд (state/stats.json)
 ├── docs/data-flow-37L-sft.puml ← поток данных 37L SFT

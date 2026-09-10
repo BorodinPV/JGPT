@@ -171,4 +171,78 @@ class SftPackerTest {
         SftCorpus.splitShuffled(items, 0.05, 7L, trainC, valC);
         assertTrue(!valA.equals(valC));
     }
+
+    @Test
+    void uniqueUserSplitKeepsRepeatCopiesTogether() {
+        SftExampleEncoder.Encoded dummy =
+                new SftExampleEncoder.Encoded(new int[] {2, 4, 5, 3}, new boolean[] {false, false, true, true});
+        List<SftCorpus.LabeledExample> all = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            all.add(new SftCorpus.LabeledExample("столица франции", dummy));
+        }
+        all.add(new SftCorpus.LabeledExample("2+2", dummy));
+        all.add(new SftCorpus.LabeledExample("2+2", dummy));
+        all.add(new SftCorpus.LabeledExample("кто ты", dummy));
+        all.add(new SftCorpus.LabeledExample("кто ты", dummy));
+        all.add(new SftCorpus.LabeledExample("небо голубое", dummy));
+        all.add(new SftCorpus.LabeledExample("небо голубое", dummy));
+        List<SftExampleEncoder.Encoded> train = new ArrayList<>();
+        List<SftExampleEncoder.Encoded> val = new ArrayList<>();
+        int uniqueVal = SftCorpus.splitByUniqueUserKey(all, 0.25, 42L, train, val);
+        assertEquals(1, uniqueVal);
+        assertEquals(all.size(), train.size() + val.size());
+        assertTrue(val.size() == 2 || val.size() == 4);
+        List<SftExampleEncoder.Encoded> train2 = new ArrayList<>();
+        List<SftExampleEncoder.Encoded> val2 = new ArrayList<>();
+        SftCorpus.splitByUniqueUserKey(all, 0.25, 42L, train2, val2);
+        assertEquals(val.size(), val2.size());
+        assertEquals(train.size(), train2.size());
+    }
+
+    @Test
+    void packOnePerWindowKeepsDialogsApart() {
+        BPETokenizer tok = BPETokenizer.train(List.of("привет здравствуй пользователь ассистент да нет"), 80);
+        SftExampleEncoder.Encoded a =
+                SftExampleEncoder.encode(
+                        tok,
+                        List.of(
+                                new SftTurn(SftTurn.Role.USER, "привет"),
+                                new SftTurn(SftTurn.Role.ASSISTANT, "да")));
+        SftExampleEncoder.Encoded b =
+                SftExampleEncoder.encode(
+                        tok,
+                        List.of(
+                                new SftTurn(SftTurn.Role.USER, "нет"),
+                                new SftTurn(SftTurn.Role.ASSISTANT, "здравствуй")));
+        int maxSeq = a.tokens.length + b.tokens.length + 8;
+        List<SftWindowPacker.Window> packed = SftWindowPacker.pack(List.of(a, b), maxSeq, tok.padId());
+        assertEquals(1, packed.size());
+        List<SftWindowPacker.Window> ones = SftWindowPacker.packOnePerWindow(List.of(a, b), maxSeq, tok.padId());
+        assertEquals(2, ones.size());
+    }
+
+    @Test
+    void roleTokensAndCasePreserved() {
+        BPETokenizer tok = BPETokenizer.train(List.of("Париж столица Франции 2+2=4"), 200, false);
+        assertTrue(tok.hasChatRoleTokens());
+        int[] ids = tok.encode(BPETokenizer.USER_TOKEN + "Париж" + BPETokenizer.ASSISTANT_TOKEN, false, false);
+        assertEquals(tok.userId(), ids[0]);
+        assertEquals(tok.assistantId(), ids[ids.length - 1]);
+        SftExampleEncoder.Encoded ex =
+                SftExampleEncoder.encode(
+                        tok,
+                        List.of(
+                                new SftTurn(SftTurn.Role.USER, "столица Франции"),
+                                new SftTurn(SftTurn.Role.ASSISTANT, "Париж")));
+        assertEquals(tok.bosId(), ex.tokens[0]);
+        assertEquals(tok.userId(), ex.tokens[1]);
+        boolean sawAsstTok = false;
+        for (int id : ex.tokens) {
+            if (id == tok.assistantId()) {
+                sawAsstTok = true;
+                break;
+            }
+        }
+        assertTrue(sawAsstTok);
+    }
 }

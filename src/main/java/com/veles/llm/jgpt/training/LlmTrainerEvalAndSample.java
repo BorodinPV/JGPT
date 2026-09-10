@@ -58,7 +58,9 @@ final class LlmTrainerEvalAndSample {
         if (t.globalStep % t.config.interactiveSampleEverySteps != 0) {
             return;
         }
-        String prompt = SftExampleEncoder.applyChatTemplateIfEnabled(pickSamplePrompt(t, epochOneBased));
+        String prompt =
+                SftExampleEncoder.applyChatTemplateIfEnabled(
+                        t.dataLoader.getTokenizer(), pickSamplePrompt(t, epochOneBased));
         log.info(
                 "{} промежуточная генерация: эпоха {}/{}, шаг {}",
                 LogFmt.badge(SAMPLE_BADGE),

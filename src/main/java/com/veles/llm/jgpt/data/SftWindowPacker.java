@@ -16,6 +16,9 @@ public final class SftWindowPacker {
     private SftWindowPacker() {}
 
     public static List<Window> pack(List<SftExampleEncoder.Encoded> examples, int maxSeqLen, int padId) {
+        if (onePerWindowFromEnv()) {
+            return packOnePerWindow(examples, maxSeqLen, padId);
+        }
         if (maxSeqLen < 1) {
             throw new IllegalArgumentException("maxSeqLen");
         }
@@ -49,6 +52,43 @@ public final class SftWindowPacker {
         }
         if (acc > 0) {
             out.add(flush(accTok, accSup, acc, winLen, maxSeqLen, padId));
+        }
+        return out;
+    }
+
+    /** {@code JGPT_SFT_PACK=one} — один диалог на окно (без склейки чужих Q&A). */
+    public static boolean onePerWindowFromEnv() {
+        String e = System.getenv("JGPT_SFT_PACK");
+        if (e == null || e.isBlank()) {
+            return false;
+        }
+        String t = e.trim();
+        return "one".equalsIgnoreCase(t) || "1".equals(t) || "true".equalsIgnoreCase(t);
+    }
+
+    public static List<Window> packOnePerWindow(
+            List<SftExampleEncoder.Encoded> examples, int maxSeqLen, int padId) {
+        if (maxSeqLen < 1) {
+            throw new IllegalArgumentException("maxSeqLen");
+        }
+        int winLen = maxSeqLen + 1;
+        List<Window> out = new ArrayList<>();
+        for (SftExampleEncoder.Encoded raw : examples) {
+            if (raw == null) {
+                continue;
+            }
+            SftExampleEncoder.Encoded ex = raw;
+            if (ex.tokens.length > winLen) {
+                ex = SftExampleEncoder.truncateTail(ex, winLen);
+                if (ex == null) {
+                    continue;
+                }
+            }
+            int[] accTok = new int[winLen];
+            boolean[] accSup = new boolean[winLen];
+            System.arraycopy(ex.tokens, 0, accTok, 0, ex.tokens.length);
+            System.arraycopy(ex.supervised, 0, accSup, 0, ex.tokens.length);
+            out.add(flush(accTok, accSup, ex.tokens.length, winLen, maxSeqLen, padId));
         }
         return out;
     }

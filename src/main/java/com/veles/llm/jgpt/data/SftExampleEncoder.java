@@ -51,8 +51,22 @@ public final class SftExampleEncoder {
     }
 
     public static String applyChatTemplateIfEnabled(String prompt) {
+        return applyChatTemplateIfEnabled(null, prompt);
+    }
+
+    public static String applyChatTemplateIfEnabled(BPETokenizer tokenizer, String prompt) {
         if (prompt == null || !chatTemplateFromEnv()) {
             return prompt;
+        }
+        if (tokenizer != null && tokenizer.hasChatRoleTokens()) {
+            String p = prompt.trim();
+            if (p.startsWith(BPETokenizer.USER_TOKEN)) {
+                if (!p.contains(BPETokenizer.ASSISTANT_TOKEN)) {
+                    return p + BPETokenizer.ASSISTANT_TOKEN;
+                }
+                return p;
+            }
+            return BPETokenizer.USER_TOKEN + p + BPETokenizer.ASSISTANT_TOKEN;
         }
         return wrapUserChatPrompt(prompt);
     }
@@ -60,6 +74,9 @@ public final class SftExampleEncoder {
     public static Encoded encode(BPETokenizer tokenizer, List<SftTurn> turns) {
         if (turns == null || turns.size() < 2) {
             return null;
+        }
+        if (tokenizer.hasChatRoleTokens()) {
+            return encodeWithRoleTokens(tokenizer, turns);
         }
         List<Integer> ids = new ArrayList<>();
         List<Boolean> sup = new ArrayList<>();
@@ -83,6 +100,32 @@ public final class SftExampleEncoder {
         }
         ids.add(tokenizer.eosId());
         sup.add(lastAssistant);
+        return toEncoded(ids, sup);
+    }
+
+    private static Encoded encodeWithRoleTokens(BPETokenizer tokenizer, List<SftTurn> turns) {
+        List<Integer> ids = new ArrayList<>();
+        List<Boolean> sup = new ArrayList<>();
+        ids.add(tokenizer.bosId());
+        sup.add(Boolean.FALSE);
+        boolean lastAssistant = false;
+        for (SftTurn turn : turns) {
+            boolean assistant = turn.role == SftTurn.Role.ASSISTANT;
+            lastAssistant = assistant;
+            ids.add(assistant ? tokenizer.assistantId() : tokenizer.userId());
+            sup.add(assistant);
+            int[] piece = tokenizer.encode(turn.content, false, false);
+            for (int id : piece) {
+                ids.add(id);
+                sup.add(assistant);
+            }
+        }
+        ids.add(tokenizer.eosId());
+        sup.add(lastAssistant);
+        return toEncoded(ids, sup);
+    }
+
+    private static Encoded toEncoded(List<Integer> ids, List<Boolean> sup) {
         if (ids.size() < 3) {
             return null;
         }

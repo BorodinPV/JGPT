@@ -118,17 +118,18 @@ public final class AllBooksTrain {
         }
         log.info("[DATA] {} найдено: {}", sft ? "jsonl" : "книг", books.size());
         if (sft) {
-            log.info("[SFT] лосс только на ответах ассистента, шаблон Пользователь:/Ассистент:");
+            log.info("[SFT] лосс только на ответах ассистента (роли <user>/<assistant> если есть в BPE)");
         }
 
         LLMConfig llm = LLMConfig.applyLearningRateOverrideFromEnv(
                 LLMConfig.applyAccumulationStepsOverrideFromEnv(
                         LLMConfig.applyEpochsOverrideFromEnv(
-                                LLMConfig.applyPresetNumLayersOverrideFromEnv(
-                                        LLMConfig.applyVocabSizeOverrideFromEnv(
-                                                LLMConfig.applySeqLenOverrideFromEnv(
-                                                        LLMConfig.applyBatchSizeOverrideFromEnv(
-                                                                LLMConfig.canonical())))))));
+                                LLMConfig.applyWidthOverrideFromEnv(
+                                        LLMConfig.applyPresetNumLayersOverrideFromEnv(
+                                                LLMConfig.applyVocabSizeOverrideFromEnv(
+                                                        LLMConfig.applySeqLenOverrideFromEnv(
+                                                                LLMConfig.applyBatchSizeOverrideFromEnv(
+                                                                        LLMConfig.canonical()))))))));
         runCore(root, books, llm);
     }
 
@@ -176,7 +177,11 @@ public final class AllBooksTrain {
                     tokenizerPath.getFileName(), tokenizer.getVocabSize());
         }
         int vocabSize = tokenizer.getVocabSize();
-        log.info("[DATA] размер словаря: {}", vocabSize);
+        log.info(
+                "[DATA] размер словаря: {}  lowercase={}  role_tokens={}",
+                vocabSize,
+                tokenizer.lowercase(),
+                tokenizer.hasChatRoleTokens());
 
         // --- датасет: все книги в один DataLoader ---
         Files.createDirectories(checkpointsDir);

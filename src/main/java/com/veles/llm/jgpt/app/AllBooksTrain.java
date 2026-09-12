@@ -10,6 +10,7 @@ import com.veles.llm.jgpt.training.LLMConfig;
 import com.veles.llm.jgpt.training.LLMTrainer;
 import com.veles.llm.jgpt.training.TrainingConfig;
 import com.veles.llm.jgpt.training.TrainingPlanExhaustedException;
+import com.veles.llm.jgpt.training.TrainingStopFile;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -20,6 +21,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -86,6 +88,7 @@ public final class AllBooksTrain {
 
     public static void main(String[] args) throws Exception {
         TensorOpsGPU.requireCuda("AllBooksTrain");
+        TrainingStopFile.clearStaleAtStartup();
 
         String booRoot = ".";
         String dataDirArg = null;
@@ -330,19 +333,28 @@ public final class AllBooksTrain {
                     usedMb, totalMb, totalMb - usedMb);
         }
 
-        // Graceful shutdown: при Ctrl+C сохранить финальный checkpoint.
+        AtomicBoolean exitCheckpointDone = new AtomicBoolean();
+        TrainingStopFile.installOsInterrupt(trainer::requestSupervisedStop);
+        log.info(
+                "[STOP] мягкая остановка: создайте файл {} (Windows: .\\scripts\\windows\\jgpt-stop-train.cmd)",
+                TrainingStopFile.resolveFromEnv());
+
+        // Backup: JVM shutdown (не срабатывает, если Windows убил процесс через «завершить пакет?»).
         // ВАЖНО: если прогресса нет (OOM при первом шаге), НЕ перезаписываем checkpoint_final.bin
         // чтобы не затереть эпоху из предыдущего запуска.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (!exitCheckpointDone.compareAndSet(false, true)) {
+                return;
+            }
             log.info("[SHUTDOWN] Получен сигнал остановки — сохраняем checkpoint...");
+            System.out.println("[SHUTDOWN] Получен сигнал остановки — сохраняем checkpoint...");
+            System.out.flush();
             try {
                 if (trainer.getGlobalStep() > trainer.getShutdownProgressBaselineStep()) {
                     trainer.saveCheckpoint("final");
-                    log.info(
-                            "[SHUTDOWN] checkpoint сохранён. Возобновление: "
-                                    + "./scripts/linux/jgpt-train-37L-sft.sh или "
-                                    + ".\\scripts\\windows\\jgpt-train-37L-sft.ps1 (SFT); "
-                                    + "книги Linux: ./scripts/linux/jgpt-smart.sh");
+                    log.info("[SHUTDOWN] checkpoint сохранён. Возобновление: тот же скрипт без --fresh");
+                    System.out.println("[SHUTDOWN] checkpoint сохранён");
+                    System.out.flush();
                 } else {
                     trainer.saveCheckpoint("emergency");
                     log.warn(
@@ -380,9 +392,17 @@ public final class AllBooksTrain {
                 System.exit(2);
             }
 
-            trainer.saveCheckpoint("final");
-            log.info("[ALL-BOOKS] обучение завершено. Лучший eval loss: {}",
-                    String.format("%.4f", trainer.getBestLoss()));
+            if (exitCheckpointDone.compareAndSet(false, true)) {
+                trainer.saveCheckpoint("final");
+            }
+            if (trainer.exitedDueToSupervisorRequest()) {
+                log.info(
+                        "[SHUTDOWN] checkpoint сохранён. Возобновление: тот же скрипт без --fresh. Лучший eval loss: {}",
+                        String.format("%.4f", trainer.getBestLoss()));
+            } else {
+                log.info("[ALL-BOOKS] обучение завершено. Лучший eval loss: {}",
+                        String.format("%.4f", trainer.getBestLoss()));
+            }
         } finally {
             if (TensorOpsGPU.isGpuAvailable()) {
                 TensorOpsGPU.synchronizeStream();

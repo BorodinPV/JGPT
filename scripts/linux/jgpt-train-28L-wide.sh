@@ -37,6 +37,8 @@ Options:
   --no-build        не пересобирать CUDA
   -h, --help        эта справка
 
+Stop: touch state/STOP  (then wait for checkpoint_final; Ctrl+C is OK on Linux)
+
 Примеры:
   ./scripts/linux/jgpt-train-28L-wide.sh --no-build
 EOF

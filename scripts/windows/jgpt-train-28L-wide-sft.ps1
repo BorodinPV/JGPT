@@ -44,6 +44,9 @@ Options:
   --no-build        skip CUDA rebuild (need build\jgpt_cuda.dll)
   -h, --help        this help
 
+Stop (do NOT Ctrl+C):
+  .\scripts\windows\jgpt-stop-train.cmd
+
 Examples:
   .\scripts\windows\jgpt-train-28L-wide-sft.cmd --no-build
 "@
@@ -367,6 +370,7 @@ Write-Host " ckpt=$CkptDir"
 Write-Host " tok=$TokenizerFile"
 Write-Host " log=$LogFile"
 Write-Host " JAVA_HOME=$($env:JAVA_HOME)"
+Write-Host " stop=.\scripts\windows\jgpt-stop-train.cmd  (NOT Ctrl+C)"
 Write-Host "============================================================"
 Write-Host ""
 

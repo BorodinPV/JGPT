@@ -624,7 +624,12 @@ public final class LLMTrainer {
 
     public void train() throws IOException {
         exitedDueToSupervisorRequest = false;
+        boolean stopBeforeLoop = supervisedStopRequested;
         supervisedStopRequested = false;
+        TrainingStopFile.installOsInterrupt(this::requestSupervisedStop);
+        if (stopBeforeLoop || TrainingStopFile.isPresent(TrainingStopFile.resolveFromEnv())) {
+            requestSupervisedStop();
+        }
         log.info("{} старт обучения", LogFmt.badge("TRAIN"));
         log.info("{} конфигурация: {}", LogFmt.badge("CFG"), config);
         log.info(
@@ -871,10 +876,19 @@ public final class LLMTrainer {
                         epoch + 1);
             }
             while (dataLoader.hasMore()) {
+                Path stopFile = TrainingStopFile.resolveFromEnv();
+                if (!supervisedStopRequested && TrainingStopFile.isPresent(stopFile)) {
+                    log.warn(
+                            "{} найден {} — мягкая остановка после текущего шага, затем checkpoint_final",
+                            LogFmt.badge("STOP"),
+                            stopFile);
+                    TrainingStopFile.consume(stopFile);
+                    requestSupervisedStop();
+                }
                 if (supervisedStopRequested) {
                     log.warn(
-                            "{} обучение прервано по запросу супервизора (смена пресета)",
-                            LogFmt.badge("SMART"));
+                            "{} обучение прервано (STOP-файл, Ctrl+C или супервизор)",
+                            LogFmt.badge("STOP"));
                     trainingStoppedEarly = true;
                     exitedDueToSupervisorRequest = true;
                     break outer;

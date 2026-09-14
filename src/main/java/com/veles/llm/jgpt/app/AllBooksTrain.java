@@ -478,8 +478,9 @@ public final class AllBooksTrain {
 
     /**
      * Упаковывает документы ({@code <bos> … <eos>} каждый) в непрерывные потоки train/val и режет их на окна
-     * {@code maxSeqLen+1} через {@link DataLoader#loadTokens(int[])}. Короткие документы и хвосты не теряются:
-     * граница документа — это {@code <eos><bos>} внутри окна, как в GPT-2.
+     * {@code maxSeqLen+1} через {@link DataLoader#loadPackedDocuments}. Короткие документы и хвосты не теряются:
+     * граница документа — это {@code <eos><bos>} внутри окна, как в GPT-2. Без полного concat (иначе OOM на корпусе
+     * в сотни тысяч файлов при дефолтной куче ~8 ГиБ).
      *
      * <p>Hold-out — по документам (не по окнам): {@code valFraction} документов после детерминированного
      * перемешивания по {@code seed}. Если val-документов не хватает даже на один батч окон, всё уходит в train.
@@ -517,34 +518,16 @@ public final class AllBooksTrain {
                 valTokens = 0;
             }
         }
-        long trainTokens = 0;
-        for (int i = 0; i < n; i++) {
-            if (!isVal[i]) {
-                trainTokens += docs.get(i).length;
-            }
-        }
-        train.loadTokens(concatDocs(docs, isVal, false, trainTokens));
+        log.info("[DATA] упаковка в окна без полного concat ({} документов)", String.format("%,d", n));
+        long trainTokens = train.loadPackedDocuments(docs, isVal, false);
         if (valDocs > 0) {
-            val.loadTokens(concatDocs(docs, isVal, true, valTokens));
+            long packedVal = val.loadPackedDocuments(docs, isVal, true);
+            if (packedVal != valTokens) {
+                log.warn("[DATA] val tokens packed {} ≠ counted {}", packedVal, valTokens);
+                valTokens = packedVal;
+            }
         }
         return new PackedDocsStats(n - valDocs, valDocs, trainTokens, valTokens);
-    }
-
-    private static int[] concatDocs(List<int[]> docs, boolean[] isVal, boolean takeVal, long total) {
-        if (total > Integer.MAX_VALUE - 8) {
-            throw new IllegalStateException("корпус слишком большой для одного int[] потока: " + total + " токенов");
-        }
-        int[] stream = new int[(int) total];
-        int off = 0;
-        for (int i = 0; i < docs.size(); i++) {
-            if (isVal[i] != takeVal) {
-                continue;
-            }
-            int[] d = docs.get(i);
-            System.arraycopy(d, 0, stream, off, d.length);
-            off += d.length;
-        }
-        return stream;
     }
 
     /**

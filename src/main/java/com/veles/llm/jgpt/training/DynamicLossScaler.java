@@ -294,10 +294,12 @@ public final class DynamicLossScaler {
     }
 
     /**
-     * При {@link TensorOpsGPU#useFp16Matmul()} — по умолчанию включается динамический scaler (см.
-     * {@code JGPT_FP16_DYNAMIC_INITIAL}, {@code JGPT_FP16_DYNAMIC_GROWTH_INTERVAL} или приоритетный
-     * {@code JGPT_AMP_GROWTH_INTERVAL}, {@code JGPT_FP16_DYNAMIC_MAX} и зеркальные {@code jgpt.fp16.dynamic*});
-     * иначе {@code null}.
+     * При {@link TensorOpsGPU#useFp16Matmul()} — по умолчанию включается динамический scaler.
+     * Default в коде: {@code INITIAL=65536}, {@code MAX=65536}. Конкретный launcher/env может
+     * переопределить (например {@code env/28L-wide-sft.env} задаёт {@code INITIAL=32768}).
+     * Ключи: {@code JGPT_FP16_DYNAMIC_INITIAL}, {@code JGPT_FP16_DYNAMIC_GROWTH_INTERVAL} или
+     * приоритетный {@code JGPT_AMP_GROWTH_INTERVAL}, {@code JGPT_FP16_DYNAMIC_MAX} и зеркальные
+     * {@code jgpt.fp16.dynamic*}; иначе {@code null}.
      */
     public static DynamicLossScaler fromEnvironmentIfFp16() {
         if (!TensorOpsGPU.useFp16Matmul()) {

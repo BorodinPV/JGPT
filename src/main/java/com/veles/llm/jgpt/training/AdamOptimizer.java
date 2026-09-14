@@ -418,8 +418,8 @@ public final class AdamOptimizer {
     }
 
     /**
-     * Глобальный клиппинг градиентов по L2-норме; не требует экземпляра оптимизатора (только те же
-     * правила, что у {@link #clipGradients(List, float)}).
+     * Глобальный клиппинг L2-нормы по переданному списку тензоров (ожидаются ∂ обучаемых параметров,
+     * без {@code logits.grad}).
      */
     public static float clipGradientsGlobal(List<Tensor> tensors, float maxNorm) {
         Objects.requireNonNull(tensors, "tensors");

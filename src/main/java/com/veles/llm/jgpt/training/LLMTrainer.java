@@ -30,13 +30,14 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Trainer: forward, CE loss, градиент по logits, backward через LM head, AdamW, clipping.
- * Поддерживается {@link TrainingConfig#accumulationSteps}: CE и backward с масштабом 1/N, шаг оптимизатора
- * после N микробатчей (в конце эпохи — неполная группа с поправкой N/r к градиентам параметров).
+ * Поддерживается {@link TrainingConfig#accumulationSteps}: CE и backward с provisional-знаменателем
+ * {@code batch × seq × accum}, шаг оптимизатора после N микробатчей. Градиенты окна — global token-mean
+ * по валидным токенам ({@code × windowDenom / N_valid}); неполная группа в конце эпохи покрывается тем же
+ * rescale (отдельная поправка {@code accum / r} не нужна).
  *
- * <p><b>Скаляр CE:</b> все ветки loss+∂logits возвращают <em>среднее</em> по токенам. Fused GPU (хостовые
- * логиты) и device-CE получают это значение напрямую из JNI; отдельный D2H-буфер только для скаляра loss не
- * используется. Множитель для ∂logits в fused-путях: {@code microbatchGradScale * lossScale / numTokens},
- * {@code lossScale} — текущий {@link DynamicLossScaler} при FP16 matmul (см. {@link LlmTrainerCrossEntropy#ceFusedGradScaleOverTotal}).
+ * <p><b>Скаляр CE:</b> все ветки loss+∂logits возвращают <em>среднее</em> по валидным токенам микробатча.
+ * Лог шага — token-mean по окну. Множитель для ∂logits: {@code lossScale / (batch × seq × accum)}
+ * (см. {@link LlmTrainerCrossEntropy#ceFusedGradScaleOverTotal()}).
  */
 public final class LLMTrainer {
 
@@ -640,7 +641,7 @@ public final class LLMTrainer {
                 totalTrainingSteps,
                 config.warmupRatio);
         log.info(
-                "Накопление градиента: {} микробатч(а/ей) на один шаг оптимизатора",
+                "Накопление градиента: {} микробатч(а/ей) на шаг; CE = token-mean по валидным токенам окна",
                 config.accumulationSteps);
         log.info(
                 "Логирование: каждые {} шаг(ов); автогенерация текста: {}",
@@ -862,7 +863,8 @@ public final class LLMTrainer {
             int epochOptimizerAttempts = 0;
             int epochSuccessfulOptimizerSteps = 0;
             int microInAccum = 0;
-            float accumLoss = 0f;
+            float accumWeightedLoss = 0f;
+            int accumValidTokens = 0;
             long accFwdNs = 0;
             long accLossCeNs = 0;
             long accBwdNs = 0;
@@ -925,10 +927,10 @@ public final class LLMTrainer {
                     TensorOpsGPU.synchronizeStream();
                 }
                 long t1 = profile ? System.nanoTime() : 0L;
-                float ceScale = 1f / (float) config.accumulationSteps;
+                int microRows = batch.input.getShape()[0] * batch.input.getShape()[1];
                 float loss;
                 if (ceAsyncDevice && !config.usesSampledTrainLoss() && config.deviceLogitsTrainStep && model.hasDeviceLogitsBuffers()) {
-                    LlmTrainerCrossEntropy.applyCrossEntropyLossAndGradDeviceAsync(this, logits, batch.target, ceScale);
+                    LlmTrainerCrossEntropy.applyCrossEntropyLossAndGradDeviceAsync(this, logits, batch.target);
                     /* Async CE: kernel пишет ∂logits на device и D2H скаляра loss — до backward нужен барьер. */
                     TensorOpsGPU.synchronizeStream();
                     long t3 = profile ? System.nanoTime() : 0L;
@@ -949,7 +951,7 @@ public final class LLMTrainer {
                         accBwdNs += t4 - t3;
                     }
                 } else {
-                    loss = LlmTrainerCrossEntropy.applyTrainLossAndGrad(this, logits, batch.target, ceScale);
+                    loss = LlmTrainerCrossEntropy.applyTrainLossAndGrad(this, logits, batch.target);
                     long t3 = profile ? System.nanoTime() : 0L;
                     model.backward(
                             logits,
@@ -965,7 +967,11 @@ public final class LLMTrainer {
                         accBwdNs += t4 - t3;
                     }
                 }
-                accumLoss += loss;
+                int nValid = LlmTrainerCrossEntropy.validCountFromScratch(this, microRows);
+                accumValidTokens += nValid;
+                if (nValid > 0 && Float.isFinite(loss)) {
+                    accumWeightedLoss += loss * (float) nValid;
+                }
 
                 boolean shouldStep =
                         microInAccum >= config.accumulationSteps || lastBatchOfEpoch;
@@ -973,18 +979,33 @@ public final class LLMTrainer {
                     continue;
                 }
 
-                float partialScale = 1f;
-                if (lastBatchOfEpoch && microInAccum < config.accumulationSteps) {
-                    partialScale = (float) config.accumulationSteps / (float) microInAccum;
+                int windowDenom = LlmTrainerCrossEntropy.accumWindowTokenDenom(config);
+                if (accumValidTokens <= 0) {
+                    LlmTrainerOptimizerStep.zeroGradients(this, logits);
+                    LlmTrainerOptimizerStep.clearGpuParamGradsAfterOverflowSkip(this);
+                    if (config.fullGpuTrainStep && model.isGpuResident()) {
+                        LlmTrainerOptimizerStep.zeroGpuGradsMarkingParamGradsClean(
+                                this, model.gpuTensorByTrainableParameter());
+                    }
+                    microInAccum = 0;
+                    accumWeightedLoss = 0f;
+                    accumValidTokens = 0;
+                    accFwdNs = 0;
+                    accLossCeNs = 0;
+                    accBwdNs = 0;
+                    accTokens = 0;
+                    continue;
                 }
-                if (partialScale != 1f) {
-                    LlmTrainerOptimizerStep.scaleGradients(parameters, partialScale);
-                    if (config.fullGpuTrainStep) {
-                        LlmTrainerOptimizerStep.scaleGpuGradients(model.gpuTensorByTrainableParameter(), partialScale);
+                float tokenMeanScale = LlmTrainerCrossEntropy.tokenMeanRescale(windowDenom, accumValidTokens);
+                if (tokenMeanScale != 1f) {
+                    LlmTrainerOptimizerStep.scaleGradients(parameters, tokenMeanScale);
+                    if (model.isGpuResident() && TensorOpsGPU.isGpuAvailable()) {
+                        LlmTrainerOptimizerStep.scaleGpuGradients(
+                                model.gpuTensorByTrainableParameter(), tokenMeanScale);
                     }
                 }
 
-                float avgMicroLoss = accumLoss / (float) microInAccum;
+                float avgMicroLoss = accumWeightedLoss / (float) accumValidTokens;
                 long t5 = profile ? System.nanoTime() : 0L;
                 boolean stepped =
                         config.fullGpuTrainStep
@@ -996,7 +1017,8 @@ public final class LLMTrainer {
                 epochLoss += avgMicroLoss;
 
                 microInAccum = 0;
-                accumLoss = 0f;
+                accumWeightedLoss = 0f;
+                accumValidTokens = 0;
 
                 if (!stepped) {
                     if (config.accumulationSteps > 1) {
@@ -1495,16 +1517,15 @@ public final class LLMTrainer {
         } else {
             logits = model.forward(batch.input, true, config.useGpuResident);
         }
-        float ceScale = 1f / (float) config.accumulationSteps;
         float loss;
         if (ceAsyncDevice && !config.usesSampledTrainLoss() && config.deviceLogitsTrainStep && model.hasDeviceLogitsBuffers()) {
-            LlmTrainerCrossEntropy.applyCrossEntropyLossAndGradDeviceAsync(this, logits, batch.target, ceScale);
+            LlmTrainerCrossEntropy.applyCrossEntropyLossAndGradDeviceAsync(this, logits, batch.target);
             TensorOpsGPU.synchronizeStream();
             model.backward(logits, zeroGrads);
             TensorOpsGPU.synchronizeStream();
             loss = TensorOpsGPU.crossEntropySoftmaxGradLossGpuDeviceReadPendingFromHost();
         } else {
-            loss = LlmTrainerCrossEntropy.applyTrainLossAndGrad(this, logits, batch.target, ceScale);
+            loss = LlmTrainerCrossEntropy.applyTrainLossAndGrad(this, logits, batch.target);
             model.backward(logits, zeroGrads);
         }
         if (TensorOpsGPU.isGpuAvailable()) {
@@ -1515,9 +1536,12 @@ public final class LLMTrainer {
 
     /**
      * Clip + optimizer step. Routes to full-GPU path when {@code config.fullGpuTrainStep}.
+     * Does not apply {@link LlmTrainerCrossEntropy#tokenMeanRescale}; tests that simulate an incomplete
+     * window still pass {@code accumulationSteps / actualMicros} (same factor as the production rescale
+     * when every token is valid).
      *
      * @param logits last micro-batch logits (for overflow check on host path)
-     * @param loss average loss across accumulated micro-batches
+     * @param loss token-mean CE across the accumulation window
      * @param partialScale correction factor for incomplete accumulation group ({@code accumulationSteps / actual})
      * @return true if weights updated
      */

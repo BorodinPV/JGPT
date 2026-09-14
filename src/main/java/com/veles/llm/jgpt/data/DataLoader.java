@@ -224,6 +224,75 @@ public final class DataLoader {
     }
 
     /**
+     * Режет документы в LM-окна так же, как {@link #loadTokens(int[])} по их конкатенации ({@code <eos><bos>}
+     * внутри окна), без второго гигантского {@code int[]} на весь корпус. После каждого взятого документа слот
+     * в {@code docs} обнуляется, чтобы GC мог отдать память пока режутся остальные.
+     *
+     * @param isVal параллельно {@code docs}; {@code takeVal=false} — train ({@code !isVal[i]})
+     * @return сумма длин взятых документов (как у concat-потока, включая хвост короче окна)
+     */
+    public long loadPackedDocuments(List<int[]> docs, boolean[] isVal, boolean takeVal) {
+        if (sftTargets != null) {
+            throw new IllegalStateException("cannot mix LM tokens with SFT windows in one DataLoader");
+        }
+        if (docs == null || isVal == null || docs.size() != isVal.length) {
+            throw new IllegalArgumentException("docs/isVal size mismatch");
+        }
+        int[] carry = new int[maxSeqLen];
+        int carryLen = 0;
+        long tokens = 0;
+        int windows = 0;
+        for (int i = 0; i < docs.size(); i++) {
+            if (isVal[i] != takeVal) {
+                continue;
+            }
+            int[] d = docs.get(i);
+            if (d == null) {
+                continue;
+            }
+            tokens += d.length;
+            carryLen = absorbPackedDoc(d, carry, carryLen);
+            windows = sequences.size();
+            docs.set(i, null);
+            if (maxSequences > 0 && windows >= maxSequences) {
+                log.warn(
+                        "Достигнут лимит maxSequences={}: хвост потока в этот DataLoader не попал.",
+                        maxSequences);
+                break;
+            }
+        }
+        return tokens;
+    }
+
+    /**
+     * Дописывает документ к незакрытому префиксу потока ({@code carry}) и эмитит окна длины
+     * {@code maxSeqLen+1} со stride {@code maxSeqLen}.
+     */
+    private int absorbPackedDoc(int[] doc, int[] carry, int carryLen) {
+        int pos = 0;
+        int n = doc.length;
+        while (pos < n) {
+            if (maxSequences > 0 && sequences.size() >= maxSequences) {
+                return 0;
+            }
+            int have = n - pos;
+            if (carryLen + have < maxSeqLen + 1) {
+                System.arraycopy(doc, pos, carry, carryLen, have);
+                return carryLen + have;
+            }
+            int room = maxSeqLen + 1 - carryLen;
+            int[] win = new int[maxSeqLen + 1];
+            System.arraycopy(carry, 0, win, 0, carryLen);
+            System.arraycopy(doc, pos, win, carryLen, room);
+            sequences.add(win);
+            pos += room;
+            carry[0] = win[maxSeqLen];
+            carryLen = 1;
+        }
+        return carryLen;
+    }
+
+    /**
      * Одно SFT-окно: {@code tokens.length == maxSeqLen+1}, {@code targets.length == maxSeqLen},
      * {@code targets[i] == -1} — позиция не входит в CE.
      */

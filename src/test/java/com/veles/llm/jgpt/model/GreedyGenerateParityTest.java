@@ -49,7 +49,7 @@ class GreedyGenerateParityTest {
 
     /**
      * Ветка {@code currentLen > maxSeqLen} в {@link GPTModel#generate}: сброс кэша и prefill среза с
-     * {@code ropeOffset}; та же логика в {@link GPTModel#generateGpuKv}.
+     * {@code ropeOffset = 0}; та же логика в {@link GPTModel#generateGpuKv}.
      */
     @Test
     void greedyGenerate_matchesWhenSlidingWindowTriggers() {

@@ -7,9 +7,9 @@ Launchers are split by OS. Shared helpers (Python) stay in this directory.
 | `windows/jgpt-gui.ps1` | Windows | **Desktop GUI** (`windows/jgpt-gui.cmd`): start/stop any `jgpt-train-*`, live charts from `state/stats.json`, log tail, checkpoint browser, in-process chat. Needs a JavaFX JDK (Liberica Full). `--mvn` = full Maven compile first; default compiles only the `gui` package with javac (safe while a trainer runs) |
 | `windows/jgpt-stop-train.cmd` | Windows | Soft stop: creates `state/STOP`, trainer writes `checkpoint_final.bin` and exits. Use instead of Ctrl+C |
 | `linux/jgpt-train-28L-wide.sh` | Linux | Wide 28L pretrain (`env/28L-wide-pretrain.env`: full CE, `<eos>`-packed docs, doc-level val, dropout 0.1) |
-| `linux/jgpt-train-28L-wide-sft.sh` | Linux | SFT after 28L-wide (`env/28L-wide-sft.env`, data `data/sft/short`) |
+| `linux/jgpt-train-28L-wide-sft.sh` | Linux | SFT after 28L-wide (`env/28L-wide-sft.env`, data `data/sft/clean`) |
 | `windows/jgpt-train-28L-wide.ps1` | Windows | Same pretrain (`windows/jgpt-train-28L-wide.cmd`); flags `--no-build`, `--fresh`, `--restart-plan` |
-| `windows/jgpt-train-28L-wide-sft.ps1` | Windows | Same SFT (`windows/jgpt-train-28L-wide-sft.cmd`); seeds from `wide_28L_16k_1024/model_best.bin`, builds `data/sft/short` from `raw` if empty |
+| `windows/jgpt-train-28L-wide-sft.ps1` | Windows | Same SFT (`windows/jgpt-train-28L-wide-sft.cmd`); seeds from `wide_28L_16k_1024/model_best.bin`, builds `data/sft/clean` from `raw` if empty |
 | `windows/jgpt-chat-28L-wide.ps1` | Windows | InferChat on 28L-wide SFT `model_best` (default) or `--model <path> --raw` for the pretrain |
 | `linux/jgpt-train-20L-wide.sh` | Linux | Wide 20L books pretrain (`env/20L-wide-pretrain.env`) |
 | `linux/jgpt-train-20L-wide-sft.sh` | Linux | SFT after 20L-wide (`env/20L-wide-sft.env`) |
@@ -34,6 +34,7 @@ Launchers are split by OS. Shared helpers (Python) stay in this directory.
 | `windows/fetch-cudnn.ps1` | Windows | win_amd64 wheel + `cudnn.lib` |
 | `linux/jgpt-chat.sh` | Linux | Interactive chat after train |
 | `sft-export-jsonl.py` | both | Optional parquet → JSONL |
+| `sft-filter-clean.py` | both | Quality Russian Q&A → `data/sft/clean` (default 28L SFT) |
 | `sft-filter-short.py` | both | Filter JSONL to short assistant replies → `data/sft/short` |
 | `sft-make-exam.py` | both | Tiny clean exam JSONL → `data/sft/exam` |
 | `fetch-ru-pretrain.py` | both | Starter corpus (ruwiki dump by default) → `data/books/pretrain_txt` |

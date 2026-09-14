@@ -181,9 +181,6 @@ public final class LrRangeFinder {
                         toClip.add(p);
                     }
                 }
-                if (logits.hasGrad()) {
-                    toClip.add(logits);
-                }
                 if (!toClip.isEmpty()) {
                     DynamicLossScaler.unscaleGradients(toClip, unscale);
                     AdamOptimizer.clipGradientsGlobal(toClip, maxGradNorm);

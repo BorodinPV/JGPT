@@ -2,6 +2,7 @@ package com.veles.llm.jgpt.gui;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -61,9 +62,21 @@ record TrainRun(String name, Path cmd, Path logFile, Path envFile, Path ckptDir,
                     continue;
                 }
                 switch (m.group(1)) {
-                    case "LogFile" -> log = m.group(2);
-                    case "EnvFile" -> env = m.group(2);
-                    case "CkptDir" -> ckpt = m.group(2);
+                    case "LogFile" -> {
+                        if (isStaticRelPath(m.group(2))) {
+                            log = m.group(2);
+                        }
+                    }
+                    case "EnvFile" -> {
+                        if (isStaticRelPath(m.group(2))) {
+                            env = m.group(2);
+                        }
+                    }
+                    case "CkptDir" -> {
+                        if (isStaticRelPath(m.group(2))) {
+                            ckpt = m.group(2);
+                        }
+                    }
                     default -> {
                     }
                 }
@@ -71,7 +84,7 @@ record TrainRun(String name, Path cmd, Path logFile, Path envFile, Path ckptDir,
         } catch (IOException _) {
             return Optional.empty();
         }
-        if (log == null || env == null || ckpt == null) {
+        if (log == null || env == null) {
             return Optional.empty();
         }
         String base = ps1.getFileName().toString();
@@ -90,14 +103,32 @@ record TrainRun(String name, Path cmd, Path logFile, Path envFile, Path ckptDir,
         } catch (IOException _) {
             preset = null;
         }
+        if (ckpt == null && preset != null && preset.checkpointSubdir() != null) {
+            ckpt = "checkpoints/" + preset.checkpointSubdir();
+        }
+        if (log == null || env == null || ckpt == null) {
+            return Optional.empty();
+        }
         String name = base.replaceFirst("^jgpt-train-", "");
-        return Optional.of(
-                new TrainRun(
-                        name,
-                        cmd,
-                        root.resolve(log.replace('\\', '/')),
-                        envFile,
-                        root.resolve(ckpt.replace('\\', '/')),
-                        preset));
+        try {
+            return Optional.of(
+                    new TrainRun(
+                            name,
+                            cmd,
+                            root.resolve(log.replace('\\', '/')),
+                            envFile,
+                            root.resolve(ckpt.replace('\\', '/')),
+                            preset));
+        } catch (InvalidPathException _) {
+            return Optional.empty();
+        }
+    }
+
+    /** Paths the GUI can resolve: no PowerShell expansion / drive-letter colon in the relative part. */
+    private static boolean isStaticRelPath(String rel) {
+        if (rel == null || rel.isBlank()) {
+            return false;
+        }
+        return rel.indexOf('$') < 0 && rel.indexOf(':') < 0;
     }
 }

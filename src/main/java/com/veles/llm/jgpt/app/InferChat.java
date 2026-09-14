@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,15 +47,16 @@ public final class InferChat {
         String boo = ".";
         String modelRel = "checkpoints/all_books/model_final.bin";
         String tokenizerRel = null;
-        int maxNewTokens = 128;
-        float temperature = 0.8f;
-        int topK = 50;
-        float topP = 1f;
-        float repetitionPenalty = 1f;
+        int maxNewTokens = 256;
+        float temperature = 0.65f;
+        int topK = 40;
+        float topP = 0.90f;
+        float repetitionPenalty = 1.05f;
         int noRepeatNgramSize = 0;
         int seqLenOverride = -1;
         int layersOverride = -1;
         String singlePrompt = null;
+        String promptsFileRel = null;
 
         ArrayDeque<String> argv = new ArrayDeque<>(Arrays.asList(args));
         while (!argv.isEmpty()) {
@@ -77,6 +79,7 @@ public final class InferChat {
                 case "--seq-len" -> seqLenOverride = Math.max(1, Integer.parseInt(requireArg(argv, a)));
                 case "--layers" -> layersOverride = Math.max(1, Integer.parseInt(requireArg(argv, a)));
                 case "--prompt" -> singlePrompt = requireArg(argv, a);
+                case "--prompts-file" -> promptsFileRel = requireArg(argv, a);
                 default -> {
                     if (a.startsWith(PROMPT_EQ) && a.length() > PROMPT_EQ.length()) {
                         singlePrompt = a.substring(PROMPT_EQ.length());
@@ -134,22 +137,50 @@ public final class InferChat {
         boolean echoPrompt = !sftChatTemplateFromEnv();
 
         try {
+            if (singlePrompt != null && promptsFileRel != null) {
+                log.error("Задайте либо --prompt, либо --prompts-file, не оба");
+                System.exit(2);
+            }
             if (singlePrompt != null) {
                 String out =
-                        LlmTextGeneration.generateText(
-                                model,
-                                tokenizer,
-                                applySftChatTemplate(tokenizer, singlePrompt),
-                                maxNewTokens,
-                                sampling,
-                                echoPrompt);
+                        generateOne(
+                                model, tokenizer, singlePrompt, maxNewTokens, sampling, echoPrompt);
                 log.info("{}", out);
+                return;
+            }
+            if (promptsFileRel != null) {
+                Path promptsPath = root.resolve(promptsFileRel).normalize();
+                if (!Files.isRegularFile(promptsPath)) {
+                    log.error("Нет файла промптов: {}", promptsPath);
+                    System.exit(1);
+                }
+                List<String> prompts =
+                        Files.readAllLines(promptsPath).stream()
+                                .map(String::trim)
+                                .filter(s -> !s.isEmpty() && !s.startsWith("#"))
+                                .toList();
+                if (prompts.isEmpty()) {
+                    log.error("Пустой файл промптов: {}", promptsPath);
+                    System.exit(1);
+                }
+                for (String prompt : prompts) {
+                    String out =
+                            generateOne(
+                                    model, tokenizer, prompt, maxNewTokens, sampling, echoPrompt);
+                    System.out.println("----- PROMPT -----");
+                    System.out.println(prompt);
+                    System.out.println("----- ANSWER -----");
+                    System.out.println(out);
+                    System.out.println("----- END -----");
+                    System.out.flush();
+                }
                 return;
             }
 
             java.io.Console console = System.console();
             if (console == null) {
-                log.error("Нет консоли (System.console() == null). Задайте --prompt \"...\" или запустите из терминала.");
+                log.error(
+                        "Нет консоли (System.console() == null). Задайте --prompt / --prompts-file или запустите из терминала.");
                 System.exit(1);
             }
 
@@ -179,13 +210,8 @@ public final class InferChat {
                 }
                 try {
                     String out =
-                            LlmTextGeneration.generateText(
-                                    model,
-                                    tokenizer,
-                                    applySftChatTemplate(tokenizer, trimmed),
-                                    maxNewTokens,
-                                    sampling,
-                                    echoPrompt);
+                            generateOne(
+                                    model, tokenizer, trimmed, maxNewTokens, sampling, echoPrompt);
                     console.printf("%s%n", out);
                     console.flush();
                 } catch (Exception e) {
@@ -208,6 +234,22 @@ public final class InferChat {
 
     static String applySftChatTemplate(BPETokenizer tokenizer, String prompt) {
         return SftExampleEncoder.applyChatTemplateIfEnabled(tokenizer, prompt);
+    }
+
+    private static String generateOne(
+            GPTModel model,
+            BPETokenizer tokenizer,
+            String prompt,
+            int maxNewTokens,
+            DecodeSampling sampling,
+            boolean echoPrompt) {
+        return LlmTextGeneration.generateText(
+                model,
+                tokenizer,
+                applySftChatTemplate(tokenizer, prompt),
+                maxNewTokens,
+                sampling,
+                echoPrompt);
     }
 
     private static LLMConfig geometryFromEnvAndOverrides(int seqLenOverride, int layersOverride) {
@@ -271,13 +313,14 @@ public final class InferChat {
                   --tokenizer PATH       BPE; по умолчанию checkpoints/tokenizer_global.bin или all_books/tokenizer_final.bin
                   --seq-len N            max контекст (иначе env JGPT_MAX_SEQ_LEN / canonical 1024)
                   --layers N             число слоёв (иначе env JGPT_PRESET_NUM_LAYERS / canonical 12)
-                  --max-new-tokens N     длина продолжения (по умолчанию 128)
-                  --temperature F        (по умолчанию 0.8)
-                  --top-k N              (по умолчанию 50; 0 — выкл.)
-                  --top-p F              nucleus, 1 = выкл. (по умолчанию 1)
-                  --repetition-penalty F HF-штраф, 1 = выкл. (по умолчанию 1)
+                  --max-new-tokens N     длина продолжения (по умолчанию 256)
+                  --temperature F        (по умолчанию 0.65)
+                  --top-k N              (по умолчанию 40; 0 — выкл.)
+                  --top-p F              nucleus, 1 = выкл. (по умолчанию 0.90)
+                  --repetition-penalty F HF-штраф, 1 = выкл. (по умолчанию 1.05)
                   --no-repeat-ngram-size N  запрет повторных n-грамм, 0 = выкл.
                   --prompt TEXT          один промпт и выход (без интерактива)
+                  --prompts-file PATH    по одному промпту на строку; # и пустые строки пропускаются
                   {}TEXT          то же одним аргументом (удобно для mvn -Dexec.args без кавычек к пробелам)
                   -h, --help             эта справка
 

@@ -11,7 +11,7 @@ import com.veles.llm.jgpt.util.LogFmt;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Eval loss на батчах и промежуточная генерация во время обучения. */
+/** Eval CE (global token-mean) и промежуточная генерация во время обучения. */
 final class LlmTrainerEvalAndSample {
 
     private static final Logger log = LoggerFactory.getLogger(LlmTrainerEvalAndSample.class);
@@ -92,7 +92,7 @@ final class LlmTrainerEvalAndSample {
     static float evaluate(LLMTrainer t) {
         DataLoader evalLoader = t.evalDataLoader != null ? t.evalDataLoader : t.dataLoader;
         int saved = evalLoader.getCurrentIndex();
-        float total = 0f;
+        TokenMeanAcc acc = new TokenMeanAcc();
         int n = 0;
         int maxBatches = Math.min(64, evalLoader.numBatches());
         boolean deviceLogitsEval = false;
@@ -101,20 +101,24 @@ final class LlmTrainerEvalAndSample {
             int[] inSh = batch.input.getShape();
             int batchSize = inSh[0];
             int seqLen = inSh[1];
+            int nrows = batchSize * seqLen;
             if (i == 0) {
                 deviceLogitsEval =
                         t.config.useGpuResident && t.model.canInferLogitsOnDevice(batchSize, seqLen);
             }
+            float batchMean;
             if (deviceLogitsEval) {
                 t.model.forward(batch.input, false, true, true);
                 GpuFloatBuffer logitsGpu = t.model.deviceLogitsBuffer();
-                total +=
+                batchMean =
                         LlmTrainerCrossEntropy.evaluateCrossEntropyLossDevice(
                                 t, batch.target, logitsGpu, batchSize, seqLen, t.config.vocabSize);
             } else {
                 Tensor logits = t.model.forward(batch.input, false, t.config.useGpuResident);
-                total += LlmTrainerCrossEntropy.evaluateCrossEntropyLoss(t, logits, batch.target);
+                batchMean = LlmTrainerCrossEntropy.evaluateCrossEntropyLoss(t, logits, batch.target);
             }
+            LlmTrainerCrossEntropy.fillCeTargetsHostSanitized(t, batch.target, nrows, t.config.vocabSize);
+            acc.addBatchMean(batchMean, LlmTrainerCrossEntropy.validCountFromScratch(t, nrows));
             n++;
         }
         evalLoader.setCurrentIndex(saved);
@@ -130,7 +134,13 @@ final class LlmTrainerEvalAndSample {
                     evalLoader.hasMore());
             return Float.NaN;
         }
-        float loss = total / n;
+        float loss = acc.mean();
+        if (!Float.isFinite(loss)) {
+            log.warn(
+                    "{} eval без валидных токенов — не обновляем best/patience early-stop",
+                    LogFmt.badge("EVAL"));
+            return Float.NaN;
+        }
         float perplexity = (float) Math.exp(loss);
         log.info(
                 "{} перплексия: {} ({})",
@@ -138,5 +148,33 @@ final class LlmTrainerEvalAndSample {
                 String.format("%.2f", perplexity),
                 t.evalDataLoader != null ? "hold-out val" : "train stream");
         return loss;
+    }
+
+    /**
+     * Склеивает per-batch token-mean CE в global token-mean: {@code Σ(mean_b × N_b) / Σ N_b}.
+     * Mean-of-batch-means дал бы равный вес короткому и длинному диалогу.
+     */
+    static final class TokenMeanAcc {
+        private double weightedSum;
+        private long validTokens;
+
+        void addBatchMean(float batchTokenMean, int nValid) {
+            if (nValid <= 0 || !Float.isFinite(batchTokenMean)) {
+                return;
+            }
+            weightedSum += (double) batchTokenMean * (double) nValid;
+            validTokens += nValid;
+        }
+
+        long validTokens() {
+            return validTokens;
+        }
+
+        float mean() {
+            if (validTokens <= 0L) {
+                return Float.NaN;
+            }
+            return (float) (weightedSum / (double) validTokens);
+        }
     }
 }

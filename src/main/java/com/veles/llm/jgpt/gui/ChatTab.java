@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+import com.veles.llm.jgpt.model.DecodeSampling;
+
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -37,11 +39,11 @@ final class ChatTab extends BorderPane {
     private final Label modelStatus = new Label("модель не загружена");
     private final Label vramWarn = new Label();
     private final CheckBox templateBox = new CheckBox("шаблон <user>/<assistant>");
-    private final Slider temperature = slider(0, 1.5, 0.7, 0.05);
+    private final Slider temperature = slider(0, 1.5, 0.65, 0.05);
     private final Slider topK = slider(0, 100, 40, 1);
-    private final Slider topP = slider(0.5, 1.0, 0.95, 0.01);
-    private final Slider repPenalty = slider(1.0, 1.6, 1.15, 0.01);
-    private final Slider maxNew = slider(16, 512, 200, 8);
+    private final Slider topP = slider(0.5, 1.0, 0.90, 0.01);
+    private final Slider repPenalty = slider(1.0, 1.6, 1.05, 0.01);
+    private final Slider maxNew = slider(16, 512, 256, 8);
     private final TextFlow transcript = new TextFlow();
     private final ScrollPane scroll = new ScrollPane(transcript);
     private final TextArea input = new TextArea();
@@ -69,6 +71,7 @@ final class ChatTab extends BorderPane {
     private VBox buildModelBar() {
         modelBox.setPrefWidth(340);
         modelBox.setTooltip(new Tooltip("checkpoints\\<каталог>\\model_*.bin с известным пресетом (env/*.env)"));
+        templateBox.setTooltip(new Tooltip("Как InferChat без --raw; снимите галку для режима --raw"));
         Button refresh = new Button("↻");
         refresh.setOnAction(_ -> refreshModels());
         loadBtn.getStyleClass().add("primary");
@@ -134,11 +137,11 @@ final class ChatTab extends BorderPane {
     private VBox buildSettings() {
         VBox box = new VBox(10,
                 title("СЭМПЛИНГ"),
-                labeled("temperature", temperature, "%.2f", "0 = жадный argmax"),
-                labeled("top-k", topK, "%.0f", "0 = выкл."),
-                labeled("top-p", topP, "%.2f", "1.0 = выкл."),
-                labeled("repetition penalty", repPenalty, "%.2f", "1.0 = выкл.; штраф последним 256 токенам"),
-                labeled("max new tokens", maxNew, "%.0f", "лимит длины ответа"));
+                labeled("temperature", temperature, "%.2f", "0 = жадный argmax; InferChat: 0.65"),
+                labeled("top-k", topK, "%.0f", "0 = выкл.; InferChat: 40"),
+                labeled("top-p", topP, "%.2f", "1.0 = выкл.; InferChat: 0.90"),
+                labeled("repetition penalty", repPenalty, "%.2f", "1.0 = выкл.; InferChat: 1.05"),
+                labeled("max new tokens", maxNew, "%.0f", "InferChat: 256"));
         box.getStyleClass().add("card");
         box.setPrefWidth(250);
         return box;
@@ -252,13 +255,15 @@ final class ChatTab extends BorderPane {
         stopBtn.setDisable(false);
         loadBtn.setDisable(true);
         long t0 = System.nanoTime();
-        ChatEngine.Sampling s = new ChatEngine.Sampling(
-                (float) temperature.getValue(),
-                (int) Math.round(topK.getValue()),
-                (float) topP.getValue(),
-                (float) repPenalty.getValue(),
-                (int) Math.round(maxNew.getValue()));
-        engine.generate(history, templateBox.isSelected(), s, piece -> Platform.runLater(() -> {
+        DecodeSampling sampling =
+                new DecodeSampling(
+                        (float) temperature.getValue(),
+                        (int) Math.round(topK.getValue()),
+                        (float) topP.getValue(),
+                        (float) repPenalty.getValue(),
+                        0);
+        int maxNewTokens = (int) Math.round(maxNew.getValue());
+        engine.generate(history, templateBox.isSelected(), sampling, maxNewTokens, piece -> Platform.runLater(() -> {
             if (currentAnswer == null) {
                 return;
             }

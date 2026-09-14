@@ -13,7 +13,7 @@ public final class TrainingConfig {
     public final int dIntermediate;
 
     public final int batchSize;
-    /** Микробатчей на один шаг оптимизатора; градиенты CE масштабируются как 1/N. */
+    /** Микробатчей на один шаг оптимизатора; CE — token-mean по валидным токенам всего окна. */
     public final int accumulationSteps;
     public final int epochs;
     public final float learningRate;

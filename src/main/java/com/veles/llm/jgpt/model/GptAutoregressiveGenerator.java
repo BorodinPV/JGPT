@@ -17,6 +17,12 @@ final class GptAutoregressiveGenerator {
 
     private GptAutoregressiveGenerator() {}
 
+    private static Tensor copyPromptSequence(Tensor inputTokens, int seqLen) {
+        Tensor output = new Tensor(new int[] {1, seqLen});
+        System.arraycopy(inputTokens.internalBuffer(), 0, output.internalBuffer(), 0, seqLen);
+        return output;
+    }
+
     static Tensor generateHost(GPTModel m, Tensor inputTokens, int maxNewTokens, float temperature, int topK) {
         return generateHost(m, inputTokens, maxNewTokens, DecodeSampling.of(temperature, topK));
     }
@@ -28,6 +34,12 @@ final class GptAutoregressiveGenerator {
 
         if (batch != 1) {
             throw new IllegalArgumentException("generate currently supports batch_size=1 only");
+        }
+        if (maxNewTokens < 0) {
+            throw new IllegalArgumentException("maxNewTokens must be >= 0");
+        }
+        if (maxNewTokens == 0) {
+            return copyPromptSequence(inputTokens, seqLen);
         }
 
         Tensor output = new Tensor(new int[] {1, seqLen + maxNewTokens});
@@ -82,8 +94,9 @@ final class GptAutoregressiveGenerator {
                     sliceData[t] = outData[startIdx + t];
                 }
                 /*
-                 * Окно перекодируется с позиции 0: таблица абсолютных позиционных эмбеддингов имеет ровно maxSeqLen
-                 * строк, а RoPE относителен — сдвиг всего окна на -startIdx не меняет attention внутри окна.
+                 * Окно с ropeOffset=0: E_pos имеет ровно maxSeqLen строк (startIdx+S вышло бы за таблицу).
+                 * RoPE относителен — сдвиг всего окна на -startIdx не меняет attention внутри окна.
+                 * continue: после этого prefill decode с глобальной позицией currentLen не вызывается.
                  */
                 logitsPrefill = GptKvForward.forwardPrefillHost(m, m.reusableSlidingPrefillInput, cache, 0);
                 lastPlane = GptTensorBatchPlanes.sliceBatch3D(logitsPrefill, 0);
@@ -122,18 +135,24 @@ final class GptAutoregressiveGenerator {
     }
 
     static Tensor generateGpuKv(GPTModel m, Tensor inputTokens, int maxNewTokens, DecodeSampling sampling) {
-        if (!m.isGpuResident()) {
-            throw new IllegalStateException("generateGpuKv requires GPU-resident weights");
-        }
-        if (!TensorOpsGPU.isGpuAvailable()) {
-            throw new IllegalStateException("generateGpuKv requires CUDA");
-        }
         int[] inputShape = inputTokens.getShape();
         int batch = inputShape[0];
         int seqLen = inputShape[1];
 
         if (batch != 1) {
             throw new IllegalArgumentException("generateGpuKv currently supports batch_size=1 only");
+        }
+        if (maxNewTokens < 0) {
+            throw new IllegalArgumentException("maxNewTokens must be >= 0");
+        }
+        if (maxNewTokens == 0) {
+            return copyPromptSequence(inputTokens, seqLen);
+        }
+        if (!m.isGpuResident()) {
+            throw new IllegalStateException("generateGpuKv requires GPU-resident weights");
+        }
+        if (!TensorOpsGPU.isGpuAvailable()) {
+            throw new IllegalStateException("generateGpuKv requires CUDA");
         }
 
         Tensor output = new Tensor(new int[] {1, seqLen + maxNewTokens});
@@ -187,7 +206,7 @@ final class GptAutoregressiveGenerator {
                         for (int t = 0; t < sliceLen; t++) {
                             sliceData[t] = outData[startIdx + t];
                         }
-                        // Окно с позиции 0 (см. host-вариант): таблица pos-эмбеддингов = maxSeqLen строк, RoPE относителен.
+                        // ropeOffset=0, затем continue (см. host-вариант).
                         logitsPrefill = GptKvForward.forwardPrefillGpu(m, m.reusableSlidingPrefillInput, cache, 0);
                         lastPlane = GptTensorBatchPlanes.sliceBatch3D(logitsPrefill, 0);
                         lastLogitData = lastPlane.internalBuffer();
@@ -479,7 +498,7 @@ final class GptAutoregressiveGenerator {
      * {@code <pad>=0} (хвост буфера) и {@code <eos>=3} — конец реплики, как при SFT; плюс
      * {@link GPTModel#setExtraGenerationStopTokens} (ролевые токены при чат-шаблоне).
      */
-    private static boolean isGenerationStopToken(GPTModel m, int token) {
+    static boolean isGenerationStopToken(GPTModel m, int token) {
         if (token == 0 || token == 3) {
             return true;
         }

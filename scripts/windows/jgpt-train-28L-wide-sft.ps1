@@ -18,33 +18,38 @@ Set-Location $Root
 $LogFile = Join-Path $Root "training_28L_wide_sft.log"
 $EnvFile = Join-Path $Root "env\28L-wide-sft.env"
 $CkptDir = Join-Path $Root "checkpoints\wide_28L_sft"
-$CkptBackup = Join-Path $Root "checkpoints\wide_28L_sft_prev_backup"
 $TokenizerFile = Join-Path $Root "checkpoints\tokenizer_wide_16k.bin"
 $SrcBest = Join-Path $Root "checkpoints\wide_28L_16k_1024\model_best.bin"
 $SrcFinal = Join-Path $Root "checkpoints\wide_28L_16k_1024\model_final.bin"
 
 $DataDir = $env:JGPT_DATA_DIR
-if (-not $DataDir) { $DataDir = "data\sft\short" }
+if (-not $DataDir) { $DataDir = "data\sft\clean" }
 $DoFresh = $false
 $SkipBuild = $false
 $RestartPlan = $false
+$CkptSubdirArg = $null
+$SeedFrom = $null
 
 function Show-Usage {
     Write-Host @"
 Usage: .\scripts\windows\jgpt-train-28L-wide-sft.cmd [OPTIONS]
 
 SFT after 28L-wide pretrain (one dialog per window, role tokens).
-Data: data\sft\short (built from data\sft\raw by scripts\sft-filter-short.py if empty).
+Data: data\sft\clean (built from data\sft\raw by scripts\sft-filter-clean.py if empty).
+      --data-dir data\sft\short -> old length-only filter.
       --data-dir data\sft\exam -> synthetic exam.jsonl (tiny; memorizes, not a real SFT).
 Preset: env\28L-wide-sft.env (full-vocab CE, LR 5e-5, 2 epochs)
 Checkpoints: checkpoints\wide_28L_sft
 Seeds from checkpoints\wide_28L_16k_1024\model_best.bin (or model_final.bin), fresh Adam.
 
 Options:
-  --data-dir PATH   directory with .jsonl (default: data\sft\short)
+  --data-dir PATH   directory with .jsonl (default: data\sft\clean)
+  --env PATH        preset env file (default: env\28L-wide-sft.env)
+  --ckpt-dir NAME   checkpoints\<NAME> (default: JGPT_CHECKPOINT_SUBDIR / wide_28L_sft)
+  --seed-from PATH  copy these weights to model_final.bin when the ckpt dir has no Adam
   --restart-plan    keep weights + Adam from the newest checkpoint, reset step/LR/epoch/best
                     (= JGPT_FINETUNE=1 for this run only)
-  --fresh           archive ONLY wide_28L_sft (tokenizer stays)
+  --fresh           archive ONLY the target ckpt dir (tokenizer stays)
   --no-build        skip CUDA rebuild (need build\jgpt_cuda.dll)
   -h, --help        this help
 
@@ -53,6 +58,7 @@ Stop (do NOT Ctrl+C):
 
 Examples:
   .\scripts\windows\jgpt-train-28L-wide-sft.cmd --no-build
+  .\scripts\windows\jgpt-train-28L-wide-sft.cmd --no-build --env env\28L-wide-sft-overfit.env --data-dir data\sft\diag_overfit --ckpt-dir wide_28L_sft_overfit --seed-from checkpoints\wide_28L_sft\model_best.bin
 "@
 }
 
@@ -225,6 +231,33 @@ while ($i -lt $argList.Count) {
             $DataDir = $argList[$i + 1]
             $i += 2
         }
+        "--env" {
+            if ($i + 1 -ge $argList.Count) {
+                Write-Host "[28L-WIDE-SFT] ERROR: --env requires a path" -ForegroundColor Red
+                Show-Usage
+                exit 1
+            }
+            $EnvFile = $argList[$i + 1]
+            $i += 2
+        }
+        "--ckpt-dir" {
+            if ($i + 1 -ge $argList.Count) {
+                Write-Host "[28L-WIDE-SFT] ERROR: --ckpt-dir requires a directory name" -ForegroundColor Red
+                Show-Usage
+                exit 1
+            }
+            $CkptSubdirArg = $argList[$i + 1]
+            $i += 2
+        }
+        "--seed-from" {
+            if ($i + 1 -ge $argList.Count) {
+                Write-Host "[28L-WIDE-SFT] ERROR: --seed-from requires a path" -ForegroundColor Red
+                Show-Usage
+                exit 1
+            }
+            $SeedFrom = $argList[$i + 1]
+            $i += 2
+        }
         "--fresh" { $DoFresh = $true; $i += 1 }
         "--no-build" { $SkipBuild = $true; $i += 1 }
         "--restart-plan" { $RestartPlan = $true; $i += 1 }
@@ -237,7 +270,10 @@ while ($i -lt $argList.Count) {
     }
 }
 
-if (-not (Test-Path $EnvFile)) {
+if (-not [System.IO.Path]::IsPathRooted($EnvFile)) {
+    $EnvFile = Join-Path $Root $EnvFile
+}
+if (-not (Test-Path -LiteralPath $EnvFile)) {
     Write-Host "[28L-WIDE-SFT] ERROR: missing preset: $EnvFile" -ForegroundColor Red
     exit 1
 }
@@ -274,7 +310,7 @@ if ($jsonlBefore -eq 0) {
         $makePy = Join-Path $Root "scripts\sft-make-exam.py"
         Write-Host "[28L-WIDE-SFT] generating exam JSONL -> $DataDir"
         & $py $makePy --dst (Join-Path $DataDir "exam.jsonl")
-    } else {
+    } elseif ($dataLeaf -eq "short") {
         $filterPy = Join-Path $Root "scripts\sft-filter-short.py"
         $rawDir = Join-Path $Root "data\sft\raw"
         if (-not (Test-Path -LiteralPath $rawDir)) {
@@ -282,6 +318,15 @@ if ($jsonlBefore -eq 0) {
             exit 1
         }
         Write-Host "[28L-WIDE-SFT] filtering $rawDir -> $DataDir (sft-filter-short.py)"
+        & $py $filterPy --src $rawDir --dst $DataDir
+    } else {
+        $filterPy = Join-Path $Root "scripts\sft-filter-clean.py"
+        $rawDir = Join-Path $Root "data\sft\raw"
+        if (-not (Test-Path -LiteralPath $rawDir)) {
+            Write-Host "[28L-WIDE-SFT] ERROR: $DataDir is empty and $rawDir is missing (nothing to filter)" -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "[28L-WIDE-SFT] filtering $rawDir -> $DataDir (sft-filter-clean.py)"
         & $py $filterPy --src $rawDir --dst $DataDir
     }
     $pyCode = $LASTEXITCODE
@@ -308,6 +353,21 @@ $userFaTile = $userOverrides.ContainsKey("JGPT_FA_TILE_SIZE")
 Import-BashEnvFile $EnvFile
 Restore-JgptUserOverrides $userOverrides
 $env:JGPT_DATA_DIR = $DataDir
+if ($CkptSubdirArg) {
+    if ($CkptSubdirArg -match '[\\/]|\.\.') {
+        Write-Host "[28L-WIDE-SFT] ERROR: --ckpt-dir must be a single name under checkpoints\" -ForegroundColor Red
+        exit 1
+    }
+    $env:JGPT_CHECKPOINT_SUBDIR = $CkptSubdirArg
+}
+if (-not $env:JGPT_CHECKPOINT_SUBDIR) {
+    $env:JGPT_CHECKPOINT_SUBDIR = "wide_28L_sft"
+}
+# Concatenation (not a quoted Join-Path) so the GUI TrainRun parser keeps the
+# default $CkptDir above instead of treating $($env:...) as a Windows path.
+$CkptDir = Join-Path $Root ("checkpoints\" + $env:JGPT_CHECKPOINT_SUBDIR)
+$CkptBackup = Join-Path $Root ("checkpoints\" + $env:JGPT_CHECKPOINT_SUBDIR + "_prev_backup")
+$LogFile = Join-Path $Root ("training_" + $env:JGPT_CHECKPOINT_SUBDIR + ".log")
 
 $javaHome = Find-JavaHome
 if (-not $javaHome) {
@@ -363,18 +423,34 @@ if ($hasCkpt) {
 } else {
     New-Item -ItemType Directory -Force -Path $CkptDir | Out-Null
     $dstFinal = Join-Path $CkptDir "model_final.bin"
-    if (-not (Test-Path $dstFinal)) {
-        if (-not (Test-Path $SrcBest) -and -not (Test-Path $SrcFinal)) {
+    if (-not (Test-Path -LiteralPath $dstFinal)) {
+        $seed = $null
+        if ($SeedFrom) {
+            if (-not [System.IO.Path]::IsPathRooted($SeedFrom)) {
+                $SeedFrom = Join-Path $Root $SeedFrom
+            }
+            if (-not (Test-Path -LiteralPath $SeedFrom)) {
+                Write-Host "[28L-WIDE-SFT] ERROR: --seed-from missing: $SeedFrom" -ForegroundColor Red
+                exit 1
+            }
+            $seed = $SeedFrom
+        } elseif (Test-Path -LiteralPath $SrcBest) {
+            $seed = $SrcBest
+        } elseif (Test-Path -LiteralPath $SrcFinal) {
+            $seed = $SrcFinal
+        }
+        if (-not $seed) {
             Write-Host "[28L-WIDE-SFT] ERROR: missing seed weights: $SrcBest" -ForegroundColor Red
             Write-Host "  Run pretrain first: .\scripts\windows\jgpt-train-28L-wide.cmd --no-build"
             exit 1
         }
-        $seed = $SrcBest
-        if (-not (Test-Path $seed)) { $seed = $SrcFinal }
         Copy-Item -LiteralPath $seed -Destination $dstFinal -Force
         Write-Host "[28L-WIDE-SFT] seeded weights: $seed -> $dstFinal (fresh Adam)"
     } else {
         Write-Host "[28L-WIDE-SFT] NOTE: $dstFinal exists, no Adam checkpoint - continue from weights, step 0"
+        if ($SeedFrom) {
+            Write-Host "[28L-WIDE-SFT] NOTE: --seed-from ignored because $dstFinal already exists"
+        }
     }
 }
 if (-not (Test-Path $TokenizerFile)) {

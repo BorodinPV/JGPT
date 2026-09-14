@@ -226,6 +226,18 @@ public final class GPTModel {
         return extraGenerationStopTokens;
     }
 
+    /** Тот же выбор токена, что {@link #generateGpuKv} / InferChat (top-k, nucleus, штраф повторов). */
+    public int sampleNextToken(
+            float[] logits, int offset, DecodeSampling sampling, float[] tokens, int tokenLen) {
+        return GptAutoregressiveGenerator.sampleNextToken(
+                this, logits, offset, vocabSize, sampling, tokens, tokenLen);
+    }
+
+    /** {@code <pad>}, {@code <eos>} и {@link #setExtraGenerationStopTokens}. */
+    public boolean isGenerationStopToken(int token) {
+        return GptAutoregressiveGenerator.isGenerationStopToken(this, token);
+    }
+
     /**
      * Слайс токенов {@code [1, sliceLen]} при скользящем KV-окне: один экземпляр на ту же длину {@code sliceLen},
      * чтобы не аллоцировать тензор на каждом срабатывании (длина может меняться между шагами).
@@ -279,6 +291,7 @@ public final class GPTModel {
         this.numLayers = numLayers;
         this.dIntermediate = dIntermediate;
 
+        /* U(-a, a): a = 1/√d для проекций/эмбеддингов, a = 1/√d_ff для FFN. Не 1/d. */
         float embedScale = 1.0f / (float) Math.sqrt(dModel);
         float projScale = 1.0f / (float) Math.sqrt(dModel);
         float ffnScale = 1.0f / (float) Math.sqrt(dIntermediate);
@@ -513,9 +526,10 @@ public final class GPTModel {
     /**
      * Задаёт вероятности dropout для обучения. Вызывается из {@link LLMTrainer} после создания модели.
      *
-     * @param residualDropout вероятность dropout для residual connections
-     * @param attentionDropout вероятность dropout для attention weights
-     * @param embeddingDropout вероятность dropout для embedding
+     * @param residualDropout вероятность dropout после residual (после {@code Wo} / FFN)
+     * @param attentionDropout на host-path — dropout активации после {@code Wo}, не dropout softmax-вероятностей;
+     *     canonical GPU path это поле игнорирует ({@link com.veles.llm.jgpt.ops.GpuDropout} берёт только residual и embedding)
+     * @param embeddingDropout вероятность dropout после token+pos embeddings (GPU path)
      */
     public void setDropout(float residualDropout, float attentionDropout, float embeddingDropout) {
         float residual = Math.max(0f, Math.min(1f, residualDropout));
@@ -1540,7 +1554,12 @@ public final class GPTModel {
     /**
      * Prefill с KV-cache (batch=1): заполняет кэш K/V после RoPE по всем слоям.
      *
-     * @param ropeOffset сдвиг абсолютных позиций RoPE (0 — как обычный forward; при скользящем окне — {@code startIdx})
+     * @param ropeOffset старт строк {@code E_pos} и абсолютных позиций RoPE. {@code 0} — начало
+     *     последовательности. {@link #generate} / {@link #generateGpuKv} при rollover всегда передают
+     *     {@code 0}: окно перекодируется в локальные позиции {@code 0..S-1}. Таблица {@code E_pos} имеет
+     *     ровно {@code maxSeqLen} строк, поэтому {@code ropeOffset + seqLen} не должно превышать
+     *     {@code maxSeqLen} (ненулевой offset — только для короткого среза или тестов, не для полного окна
+     *     со {@code startIdx > 0}).
      * @return logits {@code [1, seq_len, vocab_size]}
      */
     public Tensor forwardPrefill(Tensor inputTokens, KvCache cache, int ropeOffset) {
@@ -1902,14 +1921,16 @@ public final class GPTModel {
 
     /**
      * Авторегрессивная генерация (batch=1). Возвращает буфер длины {@code seq_len + maxNewTokens};
-     * неиспользуемый хвост остаётся 0 (при раннем EOS).
+     * неиспользуемый хвост остаётся 0 (при раннем EOS). {@code maxNewTokens == 0} — копия промпта длины
+     * {@code seq_len}; отрицательное значение отвергается.
      * <p>
      * При {@code temperature <= 0} — жадный выбор (argmax по logit; при равенстве — меньший индекс), без сэмплирования.
      * <p>
-     * <b>Скользящее окно (когда длина контекста превышает :</b> KV-cache сбрасывается и
-     * выполняется полный prefill по срезу подсказки с подходящим RoPE-сдвигом. Это корректно, но даёт дополнительную
-     * работу порядка квадрата окна на каждое срабатывание; для очень длинных генераций в production обычно используют
-     * rolling KV / paged attention вместо полного пересчёта.
+     * Скользящее окно при {@code currentLen > maxSeqLen}: KV сбрасывается, полный prefill последних
+     * {@code maxSeqLen} токенов с {@code ropeOffset = 0} (локальные {@code E_pos}/RoPE {@code 0..S-1}), затем
+     * {@code continue} — incremental decode на глобальной позиции 1024 не вызывается. Это ограничение окна,
+     * не баг позиций. Сложность каждого rollover — O(окно²); для длинных прогонов лучше увеличить
+     * {@code max_seq_len} или rolling/paged KV.
      */
     public Tensor generate(Tensor inputTokens, int maxNewTokens, float temperature, int topK) {
         return generate(inputTokens, maxNewTokens, DecodeSampling.of(temperature, topK));

@@ -306,8 +306,8 @@ public final class LLMConfig {
     /**
      * Переопределяет {@link #accumulationSteps} через переменную окружения {@code JGPT_ACCUMULATION_STEPS}.
      *
-     * <p>Микробатчей градиента на один шаг оптимизатора (см. {@link TrainingConfig#accumulationSteps}): CE и backward
-     * масштабируются как {@code 1/N}. Пример: {@code JGPT_ACCUMULATION_STEPS=4 ./scripts/linux/jgpt-smart.sh}
+     * <p>Микробатчей градиента на один шаг оптимизатора (см. {@link TrainingConfig#accumulationSteps}):
+     * CE — global token-mean по валидным токенам окна. Пример: {@code JGPT_ACCUMULATION_STEPS=4 ./scripts/linux/jgpt-smart.sh}
      */
     public static LLMConfig applyAccumulationStepsOverrideFromEnv(LLMConfig base) {
         int overridden = readPositiveEnvInt("JGPT_ACCUMULATION_STEPS", base.accumulationSteps);

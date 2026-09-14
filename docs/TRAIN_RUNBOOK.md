@@ -18,7 +18,7 @@
 
 Ориентиры честного val (hold-out по документам, RTX 3080): pretrain 3.16 после 1-й эпохи → 1.47 (ppl 4.4) к 9-й, дальше плато; SFT стартует с ~2.4 и опускается к ~2.0. Сырой претрейн в чате пишет вики-стиль без фактов — это ожидаемо, за формат ответов отвечает SFT.
 
-Стартовый корпус: `python scripts/fetch-ru-pretrain.py` → `data/books/pretrain_txt` (дамп ruwiki). Классика: `--source books`. Полный lib.ru: `scripts/linux/download-lib-ru-library.sh`. SFT-данные: `.jsonl` в `data/sft/raw` → `scripts/sft-filter-short.py` → `data/sft/short` (скрипт SFT делает это сам, если каталог пуст).
+Стартовый корпус: `python scripts/fetch-ru-pretrain.py` → `data/books/pretrain_txt` (дамп ruwiki). Классика: `--source books`. Полный lib.ru: `scripts/linux/download-lib-ru-library.sh`. SFT-данные: `.jsonl` в `data/sft/raw` → `scripts/sft-filter-clean.py` → `data/sft/clean` (скрипт SFT делает это сам, если каталог пуст). Старый length-only набор — `data/sft/short`.
 
 **37L SFT ~100M** (JSONL, `env/37L-sft-100M.env`, чекпоинты `checkpoints/sft_37L_16k_2048/`):
 

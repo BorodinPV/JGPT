@@ -15,17 +15,17 @@ final class LlmTrainerCrossEntropy {
 
     private LlmTrainerCrossEntropy() {}
 
-    static float applyTrainLossAndGrad(LLMTrainer t, Tensor logits, Tensor target, float gradScale) {
+    static float applyTrainLossAndGrad(LLMTrainer t, Tensor logits, Tensor target) {
         if (t.config.usesSampledTrainLoss()) {
-            return applySampledTrainLossAndGradDevice(t, logits, target, gradScale);
+            return applySampledTrainLossAndGradDevice(t, logits, target);
         }
-        return applyCrossEntropyLossAndGrad(t, logits, target, gradScale);
+        return applyCrossEntropyLossAndGrad(t, logits, target);
     }
 
-    static float applyCrossEntropyLossAndGrad(LLMTrainer t, Tensor logits, Tensor target, float gradScale) {
+    static float applyCrossEntropyLossAndGrad(LLMTrainer t, Tensor logits, Tensor target) {
         t.model.clearSampledTrainLossGrad();
         if (t.config.deviceLogitsTrainStep && t.model.hasDeviceLogitsBuffers()) {
-            return applyCrossEntropyLossAndGradDevice(t, logits, target, gradScale);
+            return applyCrossEntropyLossAndGradDevice(t, logits, target);
         }
         int[] logitShape = logits.getShape();
         int batch = logitShape[0];
@@ -41,7 +41,7 @@ final class LlmTrainerCrossEntropy {
             return 0f;
         }
         fillCeTargetsHostSanitized(t, target, totalTokens, vocabSize);
-        float gradScaleOverTotal = ceFusedGradScaleOverTotal(t, ceValidDenom(t, totalTokens), gradScale);
+        float gradScaleOverTotal = ceFusedGradScaleOverTotal(t);
         if (logits.isDirectStorage() && target.isDirectStorage()) {
             return TensorOpsGPU.crossEntropySoftmaxGradLossGpuDirectEx(
                     logits.directByteBuffer(),
@@ -61,6 +61,40 @@ final class LlmTrainerCrossEntropy {
                 logitData, targetData, gradData, batch, seqLen, vocabSize, gradScaleOverTotal);
     }
 
+    /**
+     * Provisional CE denom for one optimizer window: {@code batch × seq × accum}. Backward uses
+     * {@code lossScale / this} so FP16 grads stay the same order as a packed full window. After the window,
+     * param grads are multiplied by {@code this / N_valid} to get the global token-mean.
+     */
+    static int accumWindowTokenDenom(TrainingConfig c) {
+        Objects.requireNonNull(c, "config");
+        return accumWindowTokenDenom(c.batchSize, c.maxSeqLen, c.accumulationSteps);
+    }
+
+    static int accumWindowTokenDenom(int batchSize, int maxSeqLen, int accumulationSteps) {
+        long n =
+                (long) Math.max(1, batchSize)
+                        * (long) Math.max(1, maxSeqLen)
+                        * (long) Math.max(1, accumulationSteps);
+        return n > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) n;
+    }
+
+    /** {@code windowDenom / N_valid}; {@code 1} if {@code validTokens <= 0} (no rescale of an empty window). */
+    static float tokenMeanRescale(int windowDenom, int validTokens) {
+        if (validTokens <= 0) {
+            return 1f;
+        }
+        return (float) windowDenom / (float) validTokens;
+    }
+
+    static int validCountFromScratch(LLMTrainer t, int nrows) {
+        return countValidCeTargets(t.ceHostTargetScratch, nrows);
+    }
+
+    static float ceFusedGradScaleOverTotal(LLMTrainer t) {
+        return ceFusedGradScaleOverTotal(t, accumWindowTokenDenom(t.config), 1f);
+    }
+
     static float ceFusedGradScaleOverTotal(LLMTrainer t, int totalTokens, float microbatchGradScale) {
         int denom = totalTokens > 0 ? totalTokens : 1;
         return microbatchGradScale * t.lossScaleForForward() / (float) denom;
@@ -78,11 +112,6 @@ final class LlmTrainerCrossEntropy {
             }
         }
         return v;
-    }
-
-    static int ceValidDenom(LLMTrainer t, int nrows) {
-        int v = countValidCeTargets(t.ceHostTargetScratch, nrows);
-        return v > 0 ? v : nrows;
     }
 
     static int ceTokenIdOrInvalid(float v, int vocabSize) {
@@ -153,7 +182,7 @@ final class LlmTrainerCrossEntropy {
         t.ceTargetsDevice.copyFrom(t.ceHostTargetScratch, 0, nrows);
     }
 
-    static float applyCrossEntropyLossAndGradDevice(LLMTrainer t, Tensor logits, Tensor target, float gradScale) {
+    static float applyCrossEntropyLossAndGradDevice(LLMTrainer t, Tensor logits, Tensor target) {
         t.model.clearSampledTrainLossGrad();
         int[] logitShape = logits.getShape();
         int batch = logitShape[0];
@@ -172,7 +201,7 @@ final class LlmTrainerCrossEntropy {
             t.ceTargetsCapRows = nrows;
         }
         fillCeTargetsDeviceSanitized(t, target, nrows, vocabSize);
-        float gradScaleOverTotal = ceFusedGradScaleOverTotal(t, ceValidDenom(t, nrows), gradScale);
+        float gradScaleOverTotal = ceFusedGradScaleOverTotal(t);
         return TensorOpsGPU.crossEntropySoftmaxGradLossGpuDeviceTargetsDevice(
                 logitsGpu,
                 t.ceTargetsDevice,
@@ -184,7 +213,7 @@ final class LlmTrainerCrossEntropy {
                 t.fp16Matmul);
     }
 
-    static void applyCrossEntropyLossAndGradDeviceAsync(LLMTrainer t, Tensor logits, Tensor target, float gradScale) {
+    static void applyCrossEntropyLossAndGradDeviceAsync(LLMTrainer t, Tensor logits, Tensor target) {
         t.model.clearSampledTrainLossGrad();
         int[] logitShape = logits.getShape();
         int batch = logitShape[0];
@@ -203,7 +232,7 @@ final class LlmTrainerCrossEntropy {
             t.ceTargetsCapRows = nrows;
         }
         fillCeTargetsDeviceSanitized(t, target, nrows, vocabSize);
-        float gradScaleOverTotal = ceFusedGradScaleOverTotal(t, ceValidDenom(t, nrows), gradScale);
+        float gradScaleOverTotal = ceFusedGradScaleOverTotal(t);
         TensorOpsGPU.crossEntropySoftmaxGradLossGpuDeviceTargetsDeviceAsync(
                 logitsGpu,
                 t.ceTargetsDevice,
@@ -342,7 +371,7 @@ final class LlmTrainerCrossEntropy {
         return candidates;
     }
 
-    static float applySampledTrainLossAndGradDevice(LLMTrainer t, Tensor logits, Tensor target, float gradScale) {
+    static float applySampledTrainLossAndGradDevice(LLMTrainer t, Tensor logits, Tensor target) {
         if (!t.config.deviceLogitsTrainStep || !t.model.hasDeviceSampledTrainLmHeadActivations()) {
             throw new IllegalStateException(
                     "sampled train loss requires sampled device forward (LM activations without full logits)");
@@ -376,7 +405,7 @@ final class LlmTrainerCrossEntropy {
                         t.sampledCandidateGradDevice,
                         rows,
                         candidates,
-                        ceFusedGradScaleOverTotal(t, ceValidDenom(t, rows), gradScale));
+                        ceFusedGradScaleOverTotal(t));
         t.model.setSampledTrainLossGrad(t.sampledCandidateIdsDevice, t.sampledCandidateGradDevice, candidates);
         return loss;
     }

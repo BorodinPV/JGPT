@@ -56,14 +56,14 @@ final class LlmTrainerOptimizerStep {
             return false;
         }
 
-        List<Tensor> gradsToUnscale = collectGradTensorsWithLossScale(t, logits);
+        List<Tensor> paramGrads = collectParamGradTensors(t);
         if (t.fp16Matmul) {
-            DynamicLossScaler.unscaleGradients(gradsToUnscale, scaleUsedInForward);
+            DynamicLossScaler.unscaleGradients(paramGrads, scaleUsedInForward);
         }
 
         float gradNorm = 0f;
-        if (!gradsToUnscale.isEmpty()) {
-            gradNorm = AdamOptimizer.clipGradientsGlobal(gradsToUnscale, t.config.maxGradNorm);
+        if (!paramGrads.isEmpty()) {
+            gradNorm = AdamOptimizer.clipGradientsGlobal(paramGrads, t.config.maxGradNorm);
         }
         t.lastGlobalGradNorm = gradNorm;
 
@@ -133,12 +133,6 @@ final class LlmTrainerOptimizerStep {
         }
 
         double sumSq = sumSquaresGpuParamGrads(t, paramMap);
-        if (logits.hasGrad()) {
-            float[] lg = logits.gradBuffer();
-            if (lg.length > 0) {
-                sumSq += TensorOpsGPU.sumSquaresGPU(lg, lg.length);
-            }
-        }
         float totalNorm = (float) Math.sqrt(sumSq);
         t.lastGlobalGradNorm = totalNorm;
         if (totalNorm > t.config.maxGradNorm && t.config.maxGradNorm > 0f) {
@@ -147,12 +141,6 @@ final class LlmTrainerOptimizerStep {
                 GpuTensor gt = e.getValue();
                 if (gt.hasGradBuffer()) {
                     TensorOpsGPU.scaleInPlaceGpuDevice(gt.gradBuffer(), e.getKey().size(), clipCoeff);
-                }
-            }
-            if (logits.hasGrad()) {
-                float[] lg = logits.gradBuffer();
-                if (lg.length > 0) {
-                    TensorOpsGPU.scaleInPlaceGPU(lg, lg.length, clipCoeff);
                 }
             }
         }
@@ -220,15 +208,13 @@ final class LlmTrainerOptimizerStep {
         return false;
     }
 
-    static List<Tensor> collectGradTensorsWithLossScale(LLMTrainer t, Tensor logits) {
-        List<Tensor> list = new ArrayList<>(t.parameters.size() + 1);
+    /** Trainable parameter grads only; {@code logits.grad} is not a parameter and is not clipped. */
+    static List<Tensor> collectParamGradTensors(LLMTrainer t) {
+        List<Tensor> list = new ArrayList<>(t.parameters.size());
         for (Tensor p : t.parameters) {
             if (p.hasGrad()) {
                 list.add(p);
             }
-        }
-        if (logits.hasGrad()) {
-            list.add(logits);
         }
         return list;
     }
@@ -407,12 +393,6 @@ final class LlmTrainerOptimizerStep {
         }
 
         double sumSq = sumSquaresGpuParamGrads(t, paramMap);
-        if (logits.hasGrad()) {
-            float[] lg = logits.gradBuffer();
-            if (lg.length > 0) {
-                sumSq += TensorOpsGPU.sumSquaresGPU(lg, lg.length);
-            }
-        }
         float totalNorm = (float) Math.sqrt(sumSq);
         t.lastGlobalGradNorm = totalNorm;
         if (!Float.isFinite(totalNorm)) {
@@ -451,12 +431,6 @@ final class LlmTrainerOptimizerStep {
                 GpuTensor gt = e.getValue();
                 if (gt.hasGradBuffer()) {
                     TensorOpsGPU.scaleInPlaceGpuDevice(gt.gradBuffer(), e.getKey().size(), clipCoeff);
-                }
-            }
-            if (logits.hasGrad()) {
-                float[] lg = logits.gradBuffer();
-                if (lg.length > 0) {
-                    TensorOpsGPU.scaleInPlaceGPU(lg, lg.length, clipCoeff);
                 }
             }
         }

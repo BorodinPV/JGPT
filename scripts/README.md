@@ -4,11 +4,13 @@ Launchers are split by OS. Shared helpers (Python) stay in this directory.
 
 | Path | OS | Role |
 |------|----|------|
-| `linux/jgpt-train-28L-wide.sh` | Linux | Wide 28L books pretrain (`env/28L-wide-pretrain.env`) |
-| `linux/jgpt-train-28L-wide-sft.sh` | Linux | SFT after 28L-wide (`env/28L-wide-sft.env`) |
-| `windows/jgpt-train-28L-wide.ps1` | Windows | Same pretrain (`windows/jgpt-train-28L-wide.cmd`) |
-| `windows/jgpt-train-28L-wide-sft.ps1` | Windows | Same SFT (`windows/jgpt-train-28L-wide-sft.cmd`) |
-| `windows/jgpt-chat-28L-wide.ps1` | Windows | InferChat on 28L-wide SFT/pretrain |
+| `windows/jgpt-gui.ps1` | Windows | **Desktop GUI** (`windows/jgpt-gui.cmd`): start/stop any `jgpt-train-*`, live charts from `state/stats.json`, log tail, checkpoint browser, in-process chat. Needs a JavaFX JDK (Liberica Full). `--mvn` = full Maven compile first; default compiles only the `gui` package with javac (safe while a trainer runs) |
+| `windows/jgpt-stop-train.cmd` | Windows | Soft stop: creates `state/STOP`, trainer writes `checkpoint_final.bin` and exits. Use instead of Ctrl+C |
+| `linux/jgpt-train-28L-wide.sh` | Linux | Wide 28L pretrain (`env/28L-wide-pretrain.env`: full CE, `<eos>`-packed docs, doc-level val, dropout 0.1) |
+| `linux/jgpt-train-28L-wide-sft.sh` | Linux | SFT after 28L-wide (`env/28L-wide-sft.env`, data `data/sft/short`) |
+| `windows/jgpt-train-28L-wide.ps1` | Windows | Same pretrain (`windows/jgpt-train-28L-wide.cmd`); flags `--no-build`, `--fresh`, `--restart-plan` |
+| `windows/jgpt-train-28L-wide-sft.ps1` | Windows | Same SFT (`windows/jgpt-train-28L-wide-sft.cmd`); seeds from `wide_28L_16k_1024/model_best.bin`, builds `data/sft/short` from `raw` if empty |
+| `windows/jgpt-chat-28L-wide.ps1` | Windows | InferChat on 28L-wide SFT `model_best` (default) or `--model <path> --raw` for the pretrain |
 | `linux/jgpt-train-20L-wide.sh` | Linux | Wide 20L books pretrain (`env/20L-wide-pretrain.env`) |
 | `linux/jgpt-train-20L-wide-sft.sh` | Linux | SFT after 20L-wide (`env/20L-wide-sft.env`) |
 | `windows/jgpt-train-20L-wide.ps1` | Windows | Same pretrain (`windows/jgpt-train-20L-wide.cmd`) |
@@ -39,10 +41,16 @@ Launchers are split by OS. Shared helpers (Python) stay in this directory.
 
 From the repo root:
 
-```bash
-./scripts/linux/jgpt-train-37L-sft.sh
+```powershell
+.\scripts\windows\jgpt-train-28L-wide.cmd --no-build       # pretrain (resume if checkpoints exist)
+.\scripts\windows\jgpt-train-28L-wide-sft.cmd --no-build   # SFT
+.\scripts\windows\jgpt-stop-train.cmd                      # soft stop
+.\scripts\windows\jgpt-gui.cmd                             # GUI
 ```
 
-```powershell
-.\scripts\windows\jgpt-train-37L-sft.ps1
+```bash
+./scripts/linux/jgpt-train-28L-wide.sh
+./scripts/linux/jgpt-train-28L-wide-sft.sh
 ```
+
+Common launcher flags: `--no-build` (skip CUDA rebuild), `--fresh` (archive the preset's checkpoint dir to `*_prev_backup`, start from scratch), `--restart-plan` (keep weights + Adam from the newest checkpoint, reset step / LR schedule / epoch / best; `JGPT_FINETUNE=1` for that run only). Resume needs no flags: the trainer loads the newest of `checkpoint_final / step_N / epoch_N / best` by `globalStep`.

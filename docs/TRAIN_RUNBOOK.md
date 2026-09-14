@@ -6,15 +6,19 @@
 
 Скрипты лежат в `scripts/linux/` и `scripts/windows/` ([карта](../scripts/README.md)). Поток 37L SFT: [data-flow-37L-sft.puml](data-flow-37L-sft.puml).
 
-**28L-wide (дорогой путь, ~134M):** pretrain на `.txt` → SFT. Геометрия `d_model=512`, 32 головы (`d_head=16`), 28 слоёв, seq 1024, BPE без lowercasing и с `<user>`/`<assistant>`. Чекпоинты **не** пересекаются с 37L и с 20L.
+**28L-wide (основной путь, ~134M):** pretrain на `.txt` → SFT → чат. Геометрия `d_model=512`, 32 головы (`d_head=16`), 28 слоёв, seq 1024, BPE 16k без lowercasing и с `<user>`/`<assistant>`. Полный CE по словарю, документы упакованы через `<eos>`, val по документам, dropout 0.1. Чекпоинты **не** пересекаются с 37L и с 20L.
 
 ```powershell
-.\scripts\windows\jgpt-train-28L-wide.cmd --no-build
-.\scripts\windows\jgpt-train-28L-wide-sft.cmd --no-build
-.\scripts\windows\jgpt-chat-28L-wide.cmd
+.\scripts\windows\jgpt-train-28L-wide.cmd --no-build        # ~1.3 ч/эпоха, 10 эпох; checkpoints\wide_28L_16k_1024
+.\scripts\windows\jgpt-train-28L-wide-sft.cmd --no-build    # ~2.5 ч на 2 эпохи; checkpoints\wide_28L_sft
+.\scripts\windows\jgpt-chat-28L-wide.cmd                    # SFT model_best; --raw --model <path> для претрейна
+.\scripts\windows\jgpt-stop-train.cmd                       # остановка (НЕ Ctrl+C)
+.\scripts\windows\jgpt-gui.cmd                              # GUI: всё выше + графики, лог, чекпоинты
 ```
 
-Стартовый корпус: `python scripts/fetch-ru-pretrain.py` → `data/books/pretrain_txt` (дамп ruwiki). Классика: `--source books`. Полный lib.ru: `scripts/linux/download-lib-ru-library.sh`.
+Ориентиры честного val (hold-out по документам, RTX 3080): pretrain 3.16 после 1-й эпохи → 1.47 (ppl 4.4) к 9-й, дальше плато; SFT стартует с ~2.4 и опускается к ~2.0. Сырой претрейн в чате пишет вики-стиль без фактов — это ожидаемо, за формат ответов отвечает SFT.
+
+Стартовый корпус: `python scripts/fetch-ru-pretrain.py` → `data/books/pretrain_txt` (дамп ruwiki). Классика: `--source books`. Полный lib.ru: `scripts/linux/download-lib-ru-library.sh`. SFT-данные: `.jsonl` в `data/sft/raw` → `scripts/sft-filter-short.py` → `data/sft/short` (скрипт SFT делает это сам, если каталог пуст).
 
 **37L SFT ~100M** (JSONL, `env/37L-sft-100M.env`, чекпоинты `checkpoints/sft_37L_16k_2048/`):
 
@@ -98,30 +102,42 @@ JGPT_FINETUNE=1 ./scripts/linux/jgpt-smart.sh
 
 ## Остановка и продолжение
 
-**Остановить:**
-```bash
-Ctrl+C
-# Shutdown hook в LLMTrainer сохраняет checkpoint_final.bin
+**Остановить (Windows):**
+```powershell
+.\scripts\windows\jgpt-stop-train.cmd     # создаёт state\STOP
+# в окне обучения дождаться: [STOP] … затем [SHUTDOWN] checkpoint сохранён
+```
+Или кнопка «Стоп (мягко)» в GUI. **Ctrl+C в PowerShell убивает java без чекпоинта** — потеряете шаги после последнего `checkpoint_step_N` (каждые `JGPT_SAVE_EVERY_STEPS`, в wide-пресетах 200).
+
+**Остановить (Linux):** Ctrl+C / SIGTERM — shutdown hook в `LLMTrainer` сохраняет `checkpoint_final.bin`.
+
+**Продолжить:** тот же скрипт без флагов. Тренер выбирает чекпоинт с наибольшим `globalStep` среди `final / step_N / epoch_N / best`, поэтому resume работает и после жёсткого обрыва.
+
+```powershell
+.\scripts\windows\jgpt-train-28L-wide-sft.cmd --no-build
 ```
 
-**Продолжить:**
-```bash
-./scripts/linux/jgpt-smart.sh   # подхватит checkpoint_final.bin автоматически
-```
+**Смена плана** (другие данные, другой пресет, другой loss) — один раз `--restart-plan`: веса + Adam остаются, шаг/LR/эпоха/best сбрасываются. Не путать с `--fresh` (архив каталога и с нуля).
 
 ---
 
 ## Добавление книг в процессе
 
-1. Положить `.txt` в `data/books/`
-2. `Ctrl+C`
+1. Положить `.txt` в `data/books/pretrain_txt` (28L-wide) или `data/books/` (smart)
+2. Мягко остановить (см. выше)
 3. Запустить снова:
 
-```bash
-# Продолжить с того же шага (LR-расписание не сбрасывается):
-./scripts/linux/jgpt-smart.sh
+```powershell
+# Продолжить с того же шага (LR-расписание не сбрасывается; новые документы попадут в поток при следующей эпохе):
+.\scripts\windows\jgpt-train-28L-wide.cmd --no-build
 
-# Начать новый цикл эпох с расширенным корпусом:
+# Новый цикл эпох с расширенным корпусом (веса и Adam остаются):
+.\scripts\windows\jgpt-train-28L-wide.cmd --no-build --restart-plan
+```
+
+```bash
+# Linux, книги + smart
+./scripts/linux/jgpt-smart.sh
 JGPT_FINETUNE=1 ./scripts/linux/jgpt-smart.sh
 ```
 
@@ -135,21 +151,24 @@ JGPT_FINETUNE=1 ./scripts/linux/jgpt-smart.sh
 
 ## Мониторинг
 
+```powershell
+# GUI (Windows): вкладки Обучение / Лог / Чекпоинты / Чат, обновление раз в 2 с из state\stats.json
+.\scripts\windows\jgpt-gui.cmd
+```
+
 ```bash
-# Хвост лога (основной «дашборд»)
-tail -f training_allbooks.log
+# Хвост лога без PERF/VRAM-шума
+tail -f training_28L_wide.log | grep -E "\[STEP\]|\[EVAL\]|\[CKPT\]|\[FP16\]|WARN|SMART"
 
-# Веб-дашборд с графиками (открыть в браузере)
-xdg-open docs/dashboard.html
-# Автообновление каждые 30 с из state/stats.json
-
-# Хвост лога
-tail -f training_allbooks.log | grep -E "\[STEP\]|\[EVAL\]|\[SAMPLE\]|WARN|SMART"
-
-# Текущий шаг и пресет
+# Текущий шаг и пресет (smart)
 cat state/last_step.txt
 cat state/current_preset_idx
+
+# Старый HTML-дашборд: тот же stats.json, но нужен http-сервер
+python -m http.server 8765   # → http://localhost:8765/docs/dashboard.html
 ```
+
+Здоровый прогон: `val_loss` падает на каждом eval; `[FP16] scale` колеблется 32768↔65536; в `stats.json` `skipped_steps`, `non_finite`, `oom_errors`, `fp16_stuck` равны 0; train с dropout выше val на 0.1–0.2 — норма, не переобучение.
 
 ---
 
@@ -168,55 +187,56 @@ cat state/current_preset_idx
 
 ## Производительность (RTX 3080)
 
-| Режим | Throughput |
-|-------|------------|
-| 12L, пресет `02-stable`, книги | ~26 000 tokens/sec |
-| 37L SFT, seq 2048 | ~9 000–10 000 tokens/sec |
+| Режим | Throughput | Шаг |
+|-------|------------|-----|
+| 28L-wide pretrain, seq 1024, batch 4×16, full CE + dropout | ~12 000 tok/s | ~5.3 с на 65 536 токенов |
+| 28L-wide SFT, batch 4×8 | ~12 000 tok/s | ~2.7 с |
+| 37L SFT, seq 2048, sampled CE | ~9 000–10 000 tok/s | ~27–28 с на 262 144 токена |
+| 12L, пресет `02-stable`, книги | ~26 000 tok/s | ~1250 мс |
 
-12L шаг ~1250 мс, VRAM ~5.2 / 10 GB. 37L шаг ~27–28 с на эффективный батч 262144 токена.
+28L-wide на sampled CE давал ~6 000 tok/s: сборка кандидатов на CPU и gather-голова без Tensor Cores дороже одного полного GEMM `4096×512×16000`. Разбивка шага пишется в лог при `JGPT_TRAIN_PERF=1` (`[PERF] … прямой / лосс+∂CE / обратн / клип+опт`).
 
 ### Ключевые оптимизации
 
-- **FlashAttention-2** — tile size 128, полностью fused attention
-- **Optimized CE** — block-per-row kernel, 12x faster (~110ms → ~9ms)
-- **Warp-level reduction** — для embedding gradients, 32x less atomic contention
-- **CUDA Graph** — на уровне декодер-слоёв, уменьшает CPU launch overhead
+- **FlashAttention-2** — cuDNN SDPA, fused FP16; fallback WMMA
+- **Full-vocab CE на GPU** — логиты и ∂CE на устройстве, один GEMM на голову
+- **Warp-level reduction** — для embedding gradients
 - **cuBLAS GEMM** — FP16 Tensor Cores для всех матричных операций
+- **CUDA Graph** — на уровне декодер-слоёв (в wide-пресетах выключен; при dropout отключается сам)
 
 ## Ключевые параметры (в `env/*.env`)
 
 | Переменная | Описание |
 |------------|----------|
-| `JGPT_BATCH_SIZE` | Размер батча |
-| `JGPT_SAMPLED_CE_CANDIDATES` | Кандидаты sampled CE |
-| `JGPT_FP16_DYNAMIC_INITIAL` | Начальный loss scale |
-| `JGPT_FP16_DYNAMIC_GROWTH_INTERVAL` | Интервал роста scale |
-| `JGPT_DECODER_LAYER_CUDA_GRAPH` | CUDA graph на декодер-слой (1/0). Включено по умолчанию — даёт +5-10% скорости |
+| `JGPT_TRAIN_LOSS_MODE` | `full` (по умолчанию для wide) или `sampled` (старые пресеты; `JGPT_SAMPLED_CE_CANDIDATES` читается только в этом режиме) |
+| `JGPT_BATCH_SIZE`, `JGPT_ACCUMULATION_STEPS` | Микробатч × накопление = эффективный батч |
+| `JGPT_DROPOUT` | Residual + embedding dropout на GPU-пути (0 = выкл., по умолчанию выкл.) |
+| `JGPT_SAVE_EVERY_STEPS`, `JGPT_EVAL_EVERY_STEPS` | Частота `checkpoint_step_N` и eval (wide: 200 / 100) |
+| `JGPT_INTERACTIVE_EVERY` | Генерация сэмпла каждые N шагов. **Держите 0**: каждый сэмпл делит FP16 loss scale на 64, и он уходит в 1 |
+| `JGPT_FP16_DYNAMIC_INITIAL`, `JGPT_FP16_DYNAMIC_MAX`, `JGPT_FP16_DYNAMIC_GROWTH_INTERVAL` | Динамический loss scale |
+| `JGPT_VAL_FRACTION` | Доля hold-out (по документам / диалогам) |
+| `JGPT_DECODER_LAYER_CUDA_GRAPH` | CUDA graph на декодер-слой (1/0); не совместим с dropout |
+| `JGPT_FINETUNE` | `1` = сброс шага/LR/эпохи/best при загрузке чекпоинта (то же, что `--restart-plan`) |
 
 ---
 
-## Dropout регуляризация
+## Dropout и weight decay
 
-Dropout включён по умолчанию для предотвращения переобучения. Работает автоматически во время обучения, отключается при инференсе.
+Включаются пресетом (`JGPT_DROPOUT=0.1` в `28L-wide-*.env`); без переменной dropout выключен.
 
-| Тип | Значение по умолчанию | Куда применяется |
-|-----|----------------------|------------------|
-| `residualDropout` | 0.1 (10%) | После FFN перед residual connection |
-| `attentionDropout` | 0.1 (10%) | После attention output перед residual connection |
-| `embeddingDropout` | 0.1 (10%) | На embedding слое (резерв) |
+| Где | Реализация |
+|-----|------------|
+| residual после attention `W_o` и после FFN `W_2` | GPU-ядро, inverted dropout, маска пересчитывается в backward по тому же seed (шаг + слой + место) — ничего не хранится |
+| embedding (token + pos) | то же |
+| attention weights | на GPU не реализован (0) |
 
-### Как это работает
-
-- **Inverted dropout**: случайно обнуляет 10% элементов, остальные масштабируются на `1/(1-p) = 1.11`, чтобы сумма сохранялась
-- **XOR-shift RNG**: быстрый генератор случайных чисел в CUDA ядре с seed-based воспроизводимостью
-- **По слоям**: каждый decoder block использует свой seed (`42 + layerIdx * 1000`)
-- **Без переменных окружения**: dropout настраивается через `TrainingConfig`, работает автоматически
+Eval и генерация — всегда без dropout. AdamW weight decay действует только на матрицы (ранг ≥ 2); RMSNorm-гейны не затухают.
 
 ### Рекомендации
 
-- **Не включайте dropout на середине обучения** — начните заново с чистого чекпоинта
-- **При переобучении** (train loss ↓, eval loss ↑) можно увеличить dropout до 0.2-0.3
-- **Если модель недообучается** — уменьшите dropout до 0.05 или отключите (0.0)
+- Менять `JGPT_DROPOUT` только вместе с `--fresh` или `--restart-plan`
+- Переобучение (train ↓, val ↑) — поднять до 0.2
+- Недообучение — 0.05 или 0
 
 ---
 
@@ -225,28 +245,28 @@ Dropout включён по умолчанию для предотвращени
 ```
 JGPT/
 ├── env/
-│   ├── 00-max-throughput.env
-│   ├── 01-aggressive.env       ← старт по умолчанию
-│   ├── 02-stable.env
-│   └── 03-recovery.env
+│   ├── 28L-wide-pretrain.env   ← основной pretrain (full CE, dropout, packing)
+│   ├── 28L-wide-sft.env        ← SFT после него
+│   ├── 20L-wide-*.env, 37L-*.env
+│   └── 00…04-*.env             ← цепочка jgpt-smart.sh
 ├── state/
-│   ├── current.env             ← symlink на активный пресет
-│   ├── current_preset_idx      ← индекс пресета (0–3)
+│   ├── stats.json              ← метрики текущего прогона (GUI / dashboard.html)
+│   ├── STOP                    ← запрос мягкой остановки (появляется на время остановки)
 │   ├── last_step.txt           ← последний сохранённый шаг
-│   └── stats.json              ← метрики для dashboard.html
+│   └── current.env, current_preset_idx ← только smart
 ├── scripts/
-│   ├── linux/                  ← bash: smart, 24/32/37L, build-cuda.sh
-│   ├── windows/                ← ps1: 37L-sft, build-cuda.ps1
+│   ├── windows/                ← jgpt-train-*.cmd/.ps1, jgpt-chat-*.cmd, jgpt-stop-train.cmd, jgpt-gui.cmd, build-cuda.ps1
+│   ├── linux/                  ← bash: smart, 28L/20L/37L, build-cuda.sh
+│   ├── sft-filter-short.py, fetch-ru-pretrain.py, …
 │   └── README.md
-├── data/books/                 ← .txt для jgpt-smart / 24L / 32L
-├── data/books/pretrain_txt/    ← стартовый корпус 20L-wide
-├── data/sft/raw/               ← .jsonl для 37L-sft
-├── checkpoints/all_books/      ← книги
-├── checkpoints/wide_20L_16k_1024/ ← 20L-wide pretrain
-├── checkpoints/wide_20L_sft/   ← 20L-wide SFT
-├── checkpoints/sft_37L_16k_2048/
-├── docs/dashboard.html         ← веб-дашборд (state/stats.json)
-├── docs/data-flow-37L-sft.puml ← поток данных 37L SFT
-├── training_allbooks.log       ← smart
-└── training_sft_37L.log        ← 37L SFT
+├── src/main/java/com/veles/llm/jgpt/gui/ ← JavaFX GUI (собирается jgpt-gui.cmd в target/gui-classes)
+├── data/books/pretrain_txt/    ← корпус 28L-wide (ruwiki + классика)
+├── data/sft/raw/ → data/sft/short/ ← .jsonl для SFT
+├── checkpoints/tokenizer_wide_16k.bin
+├── checkpoints/wide_28L_16k_1024/ ← 28L-wide pretrain (checkpoint_*/model_*/tokenizer_*)
+├── checkpoints/wide_28L_sft/   ← 28L-wide SFT
+├── checkpoints/*_prev_backup/  ← архив после --fresh
+├── docs/dashboard.html         ← старый веб-дашборд (state/stats.json)
+├── training_28L_wide.log, training_28L_wide_sft.log
+└── training_allbooks.log, training_sft_37L.log ← старые пути
 ```

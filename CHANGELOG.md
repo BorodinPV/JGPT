@@ -8,7 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added / Добавлено
+- JavaFX desktop GUI (`scripts/windows/jgpt-gui.cmd`, package `com.veles.llm.jgpt.gui`): start/stop training, live loss/perplexity charts from `state/stats.json`, filtered log tail, checkpoint browser, in-process chat with any `model_*.bin`. Replaces the python-served `docs/dashboard.html` (kept, still works).
+  - Десктопный GUI на JavaFX: обучение, графики, лог, чекпоинты, чат. Старый HTML-дашборд сохранён.
+- GPU dropout on residual branches and embeddings (`JGPT_DROPOUT`, off by default): deterministic per-step/per-layer masks, no mask storage; decoder-layer CUDA Graph is disabled while active.
+  - GPU dropout (residual + embedding) с детерминированными масками; CUDA Graph на слои выключается.
+- Launcher flag `--restart-plan` (= `JGPT_FINETUNE=1` for one run): keep weights + Adam, reset step / LR schedule / epoch / best.
+  - Флаг `--restart-plan`: веса и Adam остаются, план обучения с нуля.
+- `JGPT_SAVE_EVERY_STEPS` / `JGPT_EVAL_EVERY_STEPS` (periodic `checkpoint_step_N`), `JGPT_DROPOUT`, `JGPT_FP16_AUX_SOFTEN_SAMPLE`.
+
 ### Changed / Изменено
+- 28L-wide presets train with full-vocab CE (`JGPT_TRAIN_LOSS_MODE=full`): sampled CE with uniform negatives never pushed down plausible wrong tokens and was slower (~6k → ~12k tok/s on RTX 3080).
+  - Wide-пресеты учатся полным CE: корректнее и вдвое быстрее sampled.
+- Pretrain packs documents into one stream via `<eos>` (short docs and tails are no longer dropped) and splits train/val by document instead of by window.
+  - Претрейн упаковывает документы через `<eos>`, val — по документам.
+- Checkpoints: format v5 stores the FP16 loss-scaler state; all checkpoint/model/tokenizer writes are atomic (`.tmp` + rename); resume picks the newest of `final / step_N / epoch_N / best` by `globalStep` and loads the paired `model_*.bin`; pending writes are awaited on exit.
+  - Чекпоинты v5, атомарная запись, resume по самому свежему шагу.
+- AdamW weight decay applies only to rank ≥ 2 tensors (no decay on RMSNorm gains / 1-D params).
+  - Weight decay только на матрицы.
+- SFT preset no longer generates samples mid-run (`JGPT_INTERACTIVE_EVERY=0`): each sample divided the FP16 loss scale by 64 and drove it to 1.
+  - В SFT выключены промежуточные сэмплы — они обваливали FP16 scale.
+- Generation stops on `<user>`/`<assistant>` role tokens; sliding-window KV re-prefill uses position 0; BPE decode no longer inserts spaces before closing punctuation or inside hyphenated words.
+  - Генерация останавливается на ролевых токенах; исправлены sliding KV и пробелы при декодировании.
+- `jgpt-chat-28L-wide.cmd`: `--model <path>` and `--raw` are honoured (no forced chat template for the pretrain).
 - Launch scripts are split by OS: `scripts/linux/*.sh`, `scripts/windows/*.ps1` (shared Python stays in `scripts/`). See `scripts/README.md`.
   - Скрипты запуска разделены: Linux `scripts/linux/`, Windows `scripts/windows/`.
 - Native CUDA build is cross-platform: CMake uses `native` GPU arch, Windows builds one `jgpt_cuda.dll`, Linux still two `.so`. Scripts: `scripts/linux/build-cuda.sh`, `scripts/windows/build-cuda.ps1`.

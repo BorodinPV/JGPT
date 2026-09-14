@@ -3,10 +3,15 @@
 ## Performance / Производительность
 
 ### Q: What throughput should I expect? / Какую производительность ожидать?
-**A:** On RTX 3080 (10GB) with preset 02-stable:  
-**Ответ:** На RTX 3080 (10GB) с пресетом 02-stable:
-- ~26,000 tokens/sec / ~26,000 токенов/сек
-- ~1250ms per step (forward 600ms + backward 620ms + optimizer 30ms) / ~1250мс на шаг
+**A:** On RTX 3080 (10GB):  
+**Ответ:** На RTX 3080 (10GB):
+- 28L-wide (~134M, seq 1024, full CE, dropout): ~12,000 tokens/sec, step ≈ 5.3 s for 65,536 tokens (forward 1.5 s + CE 0.05 s + backward 3.7 s + Adam 0.2 s) / ~12k токенов/сек
+- 12L canonical, preset 02-stable: ~26,000 tokens/sec, ~1250 ms per step / ~26k токенов/сек
+- The same 28L-wide with sampled CE ran at ~6,000: the CPU candidate prep and the gather LM head are slower than one full GEMM / sampled CE на той же модели давал ~6k — медленнее полного GEMM
+
+### Q: Why is full-vocab CE the default now? / Почему теперь полный CE по словарю?
+**A:** Sampled CE with 384 uniform negatives out of 16k almost never penalises plausible-but-wrong tokens, so the model learned style but not facts. Full CE is both the correct objective and faster on this GPU. `JGPT_TRAIN_LOSS_MODE=full` in the wide presets; `sampled` remains for the legacy 37L/smart presets.  
+**Ответ:** Sampled CE (384 равномерных негативов из 16k) почти не штрафует правдоподобные неверные токены — модель учила стиль, а не факты. Полный CE и корректнее, и быстрее. В wide-пресетах `JGPT_TRAIN_LOSS_MODE=full`; `sampled` остался в старых пресетах.
 
 ### Q: How does JGPT compare to PyTorch? / Как JGPT сравнивается с PyTorch?
 **A:** JGPT achieves ~1.0-1.2x PyTorch performance for similar models on same hardware, due to:  
@@ -76,15 +81,26 @@ JGPT_FA_TILE_SIZE=128 cmake ..
 4. Disable CUDA Graph: `JGPT_DECODER_LAYER_CUDA_GRAPH=0` / Отключите CUDA Graph
 
 ### Q: Training stopped with "overflow-скип" / Обучение остановилось с "overflow-скип"
-**A:** FP16 scale is stuck. Training will auto-downgrade preset. You can also:  
-**Ответ:** FP16 scale залип. Обучение автоматически понизит пресет. Также можно:
+**A:** FP16 scale is stuck. With `jgpt-smart.sh` the preset auto-downgrades. You can also:  
+**Ответ:** FP16 scale залип. Под `jgpt-smart.sh` пресет понизится сам. Также можно:
 - Reduce `JGPT_FP16_DYNAMIC_INITIAL` / Уменьшить `JGPT_FP16_DYNAMIC_INITIAL`
 - Increase `JGPT_FP16_DYNAMIC_GROWTH_INTERVAL` / Увеличить `JGPT_FP16_DYNAMIC_GROWTH_INTERVAL`
 
+### Q: The log shows `[FP16] scale … ÷64 после генерации` and the scale drops to 1 / Scale падает до 1 после генерации
+**A:** `JGPT_INTERACTIVE_EVERY>0` generates a sample every N steps, and each sample divides the loss scale by 64 while growth is only ×2 per 50 steps. Set `JGPT_INTERACTIVE_EVERY=0` (the wide presets do) and check quality with `jgpt-chat-*.cmd` or the GUI chat instead. A healthy run oscillates between 32768 and 65536 with only `÷2 после eval`.  
+**Ответ:** Каждый промежуточный сэмпл делит scale на 64, рост — только ×2 за 50 шагов. Поставьте `JGPT_INTERACTIVE_EVERY=0` (в wide-пресетах уже так) и смотрите качество через чат. Здоровый прогон — scale 32768↔65536 и только `÷2 после eval`.
+
+### Q: How to stop training? / Как остановить обучение?
+**A:** Windows: `.\scripts\windows\jgpt-stop-train.cmd` (creates `state\STOP`; the trainer writes `checkpoint_final.bin` and exits) or the "Стоп" button in the GUI. Do **not** press Ctrl+C in PowerShell — it kills java without a checkpoint. Linux: Ctrl+C / SIGTERM go through the shutdown hook.  
+**Ответ:** Windows — `jgpt-stop-train.cmd` или «Стоп» в GUI; Ctrl+C убивает java без чекпоинта. Linux — Ctrl+C работает через shutdown hook.
+
 ### Q: How to resume training? / Как возобновить обучение?
-**A:** Run the same launcher again (no `--fresh`). It picks up `checkpoint_final.bin`.  
-37L SFT: `.\scripts\windows\jgpt-train-37L-sft.ps1` / `./scripts/linux/jgpt-train-37L-sft.sh`. Books (Linux): `./scripts/linux/jgpt-smart.sh`.  
-**Ответ:** Тот же скрипт без `--fresh` подхватит `checkpoint_final.bin`. SFT: Windows/Linux 37L; книги: `./scripts/linux/jgpt-smart.sh`.
+**A:** Run the same launcher again with no flags. The trainer loads the checkpoint with the largest `globalStep` among `checkpoint_final / step_N / epoch_N / best` (plus its paired `model_*.bin`), so resume also works after a hard kill — you lose at most `JGPT_SAVE_EVERY_STEPS` steps. `--restart-plan` keeps weights + Adam but resets step / LR schedule / epoch / best (use once after changing data or preset). `--fresh` archives the checkpoint dir and starts over.  
+**Ответ:** Тот же скрипт без флагов — подхватит самый свежий чекпоинт из `final / step_N / epoch_N / best`; после жёсткого обрыва теряется не больше `JGPT_SAVE_EVERY_STEPS` шагов. `--restart-plan` — веса и Adam остаются, шаг/LR/эпоха/best с нуля. `--fresh` — архив и с нуля.
+
+### Q: The pretrain model writes wiki-style nonsense in chat / Претрейн в чате пишет вики-бред
+**A:** Expected. The pretrain corpus is ruwiki + a few classics; the model learned to continue text, not to answer. Test it with `--raw --temperature 0 --top-k 1` to see coherent completions, then run SFT (`jgpt-train-28L-wide-sft.cmd`) — that is what teaches the `<user>`/`<assistant>` format and short answers.  
+**Ответ:** Ожидаемо: корпус — вики, модель продолжает текст, а не отвечает. Проверяйте `--raw --temperature 0 --top-k 1`, а формат ответов даёт SFT.
 
 ---
 
@@ -124,9 +140,14 @@ Valid values / Допустимые значения: 64, 96, 128, 144 (A100+), 
 Typical ratio / Типичное соотношение: backward = 1.0-1.2x forward time.
 
 ### Q: What optimizations are implemented? / Какие оптимизации реализованы?
-- FlashAttention-2 (fused attention / слитое внимание)
-- Block-per-row Cross-Entropy (12x faster / в 12 раз быстрее)
+- FlashAttention-2 via cuDNN SDPA (fused attention / слитое внимание)
+- Full-vocab CE and ∂CE on device (полный CE на GPU)
 - Warp-level reduction for embeddings / Редукция уровня warp для embeddings
 - FP16 Tensor Cores for GEMM / FP16 Tensor Cores для GEMM
-- CUDA Graph for decoder layers / CUDA Graph для слоёв декодера
-- Async checkpointing / Асинхронное сохранение чекпоинтов
+- GPU dropout with seed-derived masks (no mask storage) / GPU dropout без хранения масок
+- CUDA Graph for decoder layers (off while dropout is active) / CUDA Graph для слоёв декодера (выкл. при dropout)
+- Atomic checkpoint writes, v5 format with loss-scaler state / Атомарные чекпоинты v5
+
+### Q: How do I run the GUI? / Как запустить GUI?
+**A:** `.\scripts\windows\jgpt-gui.cmd`. Needs a JDK that bundles JavaFX (Liberica Full 25+); the script finds it under `~\.jdks`. Training is started as a child `jgpt-train-*.cmd`, so closing the GUI does not stop it. By default the script compiles only the `gui` package with javac into `target\gui-classes` (safe while a trainer is running); `--mvn` does a full Maven compile.  
+**Ответ:** `jgpt-gui.cmd`; нужен JDK с JavaFX (Liberica Full). Обучение идёт дочерним процессом — закрытие GUI его не останавливает. По умолчанию собирается только пакет `gui` (безопасно при работающем тренере), `--mvn` — полная сборка.

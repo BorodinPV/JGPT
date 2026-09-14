@@ -6,30 +6,37 @@
 
 | Способ | Команда |
 |--------|---------|
-| **37L SFT ~100M** (Windows) | `.\scripts\windows\jgpt-train-37L-sft.ps1` |
-| **37L SFT ~100M** (Linux) | `./scripts/linux/jgpt-train-37L-sft.sh` |
+| **28L-wide pretrain ~134M** (Windows) | `.\scripts\windows\jgpt-train-28L-wide.cmd --no-build` |
+| **28L-wide SFT** (Windows) | `.\scripts\windows\jgpt-train-28L-wide-sft.cmd --no-build` |
+| То же (Linux) | `./scripts/linux/jgpt-train-28L-wide.sh`, `./scripts/linux/jgpt-train-28L-wide-sft.sh` |
+| **GUI** (Windows) | `.\scripts\windows\jgpt-gui.cmd` — старт/стоп, графики, лог, чекпоинты, чат |
+| 37L SFT ~100M (старый путь) | `.\scripts\windows\jgpt-train-37L-sft.ps1` / `./scripts/linux/jgpt-train-37L-sft.sh` |
 | Книги + авто-адаптация (Linux) | `./scripts/linux/jgpt-smart.sh` |
-| С явного smart-пресета | `./scripts/linux/jgpt-smart.sh 01-aggressive` |
-| Напрямую Maven | `mvn -q compile exec:java -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain -Dexec.args='--boo .'` (после CUDA-сборки и `JGPT_*`) |
+| Напрямую Maven | `mvn -q compile exec:java -Dexec.mainClass=com.veles.llm.jgpt.app.AllBooksTrain -Dexec.args='--boo . --data-dir <dir>'` (после CUDA-сборки и `JGPT_*`) |
 
 Карта скриптов: [scripts/README.md](../../scripts/README.md).
 
-**Производительность (RTX 3080 10 GB):** 12L `02-stable` ~26k tok/s; **37L SFT seq 2048 ~9–10k tok/s**.
+**Производительность (RTX 3080 10 GB):** 28L-wide full CE ~12k tok/s (шаг 5.3 с на 65 536 токенов); 37L SFT seq 2048 ~9–10k; 12L `02-stable` ~26k.
 
 ### Геометрия модели
 
-Обучение и чат без override — `LLMConfig.canonical()` (~34.9M):
+| Параметр | 28L-wide (`env/28L-wide-*.env`) | canonical (`LLMConfig.canonical()`) |
+|----------|---------------------------------|-------------------------------------|
+| vocab | 16000 (`checkpoints/tokenizer_wide_16k.bin`, без lowercasing, `<user>`/`<assistant>`) | 8000 |
+| seq | 1024 | 1024 |
+| d_model | 512 | 384 |
+| heads | 32 (d_head = 16) | 24 (d_head = 16) |
+| слои | 28 | 12 |
+| SwiGLU d_intermediate | 2048 | 1536 |
+| параметры | ~134M | ~34.9M |
 
-| Параметр | Значение |
-|----------|----------|
-| vocab | 8000 |
-| seq | 1024 |
-| d_model | 384 |
-| heads | 24 (d_head = 16) |
-| слои | 12 |
-| SwiGLU d_intermediate | 1536 |
+`JGPT_MAX_SEQ_LEN` / `JGPT_PRESET_NUM_LAYERS` / `JGPT_D_MODEL` / `JGPT_NUM_HEADS` в `env/*.env` должны совпадать с чекпоинтом — иначе `shape mismatch` при загрузке весов. GUI берёт геометрию для чата из пресета, чей `JGPT_CHECKPOINT_SUBDIR` совпадает с каталогом модели.
 
-`JGPT_MAX_SEQ_LEN` / `JGPT_PRESET_NUM_LAYERS` в `env/*.env` должны совпадать с чекпоинтом. Старые веса на 20 слоях / seq 2048 не загрузятся.
+### Loss и данные (28L-wide)
+
+- `JGPT_TRAIN_LOSS_MODE=full` — CE по всему словарю. Sampled CE (384 равномерных негативов из 16k) почти никогда не штрафует правдоподобные, но неверные токены: модель выучивает стиль, а не факты; к тому же gather-голова медленнее одного GEMM.
+- Pretrain: документы кодируются целиком и пакуются в один поток через `<eos>` (короткие статьи и хвосты не теряются). Train/val делится **по документам** (`JGPT_VAL_FRACTION=0.05`), а не по окнам — иначе val утекает из тех же книг.
+- SFT: `JGPT_SFT=1`, loss только на ответах ассистента, один диалог на окно (`JGPT_SFT_PACK=one`), split по уникальному вопросу (`JGPT_SFT_SPLIT=dialog`).
 
 ### Как работает `jgpt-smart.sh`
 
@@ -83,29 +90,32 @@ JGPT_FINETUNE=1 ./scripts/linux/jgpt-smart.sh 01-aggressive
 
 При доступной CUDA обучение всегда идёт полным VRAM-путём (resident + decoder pipeline + device CE/backward). Отдельные `JGPT_TRAIN_GPU_RESIDENT` / `JGPT_FULL_GPU_TRAIN` / `JGPT_GPU_E2E_TRAIN` / `JGPT_DEVICE_LOGITS_TRAIN` / `JGPT_DEVICE_DECODER_BWD` / `JGPT_DECODER_GPU_PIPELINE` больше не выбирают путь. Периодический VRAM cleanup/trim выключен (`JGPT_VRAM_CLEANUP_EVERY_STEPS=0`, `JGPT_CUDA_TRIM_EVERY_STEPS=0`); барьеры после eval/sample остаются.
 
-## Resume, чекпоинты и `JGPT_MAX_SEQ_LEN`
+## Resume, чекпоинты и остановка
 
-- Чекпоинты: **`checkpoints/all_books/`** (`checkpoint_final.bin` приоритетнее `checkpoint_epoch_N.bin`)
-- Checkpoint сохраняется через **shutdown hook** в `LLMTrainer` (Ctrl+C, SIGTERM, supervisedStop)
-- Веса содержат размер позиционных эмбеддингов → **`JGPT_MAX_SEQ_LEN` должен совпадать** с тем, на котором сохранялся чекпоинт
-- `JGPT_FINETUNE=1`: сбрасывается только `globalStep`; веса и Adam остаются. Задайте вместе с `./scripts/linux/jgpt-smart.sh` (см. выше).
+- Каталог — `JGPT_CHECKPOINT_SUBDIR` пресета (`checkpoints/wide_28L_16k_1024`, `checkpoints/wide_28L_sft`, у книг — `checkpoints/all_books`).
+- Файлы: `checkpoint_<tag>.bin` (веса + Adam + позиция в эпохе + FP16 loss-scale, формат **v5**) и парные `model_<tag>.bin` / `tokenizer_<tag>.bin`. Теги: `final` (мягкая остановка / конец плана), `step_N` (каждые `JGPT_SAVE_EVERY_STEPS`, хранятся два последних), `epoch_N`, `best` (лучший val).
+- Запись атомарная (`.tmp` → rename): жёсткий обрыв не оставляет битого файла.
+- **Resume** — тот же скрипт без флагов: берётся чекпоинт с наибольшим `globalStep` среди всех тегов, веса — из парного `model_*.bin`. При обрыве теряется не больше `JGPT_SAVE_EVERY_STEPS` шагов.
+- **Остановка на Windows** — только `scripts\windows\jgpt-stop-train.cmd` (файл `state/STOP`; тренер дописывает `checkpoint_final` и выходит) или кнопка «Стоп» в GUI. Ctrl+C в окне PowerShell убивает java без чекпоинта. На Linux Ctrl+C/SIGTERM работают через shutdown hook.
+- `--restart-plan` (= `JGPT_FINETUNE=1` на один запуск): веса и Adam из чекпоинта, но `globalStep`, LR-расписание (warmup + cosine), индекс эпохи и best сбрасываются. Нужен один раз после смены objective/данных/пресета; дальше — обычный resume. Если `JGPT_FINETUNE` остался в shell, скрипт предупредит.
+- `--fresh`: содержимое каталога переносится в `*_prev_backup`, токенизатор не трогается.
+- Веса содержат таблицу позиционных эмбеддингов → `JGPT_MAX_SEQ_LEN` должен совпадать с чекпоинтом.
 
-## Dropout регуляризация
+## Dropout и weight decay
 
-Dropout включён по умолчанию (10%) для предотвращения переобучения:
+Включаются пресетом: `JGPT_DROPOUT=0.1` (28L-wide pretrain и SFT). По умолчанию (без переменной) dropout **выключен** — старые пресеты и тесты детерминированы.
 
-| Тип | По умолчанию | Куда применяется |
-|-----|-------------|------------------|
-| `residualDropout` | 0.1 | После FFN перед residual connection |
-| `attentionDropout` | 0.1 | После attention output перед residual connection |
-| `embeddingDropout` | 0.1 | На embedding слое (резерв) |
+| Где | Значение | Реализация |
+|-----|----------|------------|
+| residual после attention `W_o` и после FFN `W_2` | `JGPT_DROPOUT` | GPU-ядро, inverted dropout (`× 1/(1-p)`), маска восстанавливается в backward по тому же seed — ничего не хранится |
+| embedding (token + pos) | `JGPT_DROPOUT` | то же |
+| attention weights | 0 | на GPU-пути не реализован |
 
-**Как работает**: случайно обнуляет 10% элементов при обучении, остальные масштабируются на `1.11` (inverted dropout). При инференсе dropout отключён автоматически.
+Seed — функция шага, слоя и места (attn/FFN/embed), поэтому forward и backward видят одну маску. Пока dropout активен, CUDA Graph на слои декодера отключается (маска меняется каждый шаг). Eval и генерация всегда без dropout.
 
-**Рекомендации**:
-- Не включайте dropout на середине обучения — начните заново
-- При переобучении можно увеличить до 0.2-0.3
-- Если модель недообучается — уменьшить до 0.05 или отключить
+AdamW weight decay применяется только к тензорам ранга ≥ 2 (матрицы); gain'ы RMSNorm и прочие 1-D параметры не затухают.
+
+**Рекомендации**: менять `JGPT_DROPOUT` — только вместе с `--fresh` или `--restart-plan`; при переобучении (train ↓, val ↑) поднять до 0.2; если недообучение — 0.05 или 0.
 
 ## Книги и токенизатор
 
@@ -117,19 +127,26 @@ Dropout включён по умолчанию (10%) для предотвращ
 
 | Файл | Содержимое |
 |------|-----------|
+| `state/stats.json` | Метрики текущего прогона (пишет `TrainingStatsWriter` на каждом шаге): ряды train/val loss, perplexity, ток/с, счётчики overflow/OOM |
+| `state/STOP` | Запрос мягкой остановки (создаёт `jgpt-stop-train.cmd` или GUI) |
 | `state/last_step.txt` | Последний сохранённый globalStep |
-| `state/current_preset_idx` | Текущий индекс пресета (0–4) |
-| `state/current.env` | Symlink на активный env-файл |
-| `state/stats.json` | Метрики для веб-дашборда (пишет `TrainingStatsWriter`) |
-| `training_allbooks.log` | Полный лог (append) |
+| `state/current_preset_idx`, `state/current.env` | Только для `jgpt-smart.sh` |
+| `training_28L_wide.log`, `training_28L_wide_sft.log`, `training_allbooks.log`, … | Полный лог прогона (append), имя — в шапке соответствующего `.ps1`/`.sh` |
+
+```powershell
+# GUI: вкладки Обучение (графики, ETA, старт/стоп), Лог (фильтры STEP/EVAL/CKPT/FP16/WARN), Чекпоинты, Чат
+.\scripts\windows\jgpt-gui.cmd
+```
 
 ```bash
-# Лог обучения
-tail -f training_allbooks.log
+# Хвост лога без PERF/VRAM-шума
+tail -f training_28L_wide.log | grep -E "\[STEP\]|\[EVAL\]|\[CKPT\]|\[FP16\]|WARN"
 
-# Веб-дашборд с графиками (Chart.js, автообновление 30 с)
-xdg-open docs/dashboard.html
+# Старый HTML-дашборд (тот же stats.json; нужен http-сервер, file:// блокирует fetch)
+python -m http.server 8765   # → http://localhost:8765/docs/dashboard.html
 ```
+
+Что смотреть в логе: `[EVAL] … val_loss=` на честном hold-out; `[FP16] scale` должен ходить между 32768 и 65536 (`÷2 после eval` — норма, `÷64 после генерации` — значит включён `JGPT_INTERACTIVE_EVERY`, scale уйдёт в 1 — выключите его); `overflow`/`OOM` в stats.json должны оставаться нулями.
 
 ## Ручной запуск без обёрток
 

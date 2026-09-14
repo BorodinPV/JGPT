@@ -3,6 +3,7 @@ package com.veles.llm.jgpt.model;
 import com.veles.llm.jgpt.GpuFloatBuffer;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
+import com.veles.llm.jgpt.ops.GpuDropout;
 import com.veles.llm.jgpt.ops.TensorOps;
 import com.veles.llm.jgpt.training.LLMConfig;
 
@@ -330,6 +331,8 @@ final class GptDecoderStackRunner {
             int batch,
             int seqLen,
             BlockActivationCacheDevice devCache) {
+        // Dropout-seed зависит от слоя; применяется внутри только при devCache != null (training).
+        GpuDropout.setCurrentLayer(layer);
         if (!TensorOps.multiHeadAttentionResidentDeviceToDevice(
                 cur,
                 attnOut,
@@ -370,9 +373,19 @@ final class GptDecoderStackRunner {
         m.decoderChainPing = GPTModel.ensureGpuBuffer(m.decoderChainPing, plane);
         m.decoderChainPong = GPTModel.ensureGpuBuffer(m.decoderChainPong, plane);
 
+        /*
+         * Dropout-seed передаётся аргументом ядра и при capture «запёкся» бы в графе (одна и та же маска на все
+         * шаги) → в training при активном dropout слои идут eager; инференс (trainingStep=false) графом пользуется.
+         */
+        boolean dropoutBlocksGraph = trainingStep && GpuDropout.isActive();
+        if (dropoutBlocksGraph && m.decoderLayerCudaGraphWanted && !m.decoderLayerGraphDropoutWarned) {
+            m.decoderLayerGraphDropoutWarned = true;
+            log.info("JGPT_DECODER_LAYER_CUDA_GRAPH: в training не используется, пока JGPT_DROPOUT > 0 (seed маски в графе).");
+        }
         boolean wantGraph =
                 m.decoderLayerCudaGraphWanted
                         && !m.decoderLayerGraphRuntimeDisabled
+                        && !dropoutBlocksGraph
                         && m.decoderLayerGraphExec != null
                         && TensorOpsGPU.isGpuAvailable();
         if (wantGraph) {

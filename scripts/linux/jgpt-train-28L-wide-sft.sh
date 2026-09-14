@@ -23,7 +23,7 @@ TOKENIZER_FILE="$ROOT/checkpoints/tokenizer_wide_16k.bin"
 SRC_BEST="$ROOT/checkpoints/wide_28L_16k_1024/model_best.bin"
 SRC_FINAL="$ROOT/checkpoints/wide_28L_16k_1024/model_final.bin"
 
-DATA_DIR="${JGPT_DATA_DIR:-data/sft/exam}"
+DATA_DIR="${JGPT_DATA_DIR:-data/sft/short}"
 DO_FRESH=0
 SKIP_BUILD=0
 
@@ -31,12 +31,14 @@ usage() {
     cat <<EOF
 Usage: $0 [OPTIONS]
 
-SFT after 28L-wide pretrain (one dialog per window). Data: data/sft/exam
+SFT after 28L-wide pretrain (one dialog per window). Data: data/sft/short
+(пустой каталог собирается из data/sft/raw через sft-filter-short.py;
+ --data-dir data/sft/exam -> синтетический exam.jsonl, только для отладки).
 Preset: ${ENV_FILE}
 Checkpoints: checkpoints/wide_28L_sft
 
 Options:
-  --data-dir PATH   каталог с .jsonl (по умолчанию: data/sft/exam)
+  --data-dir PATH   каталог с .jsonl (по умолчанию: data/sft/short)
   --fresh           архивировать только wide_28L_sft (tokenizer не трогать)
   --no-build        не пересобирать CUDA
   -h, --help        эта справка
@@ -86,8 +88,13 @@ if [[ -d "$DATA_DIR" ]]; then
     jsonl_count="$(find "$DATA_DIR" -name '*.jsonl' -type f 2>/dev/null | wc -l | tr -d ' ')"
 fi
 if [[ "${jsonl_count:-0}" -eq 0 ]]; then
-    echo "[28L-WIDE-SFT] generating exam JSONL -> $DATA_DIR"
-    python3 "$ROOT/scripts/sft-make-exam.py" --dst "$DATA_DIR/exam.jsonl"
+    if [[ "$(basename "$DATA_DIR")" == "exam" ]]; then
+        echo "[28L-WIDE-SFT] generating exam JSONL -> $DATA_DIR"
+        python3 "$ROOT/scripts/sft-make-exam.py" --dst "$DATA_DIR/exam.jsonl"
+    else
+        echo "[28L-WIDE-SFT] filtering $ROOT/data/sft/raw -> $DATA_DIR (sft-filter-short.py)"
+        python3 "$ROOT/scripts/sft-filter-short.py" --src "$ROOT/data/sft/raw" --dst "$DATA_DIR"
+    fi
     jsonl_count="$(find "$DATA_DIR" -name '*.jsonl' -type f 2>/dev/null | wc -l | tr -d ' ')"
 fi
 if [[ "${jsonl_count:-0}" -eq 0 ]]; then

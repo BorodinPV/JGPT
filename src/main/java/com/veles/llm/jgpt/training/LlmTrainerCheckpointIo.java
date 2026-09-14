@@ -28,8 +28,68 @@ final class LlmTrainerCheckpointIo {
     static final String CHECKPOINT_FORMAT_V2 = "veles.ckpt.v2";
     static final String CHECKPOINT_FORMAT_V3 = "veles.ckpt.v3";
     static final String CHECKPOINT_FORMAT_V4 = "veles.ckpt.v4";
+    /** v4 + состояние динамического loss scale (scale, шагов без overflow). */
+    static final String CHECKPOINT_FORMAT_V5 = "veles.ckpt.v5";
 
     private LlmTrainerCheckpointIo() {}
+
+    /**
+     * Атомарная замена файла: запись во временный {@code *.tmp} рядом, затем {@code ATOMIC_MOVE}. Если процесс
+     * убьют посреди записи, прежний файл остаётся целым (иначе после «Terminate batch job» на диске оставался
+     * обрезанный чекпоинт и терялся и он, и предыдущий).
+     */
+    static void writeFileAtomically(Path target, IoWriter writer) throws IOException {
+        Path dir = target.toAbsolutePath().getParent();
+        if (dir != null) {
+            Files.createDirectories(dir);
+        }
+        Path tmp = target.resolveSibling(target.getFileName() + ".tmp");
+        try (DataOutputStream out =
+                new DataOutputStream(new BufferedOutputStream(new FileOutputStream(tmp.toFile()), 1 << 20))) {
+            writer.write(out);
+        } catch (IOException | RuntimeException e) {
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException _) {
+                // best-effort
+            }
+            throw e;
+        }
+        try {
+            Files.move(
+                    tmp,
+                    target,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.AtomicMoveNotSupportedException _) {
+            Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    @FunctionalInterface
+    interface IoWriter {
+        void write(DataOutputStream out) throws IOException;
+    }
+
+    /**
+     * Читает {@code globalStep} из заголовка чекпоинта (v2..v5) без загрузки Adam. {@code -1} — не удалось
+     * (legacy-формат или повреждённый файл).
+     */
+    public static int peekGlobalStep(Path checkpoint) {
+        try (DataInputStream dis =
+                new DataInputStream(new BufferedInputStream(new FileInputStream(checkpoint.toFile()), 4096))) {
+            String tag = dis.readUTF();
+            if (CHECKPOINT_FORMAT_V5.equals(tag)
+                    || CHECKPOINT_FORMAT_V4.equals(tag)
+                    || CHECKPOINT_FORMAT_V3.equals(tag)
+                    || CHECKPOINT_FORMAT_V2.equals(tag)) {
+                return dis.readInt();
+            }
+            return -1;
+        } catch (IOException | RuntimeException _) {
+            return -1;
+        }
+    }
 
     static void writeFloatArrayBigEndian(DataOutputStream out, float[] buf) throws IOException {
         if (buf.length == 0) {
@@ -61,21 +121,29 @@ final class LlmTrainerCheckpointIo {
             t.pendingCheckpointDataLoaderIndex = t.dataLoader.getCurrentIndex();
         }
 
-        try (DataOutputStream out =
-                new DataOutputStream(new BufferedOutputStream(new FileOutputStream(path)))) {
-            out.writeUTF(CHECKPOINT_FORMAT_V4);
-            out.writeInt(t.globalStep);
-            out.writeFloat(t.bestLoss);
-            int ep = Math.clamp(t.pendingCheckpointEpochIndex, 0, t.config.epochs);
-            out.writeInt(ep);
-            int nSeq = t.dataLoader.numSequences();
-            int seqIdx = Math.clamp(t.pendingCheckpointDataLoaderIndex, 0, nSeq);
-            out.writeInt(seqIdx);
-            t.optimizer.setStep(t.globalStep);
-            t.optimizer.writeMomentBuffers(out, t.parameters);
-        }
+        writeFileAtomically(
+                Path.of(path),
+                out -> {
+                    out.writeUTF(CHECKPOINT_FORMAT_V5);
+                    out.writeInt(t.globalStep);
+                    out.writeFloat(t.bestLoss);
+                    int ep = Math.clamp(t.pendingCheckpointEpochIndex, 0, t.config.epochs);
+                    out.writeInt(ep);
+                    int nSeq = t.dataLoader.numSequences();
+                    int seqIdx = Math.clamp(t.pendingCheckpointDataLoaderIndex, 0, nSeq);
+                    out.writeInt(seqIdx);
+                    if (t.dynamicLossScaler != null) {
+                        out.writeFloat(t.dynamicLossScaler.getScale());
+                        out.writeInt(t.dynamicLossScaler.getConsecutiveNonOverflowSteps());
+                    } else {
+                        out.writeFloat(0f);
+                        out.writeInt(0);
+                    }
+                    t.optimizer.setStep(t.globalStep);
+                    t.optimizer.writeMomentBuffers(out, t.parameters);
+                });
         log.info(
-                "{} checkpoint(v4+Adam+epoch+pos): {} (resumeEpochIndex={}/{}, seqIndex={})",
+                "{} checkpoint(v5+Adam+epoch+pos+scale): {} (resumeEpochIndex={}/{}, seqIndex={})",
                 com.veles.llm.jgpt.util.LogFmt.badge("CKPT"),
                 path,
                 Math.clamp(t.pendingCheckpointEpochIndex, 0, t.config.epochs),
@@ -127,24 +195,38 @@ final class LlmTrainerCheckpointIo {
             t.model.syncWeightsFromGpu(t.model.gpuTensorByTrainableParameter());
         }
 
-        try (DataOutputStream out =
-                new DataOutputStream(new BufferedOutputStream(new FileOutputStream(modelPath)))) {
-            List<Tensor> params = t.model.getParameters();
-            out.writeUTF(GPTModel.MODEL_WEIGHTS_FORMAT_V1);
-            out.writeInt(params.size());
-            for (Tensor param : params) {
-                int[] shape = param.getShape();
-                out.writeInt(shape.length);
-                for (int d : shape) {
-                    out.writeInt(d);
-                }
-                writeFloatArrayBigEndian(out, param.internalBuffer());
-            }
-        }
+        List<Tensor> params = t.model.getParameters();
+        writeFileAtomically(
+                Path.of(modelPath),
+                out -> {
+                    out.writeUTF(GPTModel.MODEL_WEIGHTS_FORMAT_V1);
+                    out.writeInt(params.size());
+                    for (Tensor param : params) {
+                        int[] shape = param.getShape();
+                        out.writeInt(shape.length);
+                        for (int d : shape) {
+                            out.writeInt(d);
+                        }
+                        writeFloatArrayBigEndian(out, param.internalBuffer());
+                    }
+                });
         log.info("{} веса модели записаны: {}", com.veles.llm.jgpt.util.LogFmt.badge("CKPT"), modelPath);
 
-        String tokPath = dir.resolve("tokenizer_" + name + ".bin").toString();
-        t.dataLoader.getTokenizer().save(tokPath);
+        saveTokenizerAtomically(t, dir.resolve("tokenizer_" + name + ".bin"));
+    }
+
+    private static void saveTokenizerAtomically(LLMTrainer t, Path tokPath) throws IOException {
+        Path tmp = tokPath.resolveSibling(tokPath.getFileName() + ".tmp");
+        t.dataLoader.getTokenizer().save(tmp.toString());
+        try {
+            Files.move(
+                    tmp,
+                    tokPath,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.AtomicMoveNotSupportedException _) {
+            Files.move(tmp, tokPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
         log.info("{} токенизатор записан: {}", com.veles.llm.jgpt.util.LogFmt.badge("CKPT"), tokPath);
     }
 
@@ -156,23 +238,22 @@ final class LlmTrainerCheckpointIo {
         if (params.size() != weightSnap.size()) {
             throw new IllegalStateException("weight snapshot size mismatch");
         }
-        try (DataOutputStream out =
-                new DataOutputStream(new BufferedOutputStream(new FileOutputStream(modelPath)))) {
-            out.writeUTF(GPTModel.MODEL_WEIGHTS_FORMAT_V1);
-            out.writeInt(params.size());
-            for (int i = 0; i < params.size(); i++) {
-                int[] shape = params.get(i).getShape();
-                out.writeInt(shape.length);
-                for (int d : shape) {
-                    out.writeInt(d);
-                }
-                writeFloatArrayBigEndian(out, weightSnap.get(i));
-            }
-        }
+        writeFileAtomically(
+                Path.of(modelPath),
+                out -> {
+                    out.writeUTF(GPTModel.MODEL_WEIGHTS_FORMAT_V1);
+                    out.writeInt(params.size());
+                    for (int i = 0; i < params.size(); i++) {
+                        int[] shape = params.get(i).getShape();
+                        out.writeInt(shape.length);
+                        for (int d : shape) {
+                            out.writeInt(d);
+                        }
+                        writeFloatArrayBigEndian(out, weightSnap.get(i));
+                    }
+                });
         log.info("{} веса модели записаны (асинхронный снимок): {}", com.veles.llm.jgpt.util.LogFmt.badge("CKPT"), modelPath);
-        String tokPath = dir.resolve("tokenizer_" + name + ".bin").toString();
-        t.dataLoader.getTokenizer().save(tokPath);
-        log.info("{} токенизатор записан: {}", com.veles.llm.jgpt.util.LogFmt.badge("CKPT"), tokPath);
+        saveTokenizerAtomically(t, dir.resolve("tokenizer_" + name + ".bin"));
     }
 
     static void awaitPendingCheckpointWrites(LLMTrainer t) {
@@ -201,7 +282,8 @@ final class LlmTrainerCheckpointIo {
                 loadLegacyCheckpoint(t, path);
                 return;
             }
-            if (CHECKPOINT_FORMAT_V4.equals(tag)) {
+            boolean v5 = CHECKPOINT_FORMAT_V5.equals(tag);
+            if (v5 || CHECKPOINT_FORMAT_V4.equals(tag)) {
                 t.globalStep = dis.readInt();
                 t.bestLoss = dis.readFloat();
                 if (t.bestLoss == 0f) {
@@ -213,16 +295,32 @@ final class LlmTrainerCheckpointIo {
                 t.loadedResumeEpochIndex = Math.clamp(ep, 0, t.config.epochs);
                 t.loadedResumeDataLoaderIndex = Math.max(0, dis.readInt());
                 t.resumeReplayCheckpointShuffles = true;
+                String scaleInfo = "";
+                if (v5) {
+                    float savedScale = dis.readFloat();
+                    int savedGood = dis.readInt();
+                    if (t.dynamicLossScaler != null && savedScale > 0f) {
+                        t.dynamicLossScaler.restoreState(savedScale, savedGood);
+                        scaleInfo =
+                                String.format(
+                                        java.util.Locale.ROOT,
+                                        ", loss scale %.4g× (%d стабильных шагов)",
+                                        t.dynamicLossScaler.getScale(),
+                                        savedGood);
+                    }
+                }
                 t.optimizer.setStep(t.globalStep);
                 t.optimizer.readMomentBuffers(dis, t.parameters);
                 log.info(
-                        "Чекпоинт загружен (v4 + Adam + эпоха + позиция): {} (шаг {}, resumeEpochIndex={}/{}, seqIndex={}, лучший оценочный loss {})",
+                        "Чекпоинт загружен ({} + Adam + эпоха + позиция): {} (шаг {}, resumeEpochIndex={}/{}, seqIndex={}, лучший оценочный loss {}{})",
+                        v5 ? "v5" : "v4",
                         path,
                         t.globalStep,
                         t.loadedResumeEpochIndex,
                         t.config.epochs,
                         t.loadedResumeDataLoaderIndex,
-                        LlmTrainerTrainingFormat.formatEvalBestLossForLog(t.bestLoss));
+                        LlmTrainerTrainingFormat.formatEvalBestLossForLog(t.bestLoss),
+                        scaleInfo);
                 t.syncShutdownProgressBaselineFromGlobalStep();
                 return;
             }

@@ -425,6 +425,49 @@ public final class LLMConfig {
      * {@code JGPT_SAMPLE_PROMPT="он вышел из дома|весна пришла|тихая ночь"}.
      * Если не задан — используются встроенные русские промпты.
      */
+    /** Целое ≥ {@code min} из env; иначе {@code defaultValue}. */
+    private static int positiveIntFromEnv(String name, int defaultValue, int min) {
+        String env = System.getenv(name);
+        if (env == null || env.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Math.max(min, Integer.parseInt(env.trim()));
+        } catch (NumberFormatException _) {
+            return defaultValue;
+        }
+    }
+
+    /** {@code JGPT_SAVE_EVERY_STEPS} — период {@code checkpoint_step_N} (шагов оптимизатора). */
+    public static int saveEveryStepsFromEnv(int defaultValue) {
+        return positiveIntFromEnv("JGPT_SAVE_EVERY_STEPS", defaultValue, 1);
+    }
+
+    /** {@code JGPT_EVAL_EVERY_STEPS} — период eval (и checkpoint_best при улучшении). */
+    public static int evalEveryStepsFromEnv(int defaultValue) {
+        return positiveIntFromEnv("JGPT_EVAL_EVERY_STEPS", defaultValue, 1);
+    }
+
+    /**
+     * {@code JGPT_DROPOUT} — вероятность dropout (residual после attention/FFN и embedding) в {@code [0, 0.9)};
+     * не задано — {@code defaultValue}. На GPU-пути реализуется ядром dropout (см. {@code TensorOpsGPU}).
+     */
+    public static float dropoutFromEnv(float defaultValue) {
+        String env = System.getenv("JGPT_DROPOUT");
+        if (env == null || env.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            float v = Float.parseFloat(env.trim().replace(',', '.'));
+            if (!(v >= 0f) || v >= 0.9f) {
+                return defaultValue;
+            }
+            return v;
+        } catch (NumberFormatException _) {
+            return defaultValue;
+        }
+    }
+
     public static int interactiveEveryFromEnv(int defaultValue) {
         String env = System.getenv("JGPT_INTERACTIVE_EVERY");
         if (env != null && !env.isBlank()) {
@@ -759,11 +802,11 @@ public final class LLMConfig {
                 0.1f,
                 0.1f,
                 1.0f,
-                0.1f,
-                0.1f,
-                0.1f,
-                500,
-                100,
+                dropoutFromEnv(0.1f),
+                0f,
+                dropoutFromEnv(0.1f),
+                saveEveryStepsFromEnv(500),
+                evalEveryStepsFromEnv(100),
                 LearningRateSchedule.COSINE,
                 0f,
                 checkpointDir,

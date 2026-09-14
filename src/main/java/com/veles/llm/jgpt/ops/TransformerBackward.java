@@ -972,8 +972,18 @@ public final class TransformerBackward {
             ws.getDW2().clear();
             ws.getDW3().clear();
 
+            /*
+             * Градиент ветки FFN = dropout_mask ⊙ gradOut (та же маска, что в forward после W2); residual-часть
+             * (accumulateAdd ниже) идёт немаскированной. DXTmp временно хранит маскированный grad — далее он
+             * перезаписывается выходом matmul dGate·W3ᵀ.
+             */
+            GpuFloatBuffer gradFfnBranch = ws.getGradOut();
+            if (GpuDropout.residualProb() > 0f) {
+                GpuDropout.applyResidualBranch(ws.getGradOut(), ws.getDXTmp(), plane, GpuDropout.SITE_FFN);
+                gradFfnBranch = ws.getDXTmp();
+            }
             TensorOpsGPU.matmulGpuDeviceEx(
-                    ws.getGradOut(),
+                    gradFfnBranch,
                     useResidentW ? ffnResident.w2() : ws.getW2(),
                     ws.getDHact(),
                     rows,
@@ -982,7 +992,7 @@ public final class TransformerBackward {
                     false,
                     true);
             TensorOpsGPU.matmulGpuDeviceEx(
-                    ws.getHAct(), ws.getGradOut(), ws.getDW2(), dInt, rows, dModel, true, false);
+                    ws.getHAct(), gradFfnBranch, ws.getDW2(), dInt, rows, dModel, true, false);
             TensorOpsGPU.multiplyBackwardGpuDevice(
                     ws.getDHact(), ws.getH1(), ws.getGateSwish(), ws.getDH1(), ws.getDGateSwish(), rows * dInt);
             TensorOpsGPU.multiplyBackwardGpuDevice(
@@ -1061,6 +1071,11 @@ public final class TransformerBackward {
             int plane = rows * dModel;
             cache.copySlotToDeviceFloat(BlockActivationCacheDevice.SlotId.X_NORM1, ws.getXFlat(), plane);
             ws.getGradOutFlat().copyFromDevice(dGradOut, plane);
+            /*
+             * GradOutFlat используется только веткой attention (Wo и далее); residual dGradXRes1 → dGradXIn
+             * добавляется во внешней функции без маски. Та же маска, что в forward после Wo.
+             */
+            GpuDropout.applyResidualBranchInPlace(ws.getGradOutFlat(), plane, GpuDropout.SITE_ATTN);
             if (!useResidentW) {
                 ws.getWq().copyFrom(Wq.internalBuffer(), 0, dModelSq);
                 ws.getWk().copyFrom(Wk.internalBuffer(), 0, dModelSq);

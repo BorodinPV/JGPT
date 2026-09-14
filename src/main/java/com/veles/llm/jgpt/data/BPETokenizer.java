@@ -429,8 +429,8 @@ public final class BPETokenizer {
     public String decode(int[] tokens) {
         StringBuilder sb = new StringBuilder();
         boolean pendingSpace = false;
-        for (int tokenId : tokens) {
-            String token = idToTokenMap.get(tokenId);
+        for (int idx = 0; idx < tokens.length; idx++) {
+            String token = idToTokenMap.get(tokens[idx]);
             if (token == null) {
                 continue;
             }
@@ -455,15 +455,70 @@ public final class BPETokenizer {
             String core = wordEnd ? token.substring(0, token.length() - WORD_END.length()) : token;
             // После </w> ждём пробел перед следующим «словом». Если следующий токен сам — пробельная
             // словоформа (пробелы как отдельный матч \\s+), в core уже есть пробел — не дублировать.
-            if (pendingSpace && !sb.isEmpty() && (core.isEmpty() || !Character.isWhitespace(core.charAt(0)))) {
+            // Пунктуация — отдельные словоформы (WORD_PATTERN), исходный пробел вокруг неё потерян:
+            // восстанавливаем типографикой — нет пробела перед закрывающими знаками и после открывающих.
+            boolean glueLeft = core.length() == 1 && NO_SPACE_BEFORE.indexOf(core.charAt(0)) >= 0;
+            boolean glueRight = core.length() == 1 && NO_SPACE_AFTER.indexOf(core.charAt(0)) >= 0;
+            // Дефис/апостроф между буквами — внутри слова («кто-то», «д'Артаньян»): без пробелов с обеих сторон.
+            if (core.length() == 1
+                    && INTRA_WORD.indexOf(core.charAt(0)) >= 0
+                    && !sb.isEmpty()
+                    && Character.isLetterOrDigit(sb.charAt(sb.length() - 1))
+                    && nextStartsWithLetterOrDigit(tokens, idx + 1)) {
+                glueLeft = true;
+                glueRight = true;
+            }
+            // Унарный минус/плюс перед числом («-5», «+3»): после знака пробела нет.
+            if (core.length() == 1
+                    && (core.charAt(0) == '-' || core.charAt(0) == '+')
+                    && (sb.isEmpty() || !Character.isLetterOrDigit(sb.charAt(sb.length() - 1)))
+                    && nextStartsWithDigit(tokens, idx + 1)) {
+                glueRight = true;
+            }
+            if (pendingSpace
+                    && !glueLeft
+                    && !sb.isEmpty()
+                    && (core.isEmpty() || !Character.isWhitespace(core.charAt(0)))) {
                 sb.append(' ');
             }
             sb.append(core);
             // Сбрасываем pendingSpace если токен состоит только из пробелов —
             // иначе следующий токен получит лишний пробел.
-            pendingSpace = wordEnd && !core.isBlank();
+            pendingSpace = wordEnd && !core.isBlank() && !glueRight;
         }
         return sb.toString();
+    }
+
+    /** Знаки, перед которыми при decode пробел не ставится. */
+    private static final String NO_SPACE_BEFORE = ",.;:!?)]}»…%\u201D\u2019";
+    /** Знаки, после которых при decode пробел не ставится. */
+    private static final String NO_SPACE_AFTER = "([{«\u201C\u2018";
+    /** Знаки, которые между двумя буквами/цифрами считаются частью слова. */
+    private static final String INTRA_WORD = "-'\u2019";
+
+    private boolean nextStartsWithLetterOrDigit(int[] tokens, int from) {
+        char c = nextVisibleChar(tokens, from);
+        return c != 0 && Character.isLetterOrDigit(c);
+    }
+
+    private boolean nextStartsWithDigit(int[] tokens, int from) {
+        char c = nextVisibleChar(tokens, from);
+        return c != 0 && Character.isDigit(c);
+    }
+
+    /** Первый символ следующего обычного токена; {@code 0} — конец или спец-токен. */
+    private char nextVisibleChar(int[] tokens, int from) {
+        for (int k = from; k < tokens.length; k++) {
+            String t = idToTokenMap.get(tokens[k]);
+            if (t == null) {
+                continue;
+            }
+            if (isSpecialToken(t) || t.isEmpty()) {
+                return 0;
+            }
+            return t.charAt(0);
+        }
+        return 0;
     }
 
     public void save(String path) throws IOException {

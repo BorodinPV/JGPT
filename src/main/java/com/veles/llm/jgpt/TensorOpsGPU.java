@@ -1592,6 +1592,11 @@ public final class TensorOpsGPU {
         TensorOpsGpuDeviceUnary.multiplyGpuDevice(a, b, c, n);
     }
 
+    /** См. {@link TensorOpsGpuDeviceUnary#dropoutGpuDevice}. */
+    public static void dropoutGpuDevice(GpuFloatBuffer src, GpuFloatBuffer dst, int n, float p, long seed) {
+        TensorOpsGpuDeviceUnary.dropoutGpuDevice(src, dst, n, p, seed);
+    }
+
     public static void multiplyBackwardGpuDevice(
             GpuFloatBuffer gOut, GpuFloatBuffer a, GpuFloatBuffer b, GpuFloatBuffer gA, GpuFloatBuffer gB, int n) {
         TensorOpsGpuDeviceUnary.multiplyBackwardGpuDevice(gOut, a, b, gA, gB, n);

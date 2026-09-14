@@ -23,7 +23,8 @@ class AdamGpuParityTest {
         }
 
         Random rng = new Random(123);
-        Tensor param = new Tensor(new int[] {n});
+        // rank-2: weight decay применяется только к матрицам (AdamOptimizer.appliesWeightDecay)
+        Tensor param = new Tensor(new int[] {1, n});
         float[] p = param.internalBuffer();
         float[] refP = new float[n];
         float[] refM = new float[n];
@@ -42,7 +43,7 @@ class AdamGpuParityTest {
         AdamOptimizer optimizer = new AdamOptimizer(learningRate, beta1, beta2, epsilon, weightDecay);
 
         for (int step = 1; step <= 3; step++) {
-            Tensor grad = new Tensor(new int[] {n});
+            Tensor grad = new Tensor(new int[] {1, n});
             float[] g = grad.internalBuffer();
             for (int i = 0; i < n; i++) {
                 g[i] = rng.nextFloat() * 2f - 1f;

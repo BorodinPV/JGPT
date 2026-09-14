@@ -76,6 +76,24 @@ public final class DynamicLossScaler {
         this.consecutiveOverflowsAtMinScale = 0;
     }
 
+    /** Шагов без overflow подряд (для чекпоинта). */
+    public int getConsecutiveNonOverflowSteps() {
+        return consecutiveNonOverflowSteps;
+    }
+
+    /**
+     * Восстановление из чекпоинта: scale (clamp в {@code [min, max]}) и счётчик стабильных шагов, чтобы после
+     * resume не начинать с baseline и не ловить серию overflow-пропусков.
+     */
+    public void restoreState(float savedScale, int savedConsecutiveNonOverflowSteps) {
+        if (!(savedScale > 0f) || !Float.isFinite(savedScale)) {
+            return;
+        }
+        this.scale = Math.min(maxScale, Math.max(minScale, savedScale));
+        this.consecutiveNonOverflowSteps = Math.max(0, savedConsecutiveNonOverflowSteps);
+        this.consecutiveOverflowsAtMinScale = 0;
+    }
+
     /** Вернуть loss scale к значению после конструктора (например в начале эпохи). */
     public void resetToInitial() {
         this.scale = baselineScale;

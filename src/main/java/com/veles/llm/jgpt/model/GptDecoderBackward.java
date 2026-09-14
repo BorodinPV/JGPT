@@ -2,6 +2,7 @@ package com.veles.llm.jgpt.model;
 
 import com.veles.llm.jgpt.GpuFloatBuffer;
 import com.veles.llm.jgpt.TensorOpsGPU;
+import com.veles.llm.jgpt.ops.GpuDropout;
 import com.veles.llm.jgpt.ops.TensorOps;
 import com.veles.llm.jgpt.ops.TransformerBackward;
 import com.veles.llm.jgpt.util.DebugGpuTrain;
@@ -39,6 +40,8 @@ final class GptDecoderBackward {
                     m.gpuDecoderLayer != null ? m.gpuDecoderLayer[layer].attnBuffers() : null;
             TensorOps.GpuFfnResidentBuffers ffnResident =
                     m.gpuDecoderLayer != null ? m.gpuDecoderLayer[layer].ffnBuffers() : null;
+            // Тот же слой → тот же dropout-seed, что был в forward этого микробатча.
+            GpuDropout.setCurrentLayer(layer);
             TransformerBackward.transformerBlockBackwardGpuDevice(
                     gradCur,
                     m.blockCachesDevice[layer],
@@ -93,6 +96,8 @@ final class GptDecoderBackward {
             GptModelDebugLog.layerGrad(-1, flat);
         }
 
+        // Embedding dropout из forwardGpuDecoder: маска снимается с градиента до scatter в token/pos эмбеддинги.
+        GpuDropout.applyEmbeddingInPlace(gradCur, flat);
         m.tokenEmbedding.backwardScatterFromDeviceGrad(m.lastInputTokens, gradCur, batch, seqLen);
         m.positionEmbedding.backwardAccumulateFromDeviceGrad(gradCur, batch, seqLen);
     }

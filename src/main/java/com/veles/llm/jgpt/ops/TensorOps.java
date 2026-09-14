@@ -1642,6 +1642,8 @@ public final class TensorOps {
             TensorOpsGPU.matmulGpuDeviceEx(
                     ws.getConcatFlat(), woB, ws.getAttnOut(), rows, dModel, dModel, false, false);
             if (devCache != null) {
+                // Residual dropout на ветке attention (только training); backward маскирует grad перед Wo тем же seed.
+                GpuDropout.applyResidualBranchInPlace(ws.getAttnOut(), plane, GpuDropout.SITE_ATTN);
                 devCache.copySlotFromDeviceFloat(BlockActivationCacheDevice.SlotId.ATTN_OUT, ws.getAttnOut(), plane);
             }
             xRes1Out.copyFromDevice(xInDevice, plane);
@@ -1716,6 +1718,10 @@ public final class TensorOps {
             TensorOpsGPU.multiplyGpuDevice(ws.getH1(), ws.getGateSwish(), ws.getHAct(), rows * dInt);
             TensorOpsGPU.matmulGpuDeviceEx(
                     ws.getHAct(), w2Gpu, ws.getFfnOut(), rows, dInt, dModel, false, false);
+            if (devCache != null) {
+                // Residual dropout на ветке FFN (только training); backward маскирует grad перед W2 тем же seed.
+                GpuDropout.applyResidualBranchInPlace(ws.getFfnOut(), plane, GpuDropout.SITE_FFN);
+            }
             ws.getOut().copyFromDevice(ws.getXRes1(), plane);
             TensorOpsGPU.accumulateAddGpuDevice(ws.getOut(), ws.getFfnOut(), plane);
             if (devCache != null) {

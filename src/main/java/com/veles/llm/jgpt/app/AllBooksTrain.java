@@ -231,7 +231,7 @@ public final class AllBooksTrain {
 
             long totalChars = 0;
             int skipped = 0;
-            int minTokens = llm.maxSeqLen + 1;
+            List<int[]> docs = new ArrayList<>(books.size());
 
             try (ExecutorService pool = Executors.newFixedThreadPool(threads)) {
                 for (Path p : books) {
@@ -250,34 +250,69 @@ public final class AllBooksTrain {
                         skipped++;
                         continue;
                     }
-                    totalChars += p.toFile().length();
-                    log.info("[DATA]   {} → {} токенов", p.getFileName(), tokens.length);
-                    if (tokens.length < minTokens) {
-                        log.warn("[DATA] пропущена (слишком короткая): {} ({} токенов < {})",
-                                p.getFileName(), tokens.length, minTokens);
+                    // <bos>+<eos> без текста — пустой файл, в поток не идёт
+                    if (tokens.length <= 2) {
                         skipped++;
                         continue;
                     }
-                    dataLoader.loadTokens(tokens);
-                    log.info("[DATA]   {} → +{} окон (итого {})",
-                            p.getFileName(), tokens.length / llm.maxSeqLen, dataLoader.numSequences());
+                    totalChars += p.toFile().length();
+                    log.debug("[DATA]   {} → {} токенов", p.getFileName(), tokens.length);
+                    docs.add(tokens);
                 }
             }
-            log.info("[DATA] итого: {} символов, {} книг загружено, {} пропущено",
-                    String.format("%,d", totalChars), books.size() - skipped, skipped);
+            log.info("[DATA] итого: {} символов, {} документов закодировано, {} пропущено (пустые/ошибка)",
+                    String.format("%,d", totalChars), docs.size(), skipped);
+            if (docs.isEmpty()) {
+                throw new IllegalStateException("Нет документов для обучения в " + books.size() + " файлах");
+            }
+
+            double valFracDocs = readValFraction();
+            long valSeedDocs = readValSeed();
+            DataLoader valPacked = null;
+            if (valFracDocs > 0d) {
+                valPacked = new DataLoader(tokenizer, llm.maxSeqLen, llm.batchSize);
+            }
+            PackedDocsStats st =
+                    packDocumentsIntoLoaders(docs, dataLoader, valPacked, llm.maxSeqLen, valFracDocs, valSeedDocs);
+            docs.clear();
+            log.info(
+                    "[DATA] упаковка документов через <eos>: train_docs={} val_docs={} train_tokens={} val_tokens={}"
+                            + " (хвост потока < {} токенов теряется один раз, не на документ)",
+                    st.trainDocs,
+                    st.valDocs,
+                    String.format("%,d", st.trainTokens),
+                    String.format("%,d", st.valTokens),
+                    llm.maxSeqLen + 1);
             int nSeq = dataLoader.numSequences();
             log.info("[DATA] всего последовательностей: {} (~{} батчей/эпоха)",
                     nSeq, dataLoader.numBatches());
             if (nSeq == 0) {
                 throw new IllegalStateException(
-                        "Нет последовательностей — все тексты слишком короткие (нужно >" + llm.maxSeqLen + ")");
+                        "Нет последовательностей — корпус короче одного окна (нужно >" + llm.maxSeqLen + " токенов)");
+            }
+            if (valPacked != null) {
+                if (valPacked.numSequences() >= llm.batchSize) {
+                    evalLoader = valPacked;
+                    sftDialogHoldout = true; // hold-out уже сформирован (по документам), общий split ниже не нужен
+                    log.info(
+                            "[DATA] hold-out validation (по документам): fraction={}, seed={}, train_windows={}, val_windows={}",
+                            String.format(Locale.ROOT, "%.4f", valFracDocs),
+                            valSeedDocs,
+                            trainLoader.numSequences(),
+                            evalLoader.numSequences());
+                } else {
+                    log.info(
+                            "[DATA] hold-out по документам не создан (val_windows={} < batch {}) — eval на train-потоке",
+                            valPacked.numSequences(),
+                            llm.batchSize);
+                }
             }
         }
 
         double valFrac = readValFraction();
         long valSeed = readValSeed();
         if (sftDialogHoldout) {
-            // train/eval уже заполнены в loadDialogHoldout
+            // train/eval уже заполнены (SFT по диалогам или LM по документам)
         } else if (valFrac > 0d) {
             DataLoader.TrainValSplit split = DataLoader.splitTrainValidation(dataLoader, valFrac, valSeed);
             trainLoader = split.train;
@@ -301,10 +336,35 @@ public final class AllBooksTrain {
         GPTModel model = new GPTModel(vocabSize, llm.maxSeqLen, llm.dModel,
                 llm.numHeads, llm.numLayers, llm.dIntermediate, gpuResident);
 
-        Path modelFinal = checkpointsDir.resolve("model_final.bin");
-        if (Files.isRegularFile(modelFinal)) {
-            log.info("[CKPT] продолжение: загрузка весов из {}", modelFinal.getFileName());
-            model.loadWeights(modelFinal.toString());
+        // Resume: самый свежий по globalStep среди checkpoint_final/step_N/epoch_N/best (после жёсткого
+        // убийства процесса checkpoint_final может отсутствовать или быть старее step_N). Веса берём из
+        // парного model_<name>.bin, чтобы Adam и веса были с одного и того же шага.
+        Optional<Path> resumeCkpt = findResumeCheckpoint(checkpointsDir);
+        Path weightsToLoad = null;
+        if (resumeCkpt.isPresent()) {
+            Path paired = pairedModelWeights(resumeCkpt.get());
+            Path modelFinal = checkpointsDir.resolve("model_final.bin");
+            if (Files.isRegularFile(paired)) {
+                weightsToLoad = paired;
+            } else if (Files.isRegularFile(modelFinal)) {
+                log.warn(
+                        "[CKPT] нет парных весов {} для {} — беру model_final.bin (веса и Adam могут быть с разных шагов)",
+                        paired.getFileName(),
+                        resumeCkpt.get().getFileName());
+                weightsToLoad = modelFinal;
+            } else {
+                log.error("[CKPT] найден {}, но ни парных весов, ни model_final.bin нет — веса случайные!",
+                        resumeCkpt.get().getFileName());
+            }
+        } else {
+            Path modelFinal = checkpointsDir.resolve("model_final.bin");
+            if (Files.isRegularFile(modelFinal)) {
+                weightsToLoad = modelFinal;
+            }
+        }
+        if (weightsToLoad != null) {
+            log.info("[CKPT] продолжение: загрузка весов из {}", weightsToLoad.getFileName());
+            model.loadWeights(weightsToLoad.toString());
         }
 
         // --- тренировка ---
@@ -312,8 +372,6 @@ public final class AllBooksTrain {
         TrainingConfig trainConfig = llm.toTrainingConfig(checkpointsDir.toString(), vocabSize);
         LLMTrainer trainer = new LLMTrainer(model, trainConfig, trainLoader, evalLoader);
 
-        // Ищем чекпоинт для resume: сначала checkpoint_final.bin, затем последний checkpoint_epoch_N.bin
-        Optional<Path> resumeCkpt = findResumeCheckpoint(checkpointsDir);
         if (resumeCkpt.isPresent()) {
             log.info("[CKPT] загрузка состояния (Adam + globalStep): {}",
                     resumeCkpt.get().getFileName());
@@ -352,6 +410,7 @@ public final class AllBooksTrain {
             try {
                 if (trainer.getGlobalStep() > trainer.getShutdownProgressBaselineStep()) {
                     trainer.saveCheckpoint("final");
+                    trainer.awaitPendingCheckpointWrites();
                     log.info("[SHUTDOWN] checkpoint сохранён. Возобновление: тот же скрипт без --fresh");
                     System.out.println("[SHUTDOWN] checkpoint сохранён");
                     System.out.flush();
@@ -395,6 +454,7 @@ public final class AllBooksTrain {
             if (exitCheckpointDone.compareAndSet(false, true)) {
                 trainer.saveCheckpoint("final");
             }
+            trainer.awaitPendingCheckpointWrites();
             if (trainer.exitedDueToSupervisorRequest()) {
                 log.info(
                         "[SHUTDOWN] checkpoint сохранён. Возобновление: тот же скрипт без --fresh. Лучший eval loss: {}",
@@ -413,35 +473,141 @@ public final class AllBooksTrain {
     }
 
 
+    /** Статистика упаковки документов в LM-окна. */
+    record PackedDocsStats(int trainDocs, int valDocs, long trainTokens, long valTokens) {}
+
     /**
-     * Ищет чекпоинт для resume в порядке приоритета:
-     * <ol>
-     *   <li>{@code checkpoint_final.bin} — сохраняется в конце обучения;</li>
-     *   <li>последний {@code checkpoint_epoch_N.bin} по номеру N.</li>
-     * </ol>
+     * Упаковывает документы ({@code <bos> … <eos>} каждый) в непрерывные потоки train/val и режет их на окна
+     * {@code maxSeqLen+1} через {@link DataLoader#loadTokens(int[])}. Короткие документы и хвосты не теряются:
+     * граница документа — это {@code <eos><bos>} внутри окна, как в GPT-2.
+     *
+     * <p>Hold-out — по документам (не по окнам): {@code valFraction} документов после детерминированного
+     * перемешивания по {@code seed}. Если val-документов не хватает даже на один батч окон, всё уходит в train.
+     *
+     * @param val {@code null} — без hold-out
+     */
+    static PackedDocsStats packDocumentsIntoLoaders(
+            List<int[]> docs, DataLoader train, DataLoader val, int maxSeqLen, double valFraction, long seed) {
+        int n = docs.size();
+        boolean[] isVal = new boolean[n];
+        int valDocs = 0;
+        long valTokens = 0;
+        if (val != null && valFraction > 0d && n >= 2) {
+            List<Integer> order = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+                order.add(i);
+            }
+            java.util.Collections.shuffle(order, new java.util.Random(seed));
+            int nVal = (int) Math.round(n * valFraction);
+            nVal = Math.max(0, Math.min(nVal, n - 1));
+            for (int k = 0; k < nVal; k++) {
+                isVal[order.get(k)] = true;
+                valTokens += docs.get(order.get(k)).length;
+            }
+            valDocs = nVal;
+            long minValTokens = (long) train.getBatchSize() * maxSeqLen + 1;
+            if (valTokens < minValTokens) {
+                log.warn(
+                        "[DATA] val-документов ({}, {} токенов) не хватает на батч окон ({}) — всё в train",
+                        valDocs,
+                        valTokens,
+                        minValTokens);
+                java.util.Arrays.fill(isVal, false);
+                valDocs = 0;
+                valTokens = 0;
+            }
+        }
+        long trainTokens = 0;
+        for (int i = 0; i < n; i++) {
+            if (!isVal[i]) {
+                trainTokens += docs.get(i).length;
+            }
+        }
+        train.loadTokens(concatDocs(docs, isVal, false, trainTokens));
+        if (valDocs > 0) {
+            val.loadTokens(concatDocs(docs, isVal, true, valTokens));
+        }
+        return new PackedDocsStats(n - valDocs, valDocs, trainTokens, valTokens);
+    }
+
+    private static int[] concatDocs(List<int[]> docs, boolean[] isVal, boolean takeVal, long total) {
+        if (total > Integer.MAX_VALUE - 8) {
+            throw new IllegalStateException("корпус слишком большой для одного int[] потока: " + total + " токенов");
+        }
+        int[] stream = new int[(int) total];
+        int off = 0;
+        for (int i = 0; i < docs.size(); i++) {
+            if (isVal[i] != takeVal) {
+                continue;
+            }
+            int[] d = docs.get(i);
+            System.arraycopy(d, 0, stream, off, d.length);
+            off += d.length;
+        }
+        return stream;
+    }
+
+    /**
+     * Ищет чекпоинт для resume: среди {@code checkpoint_final.bin}, {@code checkpoint_step_N.bin},
+     * {@code checkpoint_epoch_N.bin}, {@code checkpoint_best.bin} берётся тот, у кого больший {@code globalStep}
+     * в заголовке (при равенстве — {@code final}). {@code checkpoint_emergency.bin} — только если других нет.
+     * Файлы, у которых нет парных {@code model_<name>.bin}, пропускаются (кроме случая, когда есть model_final).
      */
     static Optional<Path> findResumeCheckpoint(Path dir) throws IOException {
         if (!Files.isDirectory(dir)) return Optional.empty();
 
-        Path fin = dir.resolve("checkpoint_final.bin");
-        if (Files.isRegularFile(fin)) return Optional.of(fin);
-
+        List<Path> candidates;
         try (Stream<Path> s = Files.list(dir)) {
-            return s.filter(Files::isRegularFile)
-                    .filter(p -> {
-                        String n = p.getFileName().toString();
-                        return n.startsWith("checkpoint_epoch_") && n.endsWith(".bin");
-                    })
-                    .max(Comparator.comparingInt(p -> {
-                        String n = p.getFileName().toString();
-                        try {
-                            return Integer.parseInt(
-                                    n.replace("checkpoint_epoch_", "").replace(".bin", ""));
-                        } catch (NumberFormatException _) {
-                            return -1;
-                        }
-                    }));
+            candidates =
+                    s.filter(Files::isRegularFile)
+                            .filter(p -> {
+                                String n = p.getFileName().toString();
+                                if (!n.startsWith("checkpoint_") || !n.endsWith(".bin")) {
+                                    return false;
+                                }
+                                return n.equals("checkpoint_final.bin")
+                                        || n.equals("checkpoint_best.bin")
+                                        || n.startsWith("checkpoint_step_")
+                                        || n.startsWith("checkpoint_epoch_");
+                            })
+                            .collect(Collectors.toCollection(ArrayList::new));
         }
+        boolean hasModelFinal = Files.isRegularFile(dir.resolve("model_final.bin"));
+        Path best = null;
+        int bestStep = Integer.MIN_VALUE;
+        for (Path p : candidates) {
+            if (!Files.isRegularFile(pairedModelWeights(p)) && !hasModelFinal) {
+                continue;
+            }
+            int step = LLMTrainer.peekCheckpointGlobalStep(p);
+            if (step < 0) {
+                continue;
+            }
+            boolean isFinal = p.getFileName().toString().equals("checkpoint_final.bin");
+            if (step > bestStep || (step == bestStep && isFinal)) {
+                best = p;
+                bestStep = step;
+            }
+        }
+        if (best != null) {
+            if (candidates.size() > 1) {
+                log.info("[CKPT] resume: выбран {} (globalStep={}) из {} кандидатов",
+                        best.getFileName(), bestStep, candidates.size());
+            }
+            return Optional.of(best);
+        }
+        Path emergency = dir.resolve("checkpoint_emergency.bin");
+        if (Files.isRegularFile(emergency) && LLMTrainer.peekCheckpointGlobalStep(emergency) > 0) {
+            log.warn("[CKPT] resume только из checkpoint_emergency.bin (других чекпоинтов нет)");
+            return Optional.of(emergency);
+        }
+        return Optional.empty();
+    }
+
+    /** {@code checkpoint_<name>.bin} → {@code model_<name>.bin} в том же каталоге. */
+    static Path pairedModelWeights(Path checkpoint) {
+        String n = checkpoint.getFileName().toString();
+        return checkpoint.resolveSibling("model_" + n.substring("checkpoint_".length()));
     }
 
     static Path resolveCheckpointsDir(Path root) {

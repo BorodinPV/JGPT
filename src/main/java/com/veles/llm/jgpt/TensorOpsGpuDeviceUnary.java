@@ -48,6 +48,23 @@ final class TensorOpsGpuDeviceUnary {
         TensorOpsGPU.multiplyGPUDevice(a.devicePointer(), b.devicePointer(), c.devicePointer(), n);
     }
 
+    /**
+     * Inverted dropout на device: {@code dst = src * mask(seed, i) / (1-p)}. Маска — детерминированная функция
+     * {@code (seed, i)}, поэтому тот же вызов с тем же seed в backward воспроизводит маску без её хранения.
+     * {@code src == dst} допустимо (in-place).
+     */
+    static void dropoutGpuDevice(GpuFloatBuffer src, GpuFloatBuffer dst, int n, float p, long seed) {
+        if (n <= 0) {
+            throw new IllegalArgumentException("n must be positive");
+        }
+        if (!(p > 0f) || !(p < 1f)) {
+            throw new IllegalArgumentException("dropout p must be in (0,1): " + p);
+        }
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(src, "src"), n, "src");
+        TensorOpsGpuBufferChecks.requireMinFloats(TensorOpsGpuBufferChecks.requireGpu(dst, "dst"), n, "dst");
+        TensorOpsGPU.dropoutGPUDevice(src.devicePointer(), dst.devicePointer(), n, p, seed);
+    }
+
     static void multiplyBackwardGpuDevice(
             GpuFloatBuffer gOut, GpuFloatBuffer a, GpuFloatBuffer b, GpuFloatBuffer gA, GpuFloatBuffer gB, int n) {
         if (n <= 0) {

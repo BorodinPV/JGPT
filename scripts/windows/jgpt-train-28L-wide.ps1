@@ -23,6 +23,7 @@ $DataDir = $env:JGPT_DATA_DIR
 if (-not $DataDir) { $DataDir = "data\books\pretrain_txt" }
 $DoFresh = $false
 $SkipBuild = $false
+$RestartPlan = $false
 
 function Show-Usage {
     Write-Host @"
@@ -36,6 +37,10 @@ Does NOT touch checkpoints\sft_37L_* .
 
 Options:
   --data-dir PATH   directory with .txt (default: data\books\pretrain_txt)
+  --restart-plan    keep weights + Adam from the newest checkpoint, but reset step counter,
+                    LR schedule (warmup+cosine from 0), epoch index and best eval loss
+                    (= JGPT_FINETUNE=1 for this run only). Use once after changing the
+                    objective/data/preset; plain resume afterwards.
   --fresh           archive ONLY wide_28L_16k_1024 (tokenizer stays)
   --no-build        skip CUDA rebuild (need build\jgpt_cuda.dll)
   -h, --help        this help
@@ -220,6 +225,7 @@ while ($i -lt $argList.Count) {
         }
         "--fresh" { $DoFresh = $true; $i += 1 }
         "--no-build" { $SkipBuild = $true; $i += 1 }
+        "--restart-plan" { $RestartPlan = $true; $i += 1 }
         { $_ -in @("-h", "--help") } { Show-Usage; exit 0 }
         default {
             Write-Host "Unknown argument: $($argList[$i])" -ForegroundColor Red
@@ -232,6 +238,14 @@ while ($i -lt $argList.Count) {
 if (-not (Test-Path $EnvFile)) {
     Write-Host "[28L-WIDE] ERROR: missing preset: $EnvFile" -ForegroundColor Red
     exit 1
+}
+
+if ($RestartPlan) {
+    $env:JGPT_FINETUNE = "1"
+    Write-Host "[28L-WIDE] --restart-plan: JGPT_FINETUNE=1 (weights+Adam kept, step/LR/epoch/best reset)"
+} elseif ($env:JGPT_FINETUNE -and $env:JGPT_FINETUNE -ne "0") {
+    Write-Host "[28L-WIDE] WARNING: JGPT_FINETUNE=$($env:JGPT_FINETUNE) is set in this shell - step counter will be reset AGAIN." -ForegroundColor Yellow
+    Write-Host "  For a plain resume run: Remove-Item Env:JGPT_FINETUNE  (or open a new PowerShell)" -ForegroundColor Yellow
 }
 
 if (-not [System.IO.Path]::IsPathRooted($DataDir)) {
@@ -322,13 +336,14 @@ if ($DoFresh) {
 }
 
 $hasCkpt = $false
-if (Test-Path (Join-Path $CkptDir "checkpoint_final.bin")) { $hasCkpt = $true }
-if (-not $hasCkpt -and (Test-Path $CkptDir)) {
-    $epochCk = @(Get-ChildItem -LiteralPath $CkptDir -Filter "checkpoint_epoch_*.bin" -File -ErrorAction SilentlyContinue)
-    if ($epochCk.Count -gt 0) { $hasCkpt = $true }
+if (Test-Path $CkptDir) {
+    # AllBooksTrain resumes from the newest of final/step_N/epoch_N/best (by globalStep in the header)
+    $anyCk = @(Get-ChildItem -LiteralPath $CkptDir -Filter "checkpoint_*.bin" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^checkpoint_(final|best|step_\d+|epoch_\d+)\.bin$' })
+    if ($anyCk.Count -gt 0) { $hasCkpt = $true }
 }
 if ($hasCkpt) {
-    Write-Host "[28L-WIDE] NOTE: found Adam checkpoint in $CkptDir - resume"
+    Write-Host "[28L-WIDE] NOTE: found Adam checkpoint(s) in $CkptDir - resume from the newest step"
 } else {
     New-Item -ItemType Directory -Force -Path $CkptDir | Out-Null
     if (Test-Path (Join-Path $CkptDir "model_final.bin")) {
@@ -427,6 +442,6 @@ $javaArgs += @(
     "--data-dir", $DataDir
 )
 
-Write-Host "[28L-WIDE] starting AllBooksTrain (resume only if checkpoint_final.bin in wide_28L_16k_1024)..."
+Write-Host "[28L-WIDE] starting AllBooksTrain (resume from newest checkpoint_* in wide_28L_16k_1024; stop: jgpt-stop-train.cmd)..."
 $exitCode = Invoke-LoggedJava $javaExe $javaArgs $LogFile
 exit $exitCode

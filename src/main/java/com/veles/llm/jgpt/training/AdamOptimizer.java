@@ -163,7 +163,7 @@ public final class AdamOptimizer {
                 beta1,
                 beta2,
                 epsilon,
-                weightDecay,
+                appliesWeightDecay(param) ? weightDecay : 0f,
                 invBias1,
                 invBias2,
                 p.length);
@@ -201,23 +201,26 @@ public final class AdamOptimizer {
         if (withGrad.isEmpty()) {
             return;
         }
-        int total = 0;
+        List<Tensor> withWd = new ArrayList<>();
+        List<Tensor> noWd = new ArrayList<>();
         for (Tensor p : withGrad) {
-            total += p.size();
+            (appliesWeightDecay(p) ? withWd : noWd).add(p);
         }
-        if (total > 0) {
-            stepInternalGpuBatched(withGrad);
-            return;
+        if (!withWd.isEmpty()) {
+            stepInternalGpuBatched(withWd, weightDecay);
         }
-        for (Tensor p : withGrad) {
-            stepInternal(p, p);
+        if (!noWd.isEmpty()) {
+            stepInternalGpuBatched(noWd, 0f);
         }
     }
 
-    private void stepInternalGpuBatched(List<Tensor> params) {
+    private void stepInternalGpuBatched(List<Tensor> params, float decay) {
         int total = 0;
         for (Tensor p : params) {
             total += p.size();
+        }
+        if (total == 0) {
+            return;
         }
         PackWorkspace ws = TL_ADAM_PACK.get();
         ws.p = ensureFloatCapacity(ws.p, total);
@@ -250,7 +253,7 @@ public final class AdamOptimizer {
                 beta1,
                 beta2,
                 epsilon,
-                weightDecay,
+                decay,
                 invBias1,
                 invBias2,
                 total);
@@ -276,6 +279,10 @@ public final class AdamOptimizer {
      * {@link #beginStep()}.
      */
     public void stepGpu(GpuTensor param, GpuTensor mState, GpuTensor vState) {
+        stepGpu(param, mState, vState, weightDecay);
+    }
+
+    private void stepGpu(GpuTensor param, GpuTensor mState, GpuTensor vState, float decay) {
         Objects.requireNonNull(param, "param");
         Objects.requireNonNull(mState, "mState");
         Objects.requireNonNull(vState, "vState");
@@ -302,7 +309,7 @@ public final class AdamOptimizer {
                 beta1,
                 beta2,
                 epsilon,
-                weightDecay,
+                decay,
                 invBias1,
                 invBias2,
                 n);
@@ -314,6 +321,19 @@ public final class AdamOptimizer {
      * GpuTensor)}.
      */
     public void stepAllGpu(List<GpuTensor> params, List<GpuTensor> mStates, List<GpuTensor> vStates) {
+        stepAllGpu(params, mStates, vStates, weightDecay);
+    }
+
+    /**
+     * Weight decay применяется только к матрицам (rank ≥ 2: эмбеддинги, проекции, FFN, LM head). Векторные
+     * параметры — gain RMSNorm и т.п. — не «стягиваются» к нулю, как принято в AdamW для LLM.
+     */
+    static boolean appliesWeightDecay(Tensor param) {
+        return param.getShape().length >= 2;
+    }
+
+    private void stepAllGpu(
+            List<GpuTensor> params, List<GpuTensor> mStates, List<GpuTensor> vStates, float decay) {
         Objects.requireNonNull(params, "params");
         Objects.requireNonNull(mStates, "mStates");
         Objects.requireNonNull(vStates, "vStates");
@@ -331,7 +351,7 @@ public final class AdamOptimizer {
         }
         int n = params.size();
         if (n == 1) {
-            stepGpu(params.get(0), mStates.get(0), vStates.get(0));
+            stepGpu(params.get(0), mStates.get(0), vStates.get(0), decay);
             return;
         }
         long[] pp = new long[n];
@@ -367,7 +387,7 @@ public final class AdamOptimizer {
                 beta1,
                 beta2,
                 epsilon,
-                weightDecay,
+                decay,
                 invBias1,
                 invBias2);
     }
@@ -558,10 +578,14 @@ public final class AdamOptimizer {
     private final Map<Tensor, GpuTensor> gpuM = new IdentityHashMap<>();
     private final Map<Tensor, GpuTensor> gpuV = new IdentityHashMap<>();
 
-    /** Grow-only scratch lists, reused каждый шаг в {@link #stepAllGpuDevice}. */
+    /** Grow-only scratch lists, reused каждый шаг в {@link #stepAllGpuDevice} (группа с weight decay). */
     private final List<GpuTensor> stepScratchParams  = new ArrayList<>();
     private final List<GpuTensor> stepScratchMStates = new ArrayList<>();
     private final List<GpuTensor> stepScratchVStates = new ArrayList<>();
+    /** То же для группы без weight decay (векторные параметры: gain норм). */
+    private final List<GpuTensor> stepScratchParamsNoWd  = new ArrayList<>();
+    private final List<GpuTensor> stepScratchMStatesNoWd = new ArrayList<>();
+    private final List<GpuTensor> stepScratchVStatesNoWd = new ArrayList<>();
 
     public void syncMomentBuffersFromGpu() {
         for (Map.Entry<Tensor, GpuTensor> e : gpuM.entrySet()) {
@@ -614,6 +638,9 @@ public final class AdamOptimizer {
         stepScratchParams.clear();
         stepScratchMStates.clear();
         stepScratchVStates.clear();
+        stepScratchParamsNoWd.clear();
+        stepScratchMStatesNoWd.clear();
+        stepScratchVStatesNoWd.clear();
         for (Map.Entry<Tensor, GpuTensor> e : paramMap.entrySet()) {
             Tensor cpuParam = e.getKey();
             GpuTensor gt = e.getValue();
@@ -634,12 +661,21 @@ public final class AdamOptimizer {
                         : GpuTensor.fromHostTensor(cpuVT);
                 gpuV.put(cpuParam, vGpu);
             }
-            stepScratchParams.add(gt);
-            stepScratchMStates.add(mGpu);
-            stepScratchVStates.add(vGpu);
+            if (appliesWeightDecay(cpuParam)) {
+                stepScratchParams.add(gt);
+                stepScratchMStates.add(mGpu);
+                stepScratchVStates.add(vGpu);
+            } else {
+                stepScratchParamsNoWd.add(gt);
+                stepScratchMStatesNoWd.add(mGpu);
+                stepScratchVStatesNoWd.add(vGpu);
+            }
         }
         if (!stepScratchParams.isEmpty()) {
-            stepAllGpu(stepScratchParams, stepScratchMStates, stepScratchVStates);
+            stepAllGpu(stepScratchParams, stepScratchMStates, stepScratchVStates, weightDecay);
+        }
+        if (!stepScratchParamsNoWd.isEmpty()) {
+            stepAllGpu(stepScratchParamsNoWd, stepScratchMStatesNoWd, stepScratchVStatesNoWd, 0f);
         }
     }
 }

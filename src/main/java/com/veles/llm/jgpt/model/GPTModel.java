@@ -5,6 +5,7 @@ import com.veles.llm.jgpt.GpuIntBuffer;
 import com.veles.llm.jgpt.TensorOpsGPU;
 import com.veles.llm.jgpt.core.Tensor;
 import com.veles.llm.jgpt.cuda.GpuTensor;
+import com.veles.llm.jgpt.ops.GpuDropout;
 import com.veles.llm.jgpt.ops.TensorOps;
 import com.veles.llm.jgpt.ops.TensorOpsBackward;
 import com.veles.llm.jgpt.ops.TransformerBackward;
@@ -84,6 +85,9 @@ public final class GPTModel {
     int decoderLayerGraphCaptureKey = Integer.MIN_VALUE;
 
     boolean decoderLayerGraphRuntimeDisabled;
+
+    /** Однократное сообщение «graph в training не используется из-за dropout». */
+    boolean decoderLayerGraphDropoutWarned;
 
     /**
      * Env {@code JGPT_DECODER_LAYER_CUDA_GRAPH_LOG=1}: логи указателей и сравнение снимка с момента capture (см.
@@ -206,6 +210,21 @@ public final class GPTModel {
 
     /** Переиспользование {@code [1,1]} в {@link #generate} (декодирование одного токена). */
     Tensor reusableDecodeOneToken;
+
+    /**
+     * Дополнительные стоп-токены генерации помимо {@code <pad>}/{@code <eos>} (например {@code <user>} /
+     * {@code <assistant>}: модель начала «новую реплику» — ответ закончен). Задаёт вызывающий, знающий токенизатор;
+     * пусто — только штатные стопы.
+     */
+    private volatile int[] extraGenerationStopTokens = new int[0];
+
+    public void setExtraGenerationStopTokens(int... tokens) {
+        this.extraGenerationStopTokens = tokens == null ? new int[0] : tokens.clone();
+    }
+
+    int[] extraGenerationStopTokens() {
+        return extraGenerationStopTokens;
+    }
 
     /**
      * Слайс токенов {@code [1, sliceLen]} при скользящем KV-окне: один экземпляр на ту же длину {@code sliceLen},
@@ -501,8 +520,18 @@ public final class GPTModel {
     public void setDropout(float residualDropout, float attentionDropout, float embeddingDropout) {
         float residual = Math.max(0f, Math.min(1f, residualDropout));
         float attention = Math.max(0f, Math.min(1f, attentionDropout));
+        float embedding = Math.max(0f, Math.min(1f, embeddingDropout));
         for (int i = 0; i < blocks.length; i++) {
             blocks[i].setDropout(residual, attention, i);
+        }
+        // VRAM D2D training path (forwardGpuDecoder / GptDecoderBackward): residual dropout после Wo и W2,
+        // embedding dropout после token+pos. Eval/инференс не затрагиваются.
+        GpuDropout.configure(residual, embedding);
+        if (residual > 0f || embedding > 0f) {
+            log.info(
+                    "Dropout (GPU training path): residual={} embedding={} (attention-weights dropout не реализован на GPU)",
+                    residual,
+                    embedding);
         }
     }
 
@@ -791,6 +820,13 @@ public final class GPTModel {
         if (xDevice.numFloats() < plane) {
             throw new IllegalArgumentException("xDevice: ожидается не менее " + plane + " float");
         }
+        /*
+         * Новый dropout-seed на этот микробатч (forward + его backward). Embedding dropout — in-place на входе
+         * стека: слой 0 кэширует X_IN уже после маски, backward снимает ту же маску с градиента перед scatter в
+         * эмбеддинги (GptDecoderBackward).
+         */
+        GpuDropout.beginTrainingForward();
+        GpuDropout.applyEmbeddingInPlace(xDevice, plane);
         boolean logThisStep = false;
         long probeSeq = 0L;
         if (LLMConfig.trainVramStepProbeFromEnvOrProp()) {

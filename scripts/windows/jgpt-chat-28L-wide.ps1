@@ -3,8 +3,10 @@
 #
 # Interactive InferChat for 28L-wide (SFT model_best, else pretrain).
 #   .\scripts\windows\jgpt-chat-28L-wide.cmd
-#   .\scripts\windows\jgpt-chat-28L-wide.cmd --prompt "Privet"
+#   .\scripts\windows\jgpt-chat-28L-wide.cmd --model checkpoints\wide_28L_16k_1024\model_best.bin --raw
 # Extra args after the script name go to InferChat (--temperature, --max-new-tokens, ...).
+# --raw / --no-template: do not wrap in <user>/<assistant> (pretrain completion).
+# JGPT_SFT / JGPT_SFT_CHAT_TEMPLATE set in this session are kept (not overwritten).
 $ErrorActionPreference = "Stop"
 
 try {
@@ -149,13 +151,44 @@ function Get-FallbackClasspath([string]$ProjectRoot) {
     return (@($classes) + $jars) -join ";"
 }
 
+$savedSft = [Environment]::GetEnvironmentVariable("JGPT_SFT", "Process")
+$savedTpl = [Environment]::GetEnvironmentVariable("JGPT_SFT_CHAT_TEMPLATE", "Process")
+
+$modelRel = $ModelDefault
+$rawLm = $false
+$passArgs = New-Object System.Collections.Generic.List[string]
+$i = 0
+$argList = @($args)
+while ($i -lt $argList.Count) {
+    switch ($argList[$i]) {
+        "--model" {
+            if ($i + 1 -ge $argList.Count) {
+                Write-Host "[28L-CHAT] ERROR: --model requires a path" -ForegroundColor Red
+                exit 1
+            }
+            $modelRel = $argList[$i + 1]
+            $i += 2
+        }
+        { $_ -in @("--raw", "--no-template") } { $rawLm = $true; $i += 1 }
+        default { [void]$passArgs.Add($argList[$i]); $i += 1 }
+    }
+}
+
 if (-not (Test-Path $EnvFile)) {
     Write-Host "[28L-CHAT] ERROR: missing $EnvFile" -ForegroundColor Red
     exit 1
 }
 Import-BashEnvFile $EnvFile
-$env:JGPT_SFT = "1"
-$env:JGPT_SFT_CHAT_TEMPLATE = "1"
+if ($rawLm) {
+    $env:JGPT_SFT = "0"
+    $env:JGPT_SFT_CHAT_TEMPLATE = "0"
+} elseif ($null -ne $savedSft -or $null -ne $savedTpl) {
+    if ($null -ne $savedSft) { $env:JGPT_SFT = $savedSft }
+    if ($null -ne $savedTpl) { $env:JGPT_SFT_CHAT_TEMPLATE = $savedTpl }
+} else {
+    $env:JGPT_SFT = "1"
+    $env:JGPT_SFT_CHAT_TEMPLATE = "1"
+}
 
 $javaHome = Find-JavaHome
 if (-not $javaHome) {
@@ -174,12 +207,16 @@ if (-not $env:JGPT_CUDA_LIB -or -not (Test-Path $env:JGPT_CUDA_LIB)) {
     exit 1
 }
 
-if (-not $ModelDefault) {
+if (-not $modelRel) {
     Write-Host "[28L-CHAT] ERROR: no 28L-wide weights (train pretrain/SFT first)" -ForegroundColor Red
     exit 1
 }
 
-$modelAbs = Join-Path $Root $ModelDefault
+if ([System.IO.Path]::IsPathRooted($modelRel)) {
+    $modelAbs = $modelRel
+} else {
+    $modelAbs = Join-Path $Root $modelRel
+}
 $tokAbs = Join-Path $Root $TokDefault
 if (-not (Test-Path $modelAbs)) {
     Write-Host "[28L-CHAT] ERROR: no weights: $modelAbs" -ForegroundColor Red
@@ -231,9 +268,9 @@ $inferArgs = @(
     "--boo", $Root,
     "--layers", "28",
     "--seq-len", "1024",
-    "--model", $ModelDefault,
+    "--model", $modelRel,
     "--tokenizer", $TokDefault
-) + @($args)
+) + @($passArgs)
 
 $javaArgs = @()
 if (-not [string]::IsNullOrWhiteSpace($env:MAVEN_OPTS)) {
@@ -250,6 +287,7 @@ $javaArgs += @(
     "com.veles.llm.jgpt.app.InferChat"
 ) + $inferArgs
 
-Write-Host "[28L-CHAT] model=$ModelDefault  (empty line / quit = exit)"
+$tplOn = $env:JGPT_SFT_CHAT_TEMPLATE
+Write-Host "[28L-CHAT] model=$modelRel  template=$tplOn  (empty line / quit = exit)"
 & $javaExe @javaArgs
 exit $LASTEXITCODE

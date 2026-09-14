@@ -24,22 +24,26 @@ $SrcBest = Join-Path $Root "checkpoints\wide_28L_16k_1024\model_best.bin"
 $SrcFinal = Join-Path $Root "checkpoints\wide_28L_16k_1024\model_final.bin"
 
 $DataDir = $env:JGPT_DATA_DIR
-if (-not $DataDir) { $DataDir = "data\sft\exam" }
+if (-not $DataDir) { $DataDir = "data\sft\short" }
 $DoFresh = $false
 $SkipBuild = $false
+$RestartPlan = $false
 
 function Show-Usage {
     Write-Host @"
 Usage: .\scripts\windows\jgpt-train-28L-wide-sft.cmd [OPTIONS]
 
 SFT after 28L-wide pretrain (one dialog per window, role tokens).
-Data: data\sft\exam (scripts\sft-make-exam.py). Optional: --data-dir data\sft\short
-Preset: env\28L-wide-sft.env
+Data: data\sft\short (built from data\sft\raw by scripts\sft-filter-short.py if empty).
+      --data-dir data\sft\exam -> synthetic exam.jsonl (tiny; memorizes, not a real SFT).
+Preset: env\28L-wide-sft.env (full-vocab CE, LR 5e-5, 2 epochs)
 Checkpoints: checkpoints\wide_28L_sft
 Seeds from checkpoints\wide_28L_16k_1024\model_best.bin (or model_final.bin), fresh Adam.
 
 Options:
-  --data-dir PATH   directory with .jsonl (default: data\sft\exam)
+  --data-dir PATH   directory with .jsonl (default: data\sft\short)
+  --restart-plan    keep weights + Adam from the newest checkpoint, reset step/LR/epoch/best
+                    (= JGPT_FINETUNE=1 for this run only)
   --fresh           archive ONLY wide_28L_sft (tokenizer stays)
   --no-build        skip CUDA rebuild (need build\jgpt_cuda.dll)
   -h, --help        this help
@@ -223,6 +227,7 @@ while ($i -lt $argList.Count) {
         }
         "--fresh" { $DoFresh = $true; $i += 1 }
         "--no-build" { $SkipBuild = $true; $i += 1 }
+        "--restart-plan" { $RestartPlan = $true; $i += 1 }
         { $_ -in @("-h", "--help") } { Show-Usage; exit 0 }
         default {
             Write-Host "Unknown argument: $($argList[$i])" -ForegroundColor Red
@@ -237,30 +242,52 @@ if (-not (Test-Path $EnvFile)) {
     exit 1
 }
 
+if ($RestartPlan) {
+    $env:JGPT_FINETUNE = "1"
+    Write-Host "[28L-WIDE-SFT] --restart-plan: JGPT_FINETUNE=1 (weights+Adam kept, step/LR/epoch/best reset)"
+} elseif ($env:JGPT_FINETUNE -and $env:JGPT_FINETUNE -ne "0") {
+    Write-Host "[28L-WIDE-SFT] WARNING: JGPT_FINETUNE=$($env:JGPT_FINETUNE) is set in this shell - step counter will be reset AGAIN." -ForegroundColor Yellow
+    Write-Host "  For a plain resume run: Remove-Item Env:JGPT_FINETUNE  (or open a new PowerShell)" -ForegroundColor Yellow
+}
+
 if (-not [System.IO.Path]::IsPathRooted($DataDir)) {
     $DataDir = Join-Path $Root $DataDir
 }
 
 $jsonlBefore = Get-JsonlCount $DataDir
-$makePy = Join-Path $Root "scripts\sft-make-exam.py"
-if ($jsonlBefore -eq 0 -and (Test-Path $makePy)) {
-    Write-Host "[28L-WIDE-SFT] generating exam JSONL -> $DataDir"
+$dataLeaf = (Split-Path -Leaf $DataDir).ToLowerInvariant()
+if ($jsonlBefore -eq 0) {
+    # Empty data dir: build it. "exam" -> synthetic exam.jsonl (tiny, memorizes; not for real SFT).
+    # Anything else (default "short") -> filter data\sft\raw with sft-filter-short.py.
     $py = $null
     foreach ($c in @("python", "py", "python3")) {
         $cmd = Get-Command $c -ErrorAction SilentlyContinue
         if ($cmd) { $py = $cmd.Source; break }
     }
     if (-not $py) {
-        Write-Host "[28L-WIDE-SFT] ERROR: python not found (need it to run sft-make-exam.py)" -ForegroundColor Red
+        Write-Host "[28L-WIDE-SFT] ERROR: python not found (need it to build $DataDir)" -ForegroundColor Red
         exit 1
     }
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & $py $makePy --dst (Join-Path $DataDir "exam.jsonl")
+    if ($dataLeaf -eq "exam") {
+        $makePy = Join-Path $Root "scripts\sft-make-exam.py"
+        Write-Host "[28L-WIDE-SFT] generating exam JSONL -> $DataDir"
+        & $py $makePy --dst (Join-Path $DataDir "exam.jsonl")
+    } else {
+        $filterPy = Join-Path $Root "scripts\sft-filter-short.py"
+        $rawDir = Join-Path $Root "data\sft\raw"
+        if (-not (Test-Path -LiteralPath $rawDir)) {
+            Write-Host "[28L-WIDE-SFT] ERROR: $DataDir is empty and $rawDir is missing (nothing to filter)" -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "[28L-WIDE-SFT] filtering $rawDir -> $DataDir (sft-filter-short.py)"
+        & $py $filterPy --src $rawDir --dst $DataDir
+    }
     $pyCode = $LASTEXITCODE
     $ErrorActionPreference = $prevEap
     if ($pyCode -ne 0) { exit $pyCode }
-} elseif ($jsonlBefore -gt 0) {
+} else {
     Write-Host "[28L-WIDE-SFT] using existing jsonl in $DataDir"
 }
 
@@ -325,13 +352,14 @@ if ($DoFresh) {
 }
 
 $hasCkpt = $false
-if (Test-Path (Join-Path $CkptDir "checkpoint_final.bin")) { $hasCkpt = $true }
-if (-not $hasCkpt -and (Test-Path $CkptDir)) {
-    $epochCk = @(Get-ChildItem -LiteralPath $CkptDir -Filter "checkpoint_epoch_*.bin" -File -ErrorAction SilentlyContinue)
-    if ($epochCk.Count -gt 0) { $hasCkpt = $true }
+if (Test-Path $CkptDir) {
+    # AllBooksTrain resumes from the newest of final/step_N/epoch_N/best (by globalStep in the header)
+    $anyCk = @(Get-ChildItem -LiteralPath $CkptDir -Filter "checkpoint_*.bin" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^checkpoint_(final|best|step_\d+|epoch_\d+)\.bin$' })
+    if ($anyCk.Count -gt 0) { $hasCkpt = $true }
 }
 if ($hasCkpt) {
-    Write-Host "[28L-WIDE-SFT] NOTE: found Adam checkpoint in $CkptDir - resume"
+    Write-Host "[28L-WIDE-SFT] NOTE: found Adam checkpoint(s) in $CkptDir - resume from the newest step"
 } else {
     New-Item -ItemType Directory -Force -Path $CkptDir | Out-Null
     $dstFinal = Join-Path $CkptDir "model_final.bin"
@@ -438,6 +466,6 @@ $javaArgs += @(
     "--data-dir", $DataDir
 )
 
-Write-Host "[28L-WIDE-SFT] starting AllBooksTrain (resume only if checkpoint_final.bin in wide_28L_sft)..."
+Write-Host "[28L-WIDE-SFT] starting AllBooksTrain (resume from newest checkpoint_* in wide_28L_sft; stop: jgpt-stop-train.cmd)..."
 $exitCode = Invoke-LoggedJava $javaExe $javaArgs $LogFile
 exit $exitCode

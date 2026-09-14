@@ -130,6 +130,8 @@ public final class InferChat {
         DecodeSampling sampling =
                 new DecodeSampling(temperature, topK, topP, repetitionPenalty, noRepeatNgramSize);
         model.loadWeights(modelPath.toString());
+        // С чат-шаблоном печатаем только ответ; в «сыром» режиме — промпт + продолжение (дописывание текста).
+        boolean echoPrompt = !sftChatTemplateFromEnv();
 
         try {
             if (singlePrompt != null) {
@@ -139,7 +141,8 @@ public final class InferChat {
                                 tokenizer,
                                 applySftChatTemplate(tokenizer, singlePrompt),
                                 maxNewTokens,
-                                sampling);
+                                sampling,
+                                echoPrompt);
                 log.info("{}", out);
                 return;
             }
@@ -181,7 +184,8 @@ public final class InferChat {
                                     tokenizer,
                                     applySftChatTemplate(tokenizer, trimmed),
                                     maxNewTokens,
-                                    sampling);
+                                    sampling,
+                                    echoPrompt);
                     console.printf("%s%n", out);
                     console.flush();
                 } catch (Exception e) {

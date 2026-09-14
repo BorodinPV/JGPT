@@ -535,7 +535,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_dropoutGPU(
     CUDA_CHECK_X(cudaMemcpyAsync(d_a, pa_raii.ptr, bytes, cudaMemcpyHostToDevice, kTensorCudaStream));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (n + threads - 1) / threads;
-    dropout_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_a, d_b, n, p, (unsigned int) seed);
+    dropout_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(d_a, d_b, n, p, (unsigned long long) seed);
     JniFloatArrayScope pb_raii2(env, h_dst, 0);
     if (!pb_raii2) {
         cudaFree(d_a);
@@ -556,7 +556,11 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_dropoutGPUDevice(
         return;
     }
     if (p <= 0.f) {
-        /* No dropout: just copy */
+        /* No dropout: just copy (in-place → no-op) */
+        (void) seed;
+        if (dSrc == dDst) {
+            return;
+        }
         const float* src = reinterpret_cast<const float*>(static_cast<uintptr_t>(dSrc));
         float* dst = reinterpret_cast<float*>(static_cast<uintptr_t>(dDst));
         CUDA_CHECK_X(cudaMemcpyAsync(dst, src, (size_t) n * sizeof(float), cudaMemcpyDeviceToDevice, kTensorCudaStream));
@@ -573,7 +577,7 @@ JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_dropoutGPUDevice(
     float* dst = reinterpret_cast<float*>(static_cast<uintptr_t>(dDst));
     int threads = jgpt_cuda_get_optimal_block_size();
     int blocks = (n + threads - 1) / threads;
-    dropout_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(src, dst, n, p, (unsigned int) seed);
+    dropout_kernel<<<blocks, threads, 0, kTensorCudaStream>>>(src, dst, n, p, (unsigned long long) seed);
 }
 
 JNIEXPORT void JNICALL Java_com_veles_llm_jgpt_TensorOpsGPU_multiplyGPU(

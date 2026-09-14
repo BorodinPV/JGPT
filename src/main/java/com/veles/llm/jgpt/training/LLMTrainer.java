@@ -1361,6 +1361,11 @@ public final class LLMTrainer {
         LlmTrainerCheckpointIo.saveModelWeights(this, name);
     }
 
+    /** {@code globalStep} из заголовка чекпоинта без загрузки Adam; {@code -1} — не прочитан. */
+    public static int peekCheckpointGlobalStep(java.nio.file.Path checkpoint) {
+        return LlmTrainerCheckpointIo.peekGlobalStep(checkpoint);
+    }
+
     public void awaitPendingCheckpointWrites() {
         LlmTrainerCheckpointIo.awaitPendingCheckpointWrites(this);
     }

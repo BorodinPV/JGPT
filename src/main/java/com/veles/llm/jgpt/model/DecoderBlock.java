@@ -148,6 +148,13 @@ final class DecoderBlock {
             throw new IllegalArgumentException("host BlockActivationCache and BlockActivationCacheDevice are mutually exclusive");
         }
         final float eps = TensorOpsGPU.rmsNormEps();
+        /*
+         * Host-path dropout только в training (есть кэш активаций под backward): без этого eval/sampling во время
+         * обучения шли бы через маску. Канонический VRAM D2D путь использует GpuDropout (forward+backward).
+         */
+        final boolean training = hostCache != null || deviceCache != null;
+        final float attentionDropout = training ? this.attentionDropout : 0f;
+        final float residualDropout = training ? this.residualDropout : 0f;
         TensorOps.AttnGpuResidentResult ar = null;
         if (attnResident != null) {
             ar = TensorOps.tryMultiHeadAttentionWithRoPEGpuResident(
@@ -299,13 +306,8 @@ final class DecoderBlock {
                             vCacheLayer,
                             ropeOffset);
         }
-        Tensor attnAfterDropout;
-        if (attentionDropout > 0f) {
-            attnAfterDropout = com.veles.llm.jgpt.ops.TensorOps.dropout(attnOut, attentionDropout, dropoutSeed);
-        } else {
-            attnAfterDropout = attnOut;
-        }
-        Tensor xRes1 = TensorOps.add(x, attnAfterDropout);
+        // KV-cache путь = инференс: dropout не применяется.
+        Tensor xRes1 = TensorOps.add(x, attnOut);
         TensorOps.FfnForwardResult fusedFfn =
                 ffnResident != null
                         ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(xRes1, ffnResident, cache)
@@ -389,13 +391,8 @@ final class DecoderBlock {
                             cacheLenBefore,
                             ropePosition);
         }
-        Tensor attnAfterDropout;
-        if (attentionDropout > 0f) {
-            attnAfterDropout = com.veles.llm.jgpt.ops.TensorOps.dropout(attnOut, attentionDropout, dropoutSeed);
-        } else {
-            attnAfterDropout = attnOut;
-        }
-        Tensor xRes1 = TensorOps.add(x, attnAfterDropout);
+        // KV-cache путь = инференс: dropout не применяется.
+        Tensor xRes1 = TensorOps.add(x, attnOut);
         TensorOps.FfnForwardResult fusedFfn =
                 ffnResident != null
                         ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(xRes1, ffnResident, cache)
@@ -431,13 +428,8 @@ final class DecoderBlock {
         if (attnOut == null) {
             throw new IllegalStateException("GPU KV VRAM prefill path failed");
         }
-        Tensor attnAfterDropout;
-        if (attentionDropout > 0f) {
-            attnAfterDropout = com.veles.llm.jgpt.ops.TensorOps.dropout(attnOut, attentionDropout, dropoutSeed);
-        } else {
-            attnAfterDropout = attnOut;
-        }
-        Tensor xRes1 = TensorOps.add(x, attnAfterDropout);
+        // KV-cache путь = инференс: dropout не применяется.
+        Tensor xRes1 = TensorOps.add(x, attnOut);
         TensorOps.FfnForwardResult fusedFfn =
                 ffnResident != null
                         ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(xRes1, ffnResident, cache)
@@ -481,13 +473,8 @@ final class DecoderBlock {
         if (attnOut == null) {
             throw new IllegalStateException("GPU KV VRAM decode path failed");
         }
-        Tensor attnAfterDropout;
-        if (attentionDropout > 0f) {
-            attnAfterDropout = com.veles.llm.jgpt.ops.TensorOps.dropout(attnOut, attentionDropout, dropoutSeed);
-        } else {
-            attnAfterDropout = attnOut;
-        }
-        Tensor xRes1 = TensorOps.add(x, attnAfterDropout);
+        // KV-cache путь = инференс: dropout не применяется.
+        Tensor xRes1 = TensorOps.add(x, attnOut);
         TensorOps.FfnForwardResult fusedFfn =
                 ffnResident != null
                         ? TensorOps.tryFusedNormResidualSwiGLUForwardGpuResident(xRes1, ffnResident, cache)

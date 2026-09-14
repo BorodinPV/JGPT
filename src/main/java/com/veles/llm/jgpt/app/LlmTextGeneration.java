@@ -47,7 +47,27 @@ public final class LlmTextGeneration {
             String prompt,
             int maxNewTokens,
             DecodeSampling sampling) {
+        return generateText(model, tokenizer, prompt, maxNewTokens, sampling, true);
+    }
+
+    /**
+     * @param includePrompt {@code true} — вернуть промпт + продолжение (как «дописывание»); {@code false} — только
+     *     новые токены (ответ ассистента без эха вопроса)
+     */
+    public static String generateText(
+            GPTModel model,
+            BPETokenizer tokenizer,
+            String prompt,
+            int maxNewTokens,
+            DecodeSampling sampling,
+            boolean includePrompt) {
         TensorOpsGPU.requireCuda("LlmTextGeneration.generateText");
+        if (tokenizer.hasChatRoleTokens()) {
+            // Модель начала новую реплику (<user>/<assistant>) — ответ закончен, дальше не генерируем.
+            model.setExtraGenerationStopTokens(tokenizer.userId(), tokenizer.assistantId());
+        } else {
+            model.setExtraGenerationStopTokens();
+        }
         int[] inputTokens = tokenizer.encodePrompt(prompt);
         Tensor input = new Tensor(new int[]{1, inputTokens.length});
         float[] inputData = input.internalBuffer();
@@ -72,9 +92,10 @@ public final class LlmTextGeneration {
         while (n > 0 && buf[n - 1] == 0f) {
             n--;
         }
-        int[] tokens = new int[n];
-        for (int i = 0; i < n; i++) {
-            tokens[i] = (int) buf[i];
+        int from = includePrompt ? 0 : Math.min(inputTokens.length, n);
+        int[] tokens = new int[n - from];
+        for (int i = from; i < n; i++) {
+            tokens[i - from] = (int) buf[i];
         }
         String text = tokenizer.decode(tokens);
         // Нормализуем пробелы: модель часто генерирует двойные/тройные пробелы

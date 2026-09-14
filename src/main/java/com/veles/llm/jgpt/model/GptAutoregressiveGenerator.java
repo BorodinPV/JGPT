@@ -46,7 +46,7 @@ final class GptAutoregressiveGenerator {
         int nextToken =
                 sampleNextToken(m, lastLogitData, lastRowOffset, m.vocabSize, sampling, outData, seqLen);
         outData[seqLen] = nextToken;
-        if (isGenerationStopToken(nextToken)) {
+        if (isGenerationStopToken(m, nextToken)) {
             return output;
         }
 
@@ -55,7 +55,7 @@ final class GptAutoregressiveGenerator {
 
             if (currentLen > m.maxSeqLen) {
                 int startIdx = currentLen - m.maxSeqLen;
-                int sliceLen = m.maxSeqLen - startIdx;
+                int sliceLen = m.maxSeqLen;
                 if (sliceLen <= 0) {
                     throw new IllegalStateException(
                             "sliding window: startIdx="
@@ -66,11 +66,12 @@ final class GptAutoregressiveGenerator {
                 }
                 cache.clear();
                 log.warn(
-                        "Скользящее окно KV (кэш на хосте): полный prefill по {} токенам (позиции {}..{}). "
+                        "Скользящее окно KV (кэш на хосте): полный prefill по {} последним токенам ({}..{}), позиции 0..{}. "
                                 + "Каждое срабатывание — O(окно²); для длинных прогонов увеличьте max_seq_len или используйте paged/rolling KV.",
                         sliceLen,
                         startIdx,
-                        startIdx + sliceLen - 1);
+                        startIdx + sliceLen - 1,
+                        sliceLen - 1);
                 if (m.reusableSlidingPrefillInput == null
                         || m.reusableSlidingPrefillInput.getShape()[0] != 1
                         || m.reusableSlidingPrefillInput.getShape()[1] != sliceLen) {
@@ -80,7 +81,11 @@ final class GptAutoregressiveGenerator {
                 for (int t = 0; t < sliceLen; t++) {
                     sliceData[t] = outData[startIdx + t];
                 }
-                logitsPrefill = GptKvForward.forwardPrefillHost(m, m.reusableSlidingPrefillInput, cache, startIdx);
+                /*
+                 * Окно перекодируется с позиции 0: таблица абсолютных позиционных эмбеддингов имеет ровно maxSeqLen
+                 * строк, а RoPE относителен — сдвиг всего окна на -startIdx не меняет attention внутри окна.
+                 */
+                logitsPrefill = GptKvForward.forwardPrefillHost(m, m.reusableSlidingPrefillInput, cache, 0);
                 lastPlane = GptTensorBatchPlanes.sliceBatch3D(logitsPrefill, 0);
                 lastLogitData = lastPlane.internalBuffer();
                 lastRowOffset = (sliceLen - 1) * m.vocabSize;
@@ -88,7 +93,7 @@ final class GptAutoregressiveGenerator {
                         sampleNextToken(
                                 m, lastLogitData, lastRowOffset, m.vocabSize, sampling, outData, currentLen);
                 outData[currentLen] = nextToken;
-                if (isGenerationStopToken(nextToken)) {
+                if (isGenerationStopToken(m, nextToken)) {
                     break;
                 }
                 continue;
@@ -104,7 +109,7 @@ final class GptAutoregressiveGenerator {
             lastLogitData = lastPlane.internalBuffer();
             nextToken = sampleNextToken(m, lastLogitData, 0, m.vocabSize, sampling, outData, currentLen);
             outData[currentLen] = nextToken;
-            if (isGenerationStopToken(nextToken)) {
+            if (isGenerationStopToken(m, nextToken)) {
                 break;
             }
         }
@@ -147,7 +152,7 @@ final class GptAutoregressiveGenerator {
                 int nextToken =
                         sampleNextToken(m, lastLogitData, lastRowOffset, m.vocabSize, sampling, outData, seqLen);
                 outData[seqLen] = nextToken;
-                if (isGenerationStopToken(nextToken)) {
+                if (isGenerationStopToken(m, nextToken)) {
                     return output;
                 }
 
@@ -156,7 +161,7 @@ final class GptAutoregressiveGenerator {
 
                     if (currentLen > m.maxSeqLen) {
                         int startIdx = currentLen - m.maxSeqLen;
-                        int sliceLen = m.maxSeqLen - startIdx;
+                        int sliceLen = m.maxSeqLen;
                         if (sliceLen <= 0) {
                             throw new IllegalStateException(
                                     "sliding window: startIdx="
@@ -167,11 +172,12 @@ final class GptAutoregressiveGenerator {
                         }
                         cache.clear();
                         log.warn(
-                                "Скользящее окно KV (кэш в VRAM): полный prefill по {} токенам (позиции {}..{}). "
+                                "Скользящее окно KV (кэш в VRAM): полный prefill по {} последним токенам ({}..{}), позиции 0..{}. "
                                         + "Каждое срабатывание — O(окно²); для длинных прогонов увеличьте max_seq_len или используйте paged/rolling KV.",
                                 sliceLen,
                                 startIdx,
-                                startIdx + sliceLen - 1);
+                                startIdx + sliceLen - 1,
+                                sliceLen - 1);
                         if (m.reusableSlidingPrefillInput == null
                                 || m.reusableSlidingPrefillInput.getShape()[0] != 1
                                 || m.reusableSlidingPrefillInput.getShape()[1] != sliceLen) {
@@ -181,7 +187,8 @@ final class GptAutoregressiveGenerator {
                         for (int t = 0; t < sliceLen; t++) {
                             sliceData[t] = outData[startIdx + t];
                         }
-                        logitsPrefill = GptKvForward.forwardPrefillGpu(m, m.reusableSlidingPrefillInput, cache, startIdx);
+                        // Окно с позиции 0 (см. host-вариант): таблица pos-эмбеддингов = maxSeqLen строк, RoPE относителен.
+                        logitsPrefill = GptKvForward.forwardPrefillGpu(m, m.reusableSlidingPrefillInput, cache, 0);
                         lastPlane = GptTensorBatchPlanes.sliceBatch3D(logitsPrefill, 0);
                         lastLogitData = lastPlane.internalBuffer();
                         lastRowOffset = (sliceLen - 1) * m.vocabSize;
@@ -189,7 +196,7 @@ final class GptAutoregressiveGenerator {
                                 sampleNextToken(
                                         m, lastLogitData, lastRowOffset, m.vocabSize, sampling, outData, currentLen);
                         outData[currentLen] = nextToken;
-                        if (isGenerationStopToken(nextToken)) {
+                        if (isGenerationStopToken(m, nextToken)) {
                             break;
                         }
                         continue;
@@ -206,7 +213,7 @@ final class GptAutoregressiveGenerator {
                     lastLogitData = lastPlane.internalBuffer();
                     nextToken = sampleNextToken(m, lastLogitData, 0, m.vocabSize, sampling, outData, currentLen);
                     outData[currentLen] = nextToken;
-                    if (isGenerationStopToken(nextToken)) {
+                    if (isGenerationStopToken(m, nextToken)) {
                         break;
                     }
                 }
@@ -468,9 +475,20 @@ final class GptAutoregressiveGenerator {
         return best;
     }
 
-    /** {@code <pad>=0} (хвост буфера) и {@code <eos>=3} — конец реплики, как при SFT. */
-    private static boolean isGenerationStopToken(int token) {
-        return token == 0 || token == 3;
+    /**
+     * {@code <pad>=0} (хвост буфера) и {@code <eos>=3} — конец реплики, как при SFT; плюс
+     * {@link GPTModel#setExtraGenerationStopTokens} (ролевые токены при чат-шаблоне).
+     */
+    private static boolean isGenerationStopToken(GPTModel m, int token) {
+        if (token == 0 || token == 3) {
+            return true;
+        }
+        for (int t : m.extraGenerationStopTokens()) {
+            if (t == token) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean isBetterLogit(float[] vals, int i, int j) {

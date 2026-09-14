@@ -200,7 +200,11 @@ public final class TrainingConfig {
         return p;
     }
 
-    /** Полная конфигурация (ранний останов + GPU-флаги). */
+    /**
+     * Полная конфигурация (ранний останов + GPU-флаги). Dropout здесь = 0: он реально применяется на GPU-пути
+     * (см. {@code GpuDropout}), поэтому включается явно — через полный конструктор / {@code JGPT_DROPOUT}
+     * ({@link LLMConfig#toTrainingConfig}); тесты паритета host/device остаются детерминированными.
+     */
     public TrainingConfig(
             int vocabSize,
             int maxSeqLen,
@@ -245,9 +249,9 @@ public final class TrainingConfig {
                 warmupRatio,
                 weightDecay,
                 maxGradNorm,
-                0.1f,
-                0.1f,
-                0.1f,
+                0f,
+                0f,
+                0f,
                 saveEverySteps,
                 evalEverySteps,
                 lrSchedule,
@@ -310,9 +314,9 @@ public final class TrainingConfig {
                 warmupRatio,
                 weightDecay,
                 maxGradNorm,
-                0.1f,
-                0.1f,
-                0.1f,
+                0f,
+                0f,
+                0f,
                 saveEverySteps,
                 evalEverySteps,
                 lrSchedule,
@@ -370,9 +374,9 @@ public final class TrainingConfig {
                 warmupRatio,
                 weightDecay,
                 maxGradNorm,
-                0.1f,
-                0.1f,
-                0.1f,
+                0f,
+                0f,
+                0f,
                 saveEverySteps,
                 evalEverySteps,
                 lrSchedule,
